@@ -1,4 +1,4 @@
-# Gateyes - Agent网关和铠甲系统
+# Gateyes - 为Agent设计的网关
 
 **🛡️ 为AI Agent提供智能路由、安全防护和可靠性保障的企业级网关**
 
