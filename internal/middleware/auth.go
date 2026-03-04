@@ -1,82 +1,68 @@
 package middleware
 
 import (
-	"log/slog"
 	"net/http"
 	"strings"
 
-	"gateyes/internal/config"
+	"gateyes/internal/handler"
+	"gateyes/internal/requestctx"
 )
 
-func Auth(cfg config.AuthConfig) Middleware {
-	if !cfg.Enabled {
-		return Noop()
-	}
-
-	keys := map[string]struct{}{}
-	for _, key := range cfg.Keys {
-		if strings.TrimSpace(key) == "" {
-			continue
-		}
-		keys[key] = struct{}{}
-	}
-	if len(keys) == 0 {
-		slog.Warn("auth enabled but no keys configured")
-	}
-
-	header := cfg.Header
-	if header == "" {
-		header = "Authorization"
-	}
-	queryParam := cfg.QueryParam
-	if queryParam == "" {
-		queryParam = "api_key"
-	}
-
-	skip := map[string]struct{}{}
-	for _, path := range cfg.SkipPaths {
-		skip[path] = struct{}{}
-	}
-
+func GatewayAuth(enabled bool) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if _, ok := skip[r.URL.Path]; ok {
+			if !enabled {
+				// TODO(io): remove this bypass in production mode.
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			token := extractToken(r, header, queryParam)
+			token := readToken(r)
 			if token == "" {
-				http.Error(w, "missing auth token", http.StatusUnauthorized)
+				handler.WriteError(w, http.StatusUnauthorized, "missing api key", handler.TypeAuthenticationError, "")
 				return
 			}
-			if len(keys) > 0 {
-				if _, ok := keys[token]; !ok {
-					http.Error(w, "invalid auth token", http.StatusUnauthorized)
-					return
-				}
+
+			// TODO(io): replace naive token passthrough with real token lookup + permission check.
+			ctx := requestctx.WithTokenID(r.Context(), token)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+func AdminAuth(adminToken string) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if adminToken == "" {
+				// TODO(io): force admin auth once deployment topology is defined.
+				next.ServeHTTP(w, r)
+				return
 			}
 
+			token := readBearerToken(r.Header.Get("Authorization"))
+			if token == "" || token != adminToken {
+				handler.WriteError(w, http.StatusUnauthorized, "invalid admin token", handler.TypeAuthenticationError, "")
+				return
+			}
 			next.ServeHTTP(w, r)
 		})
 	}
 }
 
-func extractToken(r *http.Request, header, queryParam string) string {
-	if header != "" {
-		value := r.Header.Get(header)
-		if value != "" {
-			lower := strings.ToLower(value)
-			if strings.HasPrefix(lower, "bearer ") {
-				return strings.TrimSpace(value[7:])
-			}
-			return value
-		}
+func readToken(r *http.Request) string {
+	if key := strings.TrimSpace(r.Header.Get("x-api-key")); key != "" {
+		return key
 	}
+	return readBearerToken(r.Header.Get("Authorization"))
+}
 
-	if queryParam != "" {
-		return r.URL.Query().Get(queryParam)
+func readBearerToken(authz string) string {
+	parts := strings.SplitN(strings.TrimSpace(authz), " ", 2)
+	if len(parts) != 2 {
+		return ""
 	}
-
-	return ""
+	if !strings.EqualFold(parts[0], "bearer") {
+		return ""
+	}
+	return strings.TrimSpace(parts[1])
 }
