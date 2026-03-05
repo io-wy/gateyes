@@ -25,7 +25,6 @@ type ServerConfig struct {
 
 type AuthConfig struct {
 	EnableGatewayAuth bool
-	AdminToken        string
 }
 
 type SchedulerConfig struct {
@@ -51,7 +50,6 @@ func LoadFromEnv() (Config, error) {
 		},
 		Auth: AuthConfig{
 			EnableGatewayAuth: getEnvBool("GATEYES_ENABLE_GATEWAY_AUTH", true),
-			AdminToken:        os.Getenv("GATEYES_ADMIN_TOKEN"),
 		},
 		Scheduler: SchedulerConfig{
 			DefaultProvider:      getEnv("GATEYES_DEFAULT_PROVIDER", "openai"),

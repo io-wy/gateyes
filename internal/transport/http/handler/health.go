@@ -2,15 +2,16 @@ package handler
 
 import (
 	"net/http"
-	"time"
+
+	"gateyes/internal/service"
 )
 
 type HealthHandler struct {
-	buildInfo BuildInfo
+	service *service.HealthService
 }
 
-func NewHealthHandler(buildInfo BuildInfo) *HealthHandler {
-	return &HealthHandler{buildInfo: buildInfo}
+func NewHealthHandler(healthService *service.HealthService) *HealthHandler {
+	return &HealthHandler{service: healthService}
 }
 
 func (h *HealthHandler) Handle(w http.ResponseWriter, r *http.Request) {
@@ -19,9 +20,5 @@ func (h *HealthHandler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	WriteJSON(w, http.StatusOK, map[string]any{
-		"status": "ok",
-		"time":   time.Now().UTC().Format(time.RFC3339),
-		"build":  h.buildInfo,
-	})
+	WriteJSON(w, http.StatusOK, h.service.Status(r.Context()))
 }

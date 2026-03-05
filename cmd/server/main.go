@@ -11,7 +11,7 @@ import (
 
 	"gateyes/internal/app"
 	"gateyes/internal/config"
-	"gateyes/internal/handler"
+	"gateyes/internal/service"
 )
 
 var (
@@ -27,7 +27,7 @@ func main() {
 		log.Fatalf("load config: %v", err)
 	}
 
-	buildInfo := handler.BuildInfo{
+	buildInfo := service.BuildInfo{
 		Version:   Version,
 		Commit:    Commit,
 		Date:      Date,

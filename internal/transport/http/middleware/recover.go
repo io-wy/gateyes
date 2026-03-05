@@ -1,10 +1,10 @@
 package middleware
 
 import (
-	"log"
 	"net/http"
 
-	"gateyes/internal/handler"
+	logx "gateyes/internal/pkg/log"
+	"gateyes/internal/transport/http/handler"
 )
 
 func RecoverJSON() Middleware {
@@ -12,7 +12,7 @@ func RecoverJSON() Middleware {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if p := recover(); p != nil {
-					log.Printf("panic recovered: request=%s panic=%v", r.URL.Path, p)
+					logx.Errorf("panic recovered: request=%s panic=%v", r.URL.Path, p)
 					handler.WriteError(w, http.StatusInternalServerError, "internal server error", handler.TypeInternalError, "")
 				}
 			}()

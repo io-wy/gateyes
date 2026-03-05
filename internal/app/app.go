@@ -5,16 +5,17 @@ import (
 
 	"gateyes/internal/concurrency"
 	"gateyes/internal/config"
-	"gateyes/internal/handler"
 	"gateyes/internal/scheduler"
-	"gateyes/internal/server"
+	"gateyes/internal/service"
+	"gateyes/internal/transport/http/handler"
+	"gateyes/internal/transport/http/server"
 )
 
 type Application struct {
 	Server *http.Server
 }
 
-func New(cfg config.Config, buildInfo handler.BuildInfo) (*Application, error) {
+func New(cfg config.Config, buildInfo service.BuildInfo) (*Application, error) {
 	selector := scheduler.NewStaticSelector(
 		cfg.Scheduler.DefaultChannelID,
 		cfg.Scheduler.DefaultProvider,
@@ -27,18 +28,19 @@ func New(cfg config.Config, buildInfo handler.BuildInfo) (*Application, error) {
 		PerToken:   cfg.Concurrency.DefaultTokenLimit,
 	})
 
-	healthHandler := handler.NewHealthHandler(buildInfo)
-	gatewayHandler := handler.NewGatewayHandlers(
+	healthService := service.NewHealthService(buildInfo)
+	gatewayService := service.NewGatewayService(
 		selector,
 		limiter,
 		[]string{cfg.Scheduler.DefaultUpstreamModel},
 	)
-	adminHandler := handler.NewAdminHandlers()
+
+	healthHandler := handler.NewHealthHandler(healthService)
+	gatewayHandler := handler.NewGatewayHandlers(gatewayService)
 
 	httpServer := server.New(cfg, server.Handlers{
 		Health:  healthHandler,
 		Gateway: gatewayHandler,
-		Admin:   adminHandler,
 	})
 
 	return &Application{Server: httpServer}, nil

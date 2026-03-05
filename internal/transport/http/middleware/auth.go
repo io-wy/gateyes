@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"strings"
 
-	"gateyes/internal/handler"
 	"gateyes/internal/requestctx"
+	"gateyes/internal/transport/http/handler"
 )
 
 func GatewayAuth(enabled bool) Middleware {
@@ -26,25 +26,6 @@ func GatewayAuth(enabled bool) Middleware {
 			// TODO(io): replace naive token passthrough with real token lookup + permission check.
 			ctx := requestctx.WithTokenID(r.Context(), token)
 			next.ServeHTTP(w, r.WithContext(ctx))
-		})
-	}
-}
-
-func AdminAuth(adminToken string) Middleware {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if adminToken == "" {
-				// TODO(io): force admin auth once deployment topology is defined.
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			token := readBearerToken(r.Header.Get("Authorization"))
-			if token == "" || token != adminToken {
-				handler.WriteError(w, http.StatusUnauthorized, "invalid admin token", handler.TypeAuthenticationError, "")
-				return
-			}
-			next.ServeHTTP(w, r)
 		})
 	}
 }

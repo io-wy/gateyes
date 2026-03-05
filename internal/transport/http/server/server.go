@@ -4,14 +4,13 @@ import (
 	"net/http"
 
 	"gateyes/internal/config"
-	"gateyes/internal/handler"
-	"gateyes/internal/middleware"
+	"gateyes/internal/transport/http/handler"
+	"gateyes/internal/transport/http/middleware"
 )
 
 type Handlers struct {
 	Health  *handler.HealthHandler
 	Gateway *handler.GatewayHandlers
-	Admin   *handler.AdminHandlers
 }
 
 func New(cfg config.Config, handlers Handlers) *http.Server {
@@ -30,17 +29,6 @@ func New(cfg config.Config, handlers Handlers) *http.Server {
 		middleware.GatewayAuth(cfg.Auth.EnableGatewayAuth),
 	)
 	rootMux.Handle("/v1/", gatewayHandler)
-
-	adminMux := http.NewServeMux()
-	adminMux.HandleFunc("POST /api/v1/admin/channels", handlers.Admin.CreateChannel)
-
-	adminHandler := middleware.Chain(
-		adminMux,
-		middleware.RecoverJSON(),
-		middleware.RequestContext(),
-		middleware.AdminAuth(cfg.Auth.AdminToken),
-	)
-	rootMux.Handle("/api/v1/admin/", adminHandler)
 
 	// TODO(io): add metrics, structured logging, and tracing middleware here.
 	return &http.Server{
