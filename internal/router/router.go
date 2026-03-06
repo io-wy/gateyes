@@ -35,9 +35,9 @@ func New(cfg *config.Config, metrics *middleware.Metrics) (*gin.Engine, error) {
 		middleware.ToGinMiddleware(middleware.Logging()),
 		middleware.ToGinMiddleware(metrics.Middleware(cfg.Metrics.Enabled)),
 		middleware.ToGinMiddleware(cacheMiddleware.Middleware()),
+		middleware.ToGinMiddleware(middleware.Auth(cfg.Auth)),
 		middleware.ToGinMiddleware(rateLimiter.Middleware()),
 		middleware.ToGinMiddleware(quota.Middleware()),
-		middleware.ToGinMiddleware(middleware.Auth(cfg.Auth)),
 		middleware.ToGinMiddleware(middleware.Policy(cfg.Policy)),
 	)
 

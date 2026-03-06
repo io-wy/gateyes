@@ -46,21 +46,61 @@ type VirtualKeyConfig struct {
 }
 
 type RateLimitConfig struct {
-	Enabled           bool     `json:"enabled"`
-	RequestsPerMinute int      `json:"requests_per_minute"`
-	Burst             int      `json:"burst"`
-	By                string   `json:"by"`
-	Header            string   `json:"header"`
-	SkipPaths         []string `json:"skip_paths"`
+	Enabled           bool                  `json:"enabled"`
+	RequestsPerMinute int                   `json:"requests_per_minute"`
+	Burst             int                   `json:"burst"`
+	By                string                `json:"by"`
+	Header            string                `json:"header"`
+	SkipPaths         []string              `json:"skip_paths"`
+	Backend           string                `json:"backend"`
+	RedisAddr         string                `json:"redis_addr"`
+	RedisPassword     string                `json:"redis_password"`
+	RedisDB           int                   `json:"redis_db"`
+	RedisPrefix       string                `json:"redis_prefix"`
+	TenantHeader      string                `json:"tenant_header"`
+	DefaultCompletion int                   `json:"default_completion_tokens"`
+	Rules             []RateLimitRuleConfig `json:"rules"`
 }
 
 type QuotaConfig struct {
-	Enabled   bool     `json:"enabled"`
-	Requests  int      `json:"requests"`
-	Window    Duration `json:"window"`
-	By        string   `json:"by"`
-	Header    string   `json:"header"`
-	SkipPaths []string `json:"skip_paths"`
+	Enabled           bool              `json:"enabled"`
+	Requests          int               `json:"requests"`
+	Window            Duration          `json:"window"`
+	By                string            `json:"by"`
+	Header            string            `json:"header"`
+	SkipPaths         []string          `json:"skip_paths"`
+	Backend           string            `json:"backend"`
+	RedisAddr         string            `json:"redis_addr"`
+	RedisPassword     string            `json:"redis_password"`
+	RedisDB           int               `json:"redis_db"`
+	RedisPrefix       string            `json:"redis_prefix"`
+	TenantHeader      string            `json:"tenant_header"`
+	DefaultCompletion int               `json:"default_completion_tokens"`
+	TokensPerDay      int64             `json:"tokens_per_day"`
+	TokensPerMonth    int64             `json:"tokens_per_month"`
+	Rules             []QuotaRuleConfig `json:"rules"`
+}
+
+type RateLimitRuleConfig struct {
+	Name              string   `json:"name"`
+	Enabled           bool     `json:"enabled"`
+	Dimensions        []string `json:"dimensions"`
+	RequestsPerSecond int      `json:"requests_per_second"`
+	RequestsPerMinute int      `json:"requests_per_minute"`
+	TokensPerMinute   int64    `json:"tokens_per_minute"`
+	Burst             int      `json:"burst"`
+	TenantHeader      string   `json:"tenant_header"`
+}
+
+type QuotaRuleConfig struct {
+	Name             string   `json:"name"`
+	Enabled          bool     `json:"enabled"`
+	Dimensions       []string `json:"dimensions"`
+	RequestsPerDay   int64    `json:"requests_per_day"`
+	RequestsPerMonth int64    `json:"requests_per_month"`
+	TokensPerDay     int64    `json:"tokens_per_day"`
+	TokensPerMonth   int64    `json:"tokens_per_month"`
+	TenantHeader     string   `json:"tenant_header"`
 }
 
 type MetricsConfig struct {
@@ -222,13 +262,21 @@ func DefaultConfig() Config {
 			Burst:             120,
 			By:                "auth",
 			SkipPaths:         []string{"/healthz", "/metrics"},
+			Backend:           "memory",
+			RedisPrefix:       "gateyes",
+			TenantHeader:      "X-Tenant-ID",
+			DefaultCompletion: 256,
 		},
 		Quota: QuotaConfig{
-			Enabled:   false,
-			Requests:  10000,
-			Window:    Duration{Duration: 24 * time.Hour},
-			By:        "auth",
-			SkipPaths: []string{"/healthz", "/metrics"},
+			Enabled:           false,
+			Requests:          10000,
+			Window:            Duration{Duration: 24 * time.Hour},
+			By:                "auth",
+			SkipPaths:         []string{"/healthz", "/metrics"},
+			Backend:           "memory",
+			RedisPrefix:       "gateyes",
+			TenantHeader:      "X-Tenant-ID",
+			DefaultCompletion: 256,
 		},
 		Metrics: MetricsConfig{
 			Enabled:   true,
@@ -267,16 +315,47 @@ func (c Config) Validate() error {
 		return errors.New("server.listen_addr is required")
 	}
 	if c.RateLimit.Enabled {
-		if c.RateLimit.RequestsPerMinute <= 0 {
-			return errors.New("rate_limit.requests_per_minute must be positive")
+		backend := strings.ToLower(strings.TrimSpace(c.RateLimit.Backend))
+		if backend == "redis" && strings.TrimSpace(c.RateLimit.RedisAddr) == "" {
+			return errors.New("rate_limit.redis_addr is required when backend=redis")
+		}
+
+		hasLegacyLimit := c.RateLimit.RequestsPerMinute > 0
+		hasRuleLimit := false
+		for _, rule := range c.RateLimit.Rules {
+			if !rule.Enabled {
+				continue
+			}
+			if rule.RequestsPerSecond > 0 || rule.RequestsPerMinute > 0 || rule.TokensPerMinute > 0 {
+				hasRuleLimit = true
+			}
+		}
+		if !hasLegacyLimit && !hasRuleLimit {
+			return errors.New("rate_limit requires requests_per_minute or at least one enabled rule")
 		}
 	}
 	if c.Quota.Enabled {
-		if c.Quota.Requests <= 0 {
-			return errors.New("quota.requests must be positive")
+		backend := strings.ToLower(strings.TrimSpace(c.Quota.Backend))
+		if backend == "redis" && strings.TrimSpace(c.Quota.RedisAddr) == "" {
+			return errors.New("quota.redis_addr is required when backend=redis")
 		}
-		if c.Quota.Window.Duration <= 0 {
-			return errors.New("quota.window must be positive")
+
+		hasLegacyLimit := c.Quota.Requests > 0 && c.Quota.Window.Duration > 0
+		hasTokenLimit := c.Quota.TokensPerDay > 0 || c.Quota.TokensPerMonth > 0
+		hasRuleLimit := false
+		for _, rule := range c.Quota.Rules {
+			if !rule.Enabled {
+				continue
+			}
+			if rule.RequestsPerDay > 0 ||
+				rule.RequestsPerMonth > 0 ||
+				rule.TokensPerDay > 0 ||
+				rule.TokensPerMonth > 0 {
+				hasRuleLimit = true
+			}
+		}
+		if !hasLegacyLimit && !hasTokenLimit && !hasRuleLimit {
+			return errors.New("quota requires requests/window, tokens_per_day/month, or at least one enabled rule")
 		}
 	}
 	for key, virtualConfig := range c.Auth.VirtualKeys {

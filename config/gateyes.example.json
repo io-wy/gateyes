@@ -56,19 +56,78 @@
   },
   "rate_limit": {
     "enabled": false,
+    "backend": "memory",
+    "redis_addr": "localhost:6379",
+    "redis_password": "",
+    "redis_db": 0,
+    "redis_prefix": "gateyes",
+    "tenant_header": "X-Tenant-ID",
+    "default_completion_tokens": 256,
     "requests_per_minute": 300,
     "burst": 300,
     "by": "auth",
     "header": "",
-    "skip_paths": ["/healthz", "/metrics", "/cache-stats"]
+    "skip_paths": ["/healthz", "/metrics", "/cache-stats"],
+    "rules": [
+      {
+        "name": "rpm-user",
+        "enabled": true,
+        "dimensions": ["user"],
+        "requests_per_minute": 300,
+        "burst": 300
+      },
+      {
+        "name": "tpm-user-model",
+        "enabled": true,
+        "dimensions": ["user", "model"],
+        "tokens_per_minute": 120000
+      },
+      {
+        "name": "tpm-tenant",
+        "enabled": true,
+        "dimensions": ["tenant"],
+        "tenant_header": "X-Tenant-ID",
+        "tokens_per_minute": 500000
+      }
+    ]
   },
   "quota": {
     "enabled": false,
+    "backend": "memory",
+    "redis_addr": "localhost:6379",
+    "redis_password": "",
+    "redis_db": 0,
+    "redis_prefix": "gateyes",
+    "tenant_header": "X-Tenant-ID",
+    "default_completion_tokens": 256,
     "requests": 100000,
     "window": "24h",
     "by": "auth",
     "header": "",
-    "skip_paths": ["/healthz", "/metrics", "/cache-stats"]
+    "tokens_per_day": 0,
+    "tokens_per_month": 0,
+    "skip_paths": ["/healthz", "/metrics", "/cache-stats"],
+    "rules": [
+      {
+        "name": "daily-user",
+        "enabled": true,
+        "dimensions": ["user"],
+        "tokens_per_day": 2000000
+      },
+      {
+        "name": "monthly-tenant",
+        "enabled": true,
+        "dimensions": ["tenant"],
+        "tenant_header": "X-Tenant-ID",
+        "tokens_per_month": 50000000
+      },
+      {
+        "name": "daily-user-model",
+        "enabled": true,
+        "dimensions": ["user", "model"],
+        "tokens_per_day": 500000
+      }
+    ]
   },
   "metrics": {
     "enabled": true,

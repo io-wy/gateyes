@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -192,6 +193,9 @@ func (o *OpenAIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	model, stream := extractModelHints(body)
+	if model != "" {
+		r.Header.Set(requestmeta.HeaderResolvedModel, model)
+	}
 	providersOrder, err := o.resolveProviderOrder(r, model)
 	if err != nil {
 		writeGatewayError(w, http.StatusBadRequest, err.Error())
@@ -203,10 +207,12 @@ func (o *OpenAIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if stream {
+		r.Header.Set(requestmeta.HeaderStreamRequest, "1")
 		o.proxyStreaming(w, r, body, providersOrder[0])
 		return
 	}
 
+	r.Header.Del(requestmeta.HeaderStreamRequest)
 	o.proxyWithFallback(w, r, body, providersOrder)
 }
 
@@ -225,6 +231,7 @@ func (o *OpenAIProxy) proxyStreaming(w http.ResponseWriter, r *http.Request, bod
 	start := time.Now()
 	proxy.ServeHTTP(recorder, cloneRequestWithBody(r, body))
 	o.observeProvider(provider, recorder.statusCode, time.Since(start))
+	r.Header.Set(requestmeta.HeaderResolvedProvider, provider)
 }
 
 func (o *OpenAIProxy) proxyWithFallback(
@@ -251,6 +258,7 @@ func (o *OpenAIProxy) proxyWithFallback(
 			continue
 		}
 
+		o.attachResponseMetadata(r, provider, buffered)
 		buffered.CopyTo(w)
 		return
 	}
@@ -946,4 +954,58 @@ func (rw *bufferedResponse) CopyTo(w http.ResponseWriter) {
 
 func normalizeProviderName(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
+}
+
+func (o *OpenAIProxy) attachResponseMetadata(r *http.Request, provider string, response *bufferedResponse) {
+	if r == nil || response == nil {
+		return
+	}
+
+	if provider != "" {
+		r.Header.Set(requestmeta.HeaderResolvedProvider, provider)
+	}
+
+	if usage, ok := extractUsageFromBody(response.body.Bytes()); ok {
+		if usage.Model != "" {
+			r.Header.Set(requestmeta.HeaderResolvedModel, usage.Model)
+		}
+		if usage.Usage.PromptTokens > 0 {
+			r.Header.Set(requestmeta.HeaderUsagePromptTokens, strconv.FormatInt(usage.Usage.PromptTokens, 10))
+		}
+		if usage.Usage.CompletionTokens > 0 {
+			r.Header.Set(requestmeta.HeaderUsageCompletionTokens, strconv.FormatInt(usage.Usage.CompletionTokens, 10))
+		}
+		if usage.Usage.TotalTokens > 0 {
+			r.Header.Set(requestmeta.HeaderUsageTotalTokens, strconv.FormatInt(usage.Usage.TotalTokens, 10))
+		}
+	}
+}
+
+type responseUsage struct {
+	Model string `json:"model"`
+	Usage struct {
+		PromptTokens     int64 `json:"prompt_tokens"`
+		CompletionTokens int64 `json:"completion_tokens"`
+		TotalTokens      int64 `json:"total_tokens"`
+	} `json:"usage"`
+}
+
+func extractUsageFromBody(body []byte) (responseUsage, bool) {
+	if len(body) == 0 || len(body) > 2*1024*1024 {
+		return responseUsage{}, false
+	}
+
+	var payload responseUsage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return responseUsage{}, false
+	}
+	if payload.Usage.TotalTokens <= 0 &&
+		payload.Usage.PromptTokens <= 0 &&
+		payload.Usage.CompletionTokens <= 0 {
+		return responseUsage{}, false
+	}
+	if payload.Usage.TotalTokens <= 0 {
+		payload.Usage.TotalTokens = payload.Usage.PromptTokens + payload.Usage.CompletionTokens
+	}
+	return payload, true
 }

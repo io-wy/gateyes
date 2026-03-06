@@ -1,23 +1,38 @@
 package gateway
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
+
+	"gateyes/internal/requestmeta"
 
 	"github.com/gorilla/websocket"
 )
 
 type UpstreamProxy struct {
-	rest *httputil.ReverseProxy
-	ws   *websocketProxy
+	baseURL        *url.URL
+	headers        map[string]string
+	authHeader     string
+	authScheme     string
+	apiKey         string
+	stripPrefix    string
+	requestTimeout time.Duration
+	client         *http.Client
+	ws             *websocketProxy
 }
+
+const defaultUpstreamRequestTimeout = 120 * time.Second
+
+var sharedHTTPClients sync.Map
 
 func NewUpstreamProxy(baseURL, wsBaseURL string, headers map[string]string, authHeader, authScheme, apiKey, stripPrefix string) (*UpstreamProxy, error) {
 	if strings.TrimSpace(baseURL) == "" {
@@ -36,10 +51,20 @@ func NewUpstreamProxy(baseURL, wsBaseURL string, headers map[string]string, auth
 
 	authHeader, authScheme = normalizeAuth(authHeader, authScheme, apiKey)
 
-	rest := buildReverseProxy(target, headers, authHeader, authScheme, apiKey, stripPrefix)
+	client := getSharedHTTPClient(target)
 	wsProxy := newWebSocketProxy(wsURL, headers, authHeader, authScheme, apiKey, stripPrefix)
 
-	return &UpstreamProxy{rest: rest, ws: wsProxy}, nil
+	return &UpstreamProxy{
+		baseURL:        target,
+		headers:        headers,
+		authHeader:     authHeader,
+		authScheme:     authScheme,
+		apiKey:         apiKey,
+		stripPrefix:    stripPrefix,
+		requestTimeout: defaultUpstreamRequestTimeout,
+		client:         client,
+		ws:             wsProxy,
+	}, nil
 }
 
 func (p *UpstreamProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -52,7 +77,188 @@ func (p *UpstreamProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p.rest.ServeHTTP(w, r)
+	p.serveREST(w, r)
+}
+
+func getSharedHTTPClient(target *url.URL) *http.Client {
+	key := target.Scheme + "://" + target.Host
+	if cached, ok := sharedHTTPClients.Load(key); ok {
+		if client, ok := cached.(*http.Client); ok {
+			return client
+		}
+	}
+
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          1024,
+		MaxIdleConnsPerHost:   256,
+		MaxConnsPerHost:       512,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+
+	client := &http.Client{
+		Transport: transport,
+	}
+	actual, loaded := sharedHTTPClients.LoadOrStore(key, client)
+	if loaded {
+		if shared, ok := actual.(*http.Client); ok {
+			return shared
+		}
+	}
+	return client
+}
+
+func (p *UpstreamProxy) serveREST(w http.ResponseWriter, r *http.Request) {
+	if p.baseURL == nil {
+		http.Error(w, "upstream not configured", http.StatusBadGateway)
+		return
+	}
+
+	target := *p.baseURL
+	target.Path = joinURLPath(p.baseURL.Path, stripPath(r.URL.Path, p.stripPrefix))
+	target.RawQuery = r.URL.RawQuery
+
+	ctx := r.Context()
+	cancel := func() {}
+	if p.requestTimeout > 0 && !isStreamingRequest(r) {
+		ctx, cancel = context.WithTimeout(ctx, p.requestTimeout)
+	}
+	defer cancel()
+
+	outReq := r.Clone(ctx)
+	outReq.URL = &target
+	outReq.Host = target.Host
+	outReq.RequestURI = ""
+	sanitizeHopHeaders(outReq.Header)
+	sanitizeInternalHeaders(outReq.Header)
+	applyHeaders(outReq.Header, p.headers, p.authHeader, p.authScheme, p.apiKey)
+
+	resp, err := p.client.Do(outReq)
+	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return
+		}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+			http.Error(w, "upstream timeout", http.StatusGatewayTimeout)
+			return
+		}
+		slog.Error("upstream request failed", "error", err, "path", r.URL.Path)
+		http.Error(w, "upstream error", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	copyResponseHeaders(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
+
+	streaming := isStreamingRequest(r) || isStreamingResponse(resp)
+	if err := copyResponseBody(w, resp.Body, ctx, streaming); err != nil && !errors.Is(err, context.Canceled) {
+		slog.Debug("upstream copy interrupted", "error", err, "path", r.URL.Path)
+	}
+}
+
+func isStreamingRequest(r *http.Request) bool {
+	if strings.EqualFold(strings.TrimSpace(r.Header.Get(requestmeta.HeaderStreamRequest)), "1") {
+		return true
+	}
+	accept := strings.ToLower(strings.TrimSpace(r.Header.Get("Accept")))
+	return strings.Contains(accept, "text/event-stream")
+}
+
+func isStreamingResponse(resp *http.Response) bool {
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if strings.Contains(contentType, "text/event-stream") {
+		return true
+	}
+	for _, value := range resp.TransferEncoding {
+		if strings.EqualFold(value, "chunked") {
+			return true
+		}
+	}
+	return false
+}
+
+func copyResponseBody(dst http.ResponseWriter, src io.Reader, ctx context.Context, flush bool) error {
+	if !flush {
+		_, err := io.Copy(dst, src)
+		return err
+	}
+
+	flusher, ok := dst.(http.Flusher)
+	if !ok {
+		_, err := io.Copy(dst, src)
+		return err
+	}
+
+	buffer := make([]byte, 32*1024)
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		n, err := src.Read(buffer)
+		if n > 0 {
+			if _, writeErr := dst.Write(buffer[:n]); writeErr != nil {
+				return writeErr
+			}
+			flusher.Flush()
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+func copyResponseHeaders(dst, src http.Header) {
+	sanitizeHopHeaders(src)
+	for key, values := range src {
+		for _, value := range values {
+			dst.Add(key, value)
+		}
+	}
+}
+
+func sanitizeInternalHeaders(header http.Header) {
+	header.Del(requestmeta.HeaderVirtualKey)
+	header.Del(requestmeta.HeaderResolvedProvider)
+	header.Del(requestmeta.HeaderResolvedModel)
+	header.Del(requestmeta.HeaderUsagePromptTokens)
+	header.Del(requestmeta.HeaderUsageCompletionTokens)
+	header.Del(requestmeta.HeaderUsageTotalTokens)
+	header.Del(requestmeta.HeaderStreamRequest)
+}
+
+func sanitizeHopHeaders(header http.Header) {
+	removeConnectionHeaders(header)
+	header.Del("Proxy-Connection")
+	header.Del("Keep-Alive")
+	header.Del("Proxy-Authenticate")
+	header.Del("Proxy-Authorization")
+	header.Del("Te")
+	header.Del("Trailer")
+	header.Del("Transfer-Encoding")
+	header.Del("Upgrade")
+}
+
+func removeConnectionHeaders(header http.Header) {
+	for _, connectionValue := range header.Values("Connection") {
+		for _, token := range strings.Split(connectionValue, ",") {
+			header.Del(strings.TrimSpace(token))
+		}
+	}
+	header.Del("Connection")
 }
 
 func parseHTTPURL(raw string) (*url.URL, error) {
@@ -99,43 +305,6 @@ func deriveWSURL(base *url.URL) *url.URL {
 		wsURL.Scheme = "ws"
 	}
 	return &wsURL
-}
-
-func buildReverseProxy(target *url.URL, headers map[string]string, authHeader, authScheme, apiKey, stripPrefix string) *httputil.ReverseProxy {
-	director := func(req *http.Request) {
-		path := stripPath(req.URL.Path, stripPrefix)
-		req.URL.Scheme = target.Scheme
-		req.URL.Host = target.Host
-		req.URL.Path = joinURLPath(target.Path, path)
-		req.Host = target.Host
-		req.URL.RawPath = ""
-		applyHeaders(req.Header, headers, authHeader, authScheme, apiKey)
-	}
-
-	proxy := &httputil.ReverseProxy{
-		Director:      director,
-		FlushInterval: 50 * time.Millisecond,
-		Transport: &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			DialContext: (&net.Dialer{
-				Timeout:   5 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          512,
-			MaxIdleConnsPerHost:   128,
-			MaxConnsPerHost:       256,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-		},
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			slog.Error("reverse proxy error", "error", err, "path", r.URL.Path)
-			http.Error(w, "upstream error", http.StatusBadGateway)
-		},
-	}
-
-	return proxy
 }
 
 func stripPath(path, prefix string) string {

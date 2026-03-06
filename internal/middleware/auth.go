@@ -55,6 +55,12 @@ func Auth(cfg config.AuthConfig) Middleware {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Never trust user-provided internal routing metadata.
 			r.Header.Del(requestmeta.HeaderVirtualKey)
+			r.Header.Del(requestmeta.HeaderResolvedProvider)
+			r.Header.Del(requestmeta.HeaderResolvedModel)
+			r.Header.Del(requestmeta.HeaderUsagePromptTokens)
+			r.Header.Del(requestmeta.HeaderUsageCompletionTokens)
+			r.Header.Del(requestmeta.HeaderUsageTotalTokens)
+			r.Header.Del(requestmeta.HeaderStreamRequest)
 
 			if _, ok := skip[r.URL.Path]; ok {
 				next.ServeHTTP(w, r)
