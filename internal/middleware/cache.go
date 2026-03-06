@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"gateyes/internal/cache"
+	"gateyes/internal/requestmeta"
 )
 
 // CacheMiddleware provides response caching for LLM requests
@@ -68,12 +69,23 @@ func (cm *CacheMiddleware) Middleware() func(http.Handler) http.Handler {
 			if provider == "" {
 				provider = r.URL.Query().Get("provider")
 			}
+			if virtualKey := strings.TrimSpace(r.Header.Get(requestmeta.HeaderVirtualKey)); virtualKey != "" {
+				if provider == "" {
+					provider = "vk:" + virtualKey
+				} else {
+					provider = provider + "|vk:" + virtualKey
+				}
+			}
 			if provider == "" {
 				provider = "default"
 			}
 
 			model, _ := reqData["model"].(string)
 			messages := reqData["messages"]
+			if stream, ok := reqData["stream"].(bool); ok && stream {
+				next.ServeHTTP(w, r)
+				return
+			}
 
 			cacheKey, err := cm.cacheManager.GenerateKey(provider, model, messages)
 			if err != nil {
@@ -123,7 +135,6 @@ func (cm *CacheMiddleware) isCacheable(path string) bool {
 	cacheablePaths := []string{
 		"/v1/chat/completions",
 		"/v1/completions",
-		"/v1/embeddings",
 	}
 
 	for _, p := range cacheablePaths {

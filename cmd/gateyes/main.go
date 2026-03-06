@@ -28,13 +28,13 @@ func main() {
 	}
 
 	metrics := middleware.NewMetrics(cfg.Metrics.Namespace)
-	handler, err := router.New(&cfg, metrics)
+	engine, err := router.New(&cfg, metrics)
 	if err != nil {
 		slog.Error("failed to build router", "error", err)
 		os.Exit(1)
 	}
 
-	srv := server.New(&cfg, handler)
+	srv := server.New(&cfg, engine)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"gateyes/internal/config"
+	"gateyes/internal/requestmeta"
 )
 
 func Auth(cfg config.AuthConfig) Middleware {
@@ -20,8 +21,20 @@ func Auth(cfg config.AuthConfig) Middleware {
 		}
 		keys[key] = struct{}{}
 	}
-	if len(keys) == 0 {
-		slog.Warn("auth enabled but no keys configured")
+
+	virtualKeys := make(map[string]config.VirtualKeyConfig)
+	for key, virtualConfig := range cfg.VirtualKeys {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		if !virtualConfig.Enabled {
+			continue
+		}
+		virtualKeys[key] = virtualConfig
+	}
+
+	if len(keys) == 0 && len(virtualKeys) == 0 {
+		slog.Warn("auth enabled but no static or virtual keys configured")
 	}
 
 	header := cfg.Header
@@ -40,6 +53,9 @@ func Auth(cfg config.AuthConfig) Middleware {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Never trust user-provided internal routing metadata.
+			r.Header.Del(requestmeta.HeaderVirtualKey)
+
 			if _, ok := skip[r.URL.Path]; ok {
 				next.ServeHTTP(w, r)
 				return
@@ -50,11 +66,23 @@ func Auth(cfg config.AuthConfig) Middleware {
 				http.Error(w, "missing auth token", http.StatusUnauthorized)
 				return
 			}
+
+			if _, ok := virtualKeys[token]; ok {
+				r.Header.Set(requestmeta.HeaderVirtualKey, token)
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			if len(keys) > 0 {
-				if _, ok := keys[token]; !ok {
-					http.Error(w, "invalid auth token", http.StatusUnauthorized)
+				if _, ok := keys[token]; ok {
+					next.ServeHTTP(w, r)
 					return
 				}
+			}
+
+			if len(keys) > 0 || len(virtualKeys) > 0 {
+				http.Error(w, "invalid auth token", http.StatusUnauthorized)
+				return
 			}
 
 			next.ServeHTTP(w, r)

@@ -3,7 +3,9 @@ package config
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -27,11 +29,20 @@ type ServerConfig struct {
 }
 
 type AuthConfig struct {
-	Enabled    bool     `json:"enabled"`
-	Keys       []string `json:"keys"`
-	Header     string   `json:"header"`
-	QueryParam string   `json:"query_param"`
-	SkipPaths  []string `json:"skip_paths"`
+	Enabled     bool                        `json:"enabled"`
+	Keys        []string                    `json:"keys"`
+	Header      string                      `json:"header"`
+	QueryParam  string                      `json:"query_param"`
+	SkipPaths   []string                    `json:"skip_paths"`
+	VirtualKeys map[string]VirtualKeyConfig `json:"virtual_keys"`
+}
+
+type VirtualKeyConfig struct {
+	Enabled         bool          `json:"enabled"`
+	Description     string        `json:"description"`
+	Providers       []string      `json:"providers"`
+	DefaultProvider string        `json:"default_provider"`
+	Routing         RoutingConfig `json:"routing"`
 }
 
 type RateLimitConfig struct {
@@ -60,17 +71,12 @@ type MetricsConfig struct {
 
 type GatewayConfig struct {
 	OpenAIPathPrefix    string        `json:"openai_path_prefix"`
-	AnthropicPathPrefix string        `json:"anthropic_path_prefix"`
-	AnthropicProvider   string        `json:"anthropic_provider"`
 	ProviderHeader      string        `json:"provider_header"`
 	ProviderQuery       string        `json:"provider_query"`
 	DefaultProvider     string        `json:"default_provider"`
 	AgentToProdPrefix   string        `json:"agent_to_prod_prefix"`
-	AgentToMcpPrefix    string        `json:"agent_to_mcp_prefix"`
 	AgentToProdUpstream string        `json:"agent_to_prod_upstream"`
-	AgentToMcpUpstream  string        `json:"agent_to_mcp_upstream"`
 	Routing             RoutingConfig `json:"routing"`
-	MCPGuard            MCPGuardConfig `json:"mcp_guard"`
 }
 
 type ProviderConfig struct {
@@ -80,14 +86,14 @@ type ProviderConfig struct {
 	AuthHeader string            `json:"auth_header"`
 	AuthScheme string            `json:"auth_scheme"`
 	Headers    map[string]string `json:"headers"`
-	Weight     int               `json:"weight"`      // For weighted routing
-	InputCost  float64           `json:"input_cost"`  // USD per 1M input tokens
-	OutputCost float64           `json:"output_cost"` // USD per 1M output tokens
+	Weight     int               `json:"weight"`
+	InputCost  float64           `json:"input_cost"`
+	OutputCost float64           `json:"output_cost"`
 }
 
 type RoutingConfig struct {
 	Enabled        bool                 `json:"enabled"`
-	Strategy       string               `json:"strategy"` // round-robin, least-latency, weighted, cost-optimized, priority
+	Strategy       string               `json:"strategy"`
 	Fallback       []string             `json:"fallback"`
 	CustomRules    []CustomRule         `json:"custom_rules"`
 	HealthCheck    HealthCheckConfig    `json:"health_check"`
@@ -143,106 +149,6 @@ type CircuitBreakerConfig struct {
 	HalfOpenRequests int      `json:"half_open_requests"`
 }
 
-type MCPGuardConfig struct {
-	Enabled            bool                      `json:"enabled"`
-	HealthCheck        MCPHealthCheckConfig      `json:"health_check"`
-	CircuitBreaker     CircuitBreakerConfig      `json:"circuit_breaker"`
-	Timeout            MCPTimeoutConfig          `json:"timeout"`
-	ConnectionPool     MCPConnectionPoolConfig   `json:"connection_pool"`
-	AnomalyDetection   MCPAnomalyDetectionConfig `json:"anomaly_detection"`
-	FallbackBehavior   MCPFallbackBehavior       `json:"fallback_behavior"`
-}
-
-type MCPHealthCheckConfig struct {
-	Enabled            bool     `json:"enabled"`
-	Interval           Duration `json:"interval"`
-	Timeout            Duration `json:"timeout"`
-	HealthyThreshold   int      `json:"healthy_threshold"`
-	UnhealthyThreshold int      `json:"unhealthy_threshold"`
-	Endpoint           string   `json:"endpoint"`
-}
-
-type MCPTimeoutConfig struct {
-	Connect Duration `json:"connect"`
-	Read    Duration `json:"read"`
-	Write   Duration `json:"write"`
-	Idle    Duration `json:"idle"`
-}
-
-type MCPConnectionPoolConfig struct {
-	Enabled         bool     `json:"enabled"`
-	MaxConnections  int      `json:"max_connections"`
-	MaxIdleTime     Duration `json:"max_idle_time"`
-	MaxLifetime     Duration `json:"max_lifetime"`
-	HealthCheckFreq Duration `json:"health_check_freq"`
-}
-
-type MCPAnomalyDetectionConfig struct {
-	Enabled              bool     `json:"enabled"`
-	ErrorRateThreshold   float64  `json:"error_rate_threshold"`
-	LatencyThreshold     Duration `json:"latency_threshold"`
-	ConsecutiveErrors    int      `json:"consecutive_errors"`
-	AlertWebhook         string   `json:"alert_webhook"`
-}
-
-type MCPFallbackBehavior struct {
-	Strategy       string   `json:"strategy"`
-	CacheTTL       Duration `json:"cache_ttl"`
-	AlternativeMCP string   `json:"alternative_mcp"`
-}
-
-type GuardrailsConfig struct {
-	Enabled           bool                      `json:"enabled"`
-	PIIDetection      PIIDetectionConfig        `json:"pii_detection"`
-	ContentFilter     ContentFilterConfig       `json:"content_filter"`
-	ResponseValidator ResponseValidatorConfig   `json:"response_validator"`
-	AnomalyDetection  GuardrailAnomalyConfig    `json:"anomaly_detection"`
-	CustomRules       []GuardrailCustomRule     `json:"custom_rules"`
-}
-
-type PIIDetectionConfig struct {
-	Enabled     bool     `json:"enabled"`
-	Redact      bool     `json:"redact"`
-	Patterns    []string `json:"patterns"`
-	EntityTypes []string `json:"entity_types"`
-}
-
-type ContentFilterConfig struct {
-	Enabled              bool     `json:"enabled"`
-	BlockProfanity       bool     `json:"block_profanity"`
-	BlockToxicity        bool     `json:"block_toxicity"`
-	BlockPromptInjection bool     `json:"block_prompt_injection"`
-	CustomBlocklist      []string `json:"custom_blocklist"`
-	ToxicityThreshold    float64  `json:"toxicity_threshold"`
-}
-
-type ResponseValidatorConfig struct {
-	Enabled           bool     `json:"enabled"`
-	MaxTokens         int      `json:"max_tokens"`
-	MaxResponseSize   int64    `json:"max_response_size"`
-	ValidateJSON      bool     `json:"validate_json"`
-	ValidateStructure bool     `json:"validate_structure"`
-	RequiredFields    []string `json:"required_fields"`
-}
-
-type GuardrailAnomalyConfig struct {
-	Enabled               bool     `json:"enabled"`
-	MaxRequestsPerMinute  int      `json:"max_requests_per_minute"`
-	MaxTokensPerRequest   int      `json:"max_tokens_per_request"`
-	SuspiciousPatterns    []string `json:"suspicious_patterns"`
-	BlockRepeatedRequests bool     `json:"block_repeated_requests"`
-	BlockRapidRequests    bool     `json:"block_rapid_requests"`
-}
-
-type GuardrailCustomRule struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Type        string `json:"type"`
-	Pattern     string `json:"pattern"`
-	Action      string `json:"action"`
-	Message     string `json:"message"`
-}
-
 type CacheConfig struct {
 	Enabled       bool     `json:"enabled"`
 	Backend       string   `json:"backend"`
@@ -256,9 +162,8 @@ type CacheConfig struct {
 }
 
 type PolicyConfig struct {
-	Enabled    bool             `json:"enabled"`
-	Mode       string           `json:"mode"`
-	Guardrails GuardrailsConfig `json:"guardrails"`
+	Enabled bool   `json:"enabled"`
+	Mode    string `json:"mode"`
 }
 
 type Duration struct {
@@ -331,14 +236,11 @@ func DefaultConfig() Config {
 			Namespace: "gateyes",
 		},
 		Gateway: GatewayConfig{
-			OpenAIPathPrefix:    "/v1",
-			AnthropicPathPrefix: "/anthropic",
-			AnthropicProvider:   "anthropic",
-			ProviderHeader:      "X-gateyes-Provider",
-			ProviderQuery:       "provider",
-			DefaultProvider:     "",
-			AgentToProdPrefix:   "/prod",
-			AgentToMcpPrefix:    "/mcp",
+			OpenAIPathPrefix:  "/v1",
+			ProviderHeader:    "X-Gateyes-Provider",
+			ProviderQuery:     "provider",
+			DefaultProvider:   "",
+			AgentToProdPrefix: "/prod",
 		},
 		Policy: PolicyConfig{
 			Enabled: false,
@@ -375,6 +277,14 @@ func (c Config) Validate() error {
 		}
 		if c.Quota.Window.Duration <= 0 {
 			return errors.New("quota.window must be positive")
+		}
+	}
+	for key, virtualConfig := range c.Auth.VirtualKeys {
+		if !virtualConfig.Enabled {
+			continue
+		}
+		if len(virtualConfig.Providers) == 0 && strings.TrimSpace(virtualConfig.DefaultProvider) == "" {
+			return fmt.Errorf("auth.virtual_keys[%s] requires providers or default_provider", key)
 		}
 	}
 	return nil

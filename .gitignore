@@ -1,52 +1,10 @@
-# Binaries
-*.exe
-*.dll
-*.so
-*.dylib
-
-# Test binary, built with `go test -c`
-*.test
-
-# Output of the go coverage tool
-*.out
-
-# Dependency directories
-vendor/
-
-# Go workspace file
-go.work
-
-# IDE and editor directories
-.vscode/
+.ace-tool/
+.gocache/
+.gofmt/
+.gopls/
 .idea/
-.agent/
+.vscode/
 .claude/
-.cursor/
-.kiro/
-*.swp
-*.swo
-*~
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Environment files
-.env
-.env.local
-.env.*.local
-
-# Logs
 *.log
-
-# Temporary files
-tmp/
-temp/
 *.tmp
-
-# Build artifacts
-dist/
-build/
-
-# Code chat history
-codechat/
+nul

@@ -5,6 +5,8 @@ import (
 	"net/http"
 
 	"gateyes/internal/config"
+
+	"github.com/gin-gonic/gin"
 )
 
 var ErrServerClosed = http.ErrServerClosed
@@ -14,12 +16,12 @@ type Server struct {
 	httpServer *http.Server
 }
 
-func New(cfg *config.Config, handler http.Handler) *Server {
+func New(cfg *config.Config, engine *gin.Engine) *Server {
 	return &Server{
 		cfg: cfg,
 		httpServer: &http.Server{
 			Addr:         cfg.Server.ListenAddr,
-			Handler:      handler,
+			Handler:      engine,
 			ReadTimeout:  cfg.Server.ReadTimeout.Duration,
 			WriteTimeout: cfg.Server.WriteTimeout.Duration,
 			IdleTimeout:  cfg.Server.IdleTimeout.Duration,

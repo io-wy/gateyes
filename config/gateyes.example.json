@@ -10,7 +10,65 @@
     "keys": ["replace-with-your-key"],
     "header": "Authorization",
     "query_param": "api_key",
-    "skip_paths": ["/healthz", "/metrics", "/stats"]
+    "skip_paths": ["/healthz", "/metrics", "/cache-stats"],
+    "virtual_keys": {
+      "vk-team-a": {
+        "enabled": true,
+        "description": "Team A pool",
+        "providers": ["openai-primary", "openai-backup"],
+        "default_provider": "openai-primary",
+        "routing": {
+          "strategy": "least-latency",
+          "fallback": ["openai-backup"],
+          "custom_rules": [
+            {
+              "name": "mini-to-backup",
+              "description": "Route mini models to backup",
+              "priority": 100,
+              "enabled": true,
+              "conditions": [
+                {
+                  "type": "model",
+                  "field": "",
+                  "operator": "contains",
+                  "value": "gpt-4o-mini"
+                }
+              ],
+              "action": {
+                "type": "route",
+                "provider": "openai-backup"
+              }
+            }
+          ]
+        }
+      },
+      "vk-team-b": {
+        "enabled": true,
+        "description": "Team B pool",
+        "providers": ["openai-dr"],
+        "default_provider": "openai-dr",
+        "routing": {
+          "strategy": "priority",
+          "fallback": []
+        }
+      }
+    }
+  },
+  "rate_limit": {
+    "enabled": false,
+    "requests_per_minute": 300,
+    "burst": 300,
+    "by": "auth",
+    "header": "",
+    "skip_paths": ["/healthz", "/metrics", "/cache-stats"]
+  },
+  "quota": {
+    "enabled": false,
+    "requests": 100000,
+    "window": "24h",
+    "by": "auth",
+    "header": "",
+    "skip_paths": ["/healthz", "/metrics", "/cache-stats"]
   },
   "metrics": {
     "enabled": true,
@@ -18,11 +76,11 @@
     "namespace": "gateyes"
   },
   "cache": {
-    "enabled": true,
+    "enabled": false,
     "backend": "memory",
-    "ttl": "1h",
+    "ttl": "10m",
     "max_size": 104857600,
-    "max_entries": 10000,
+    "max_entries": 5000,
     "key_strategy": "full",
     "redis_addr": "localhost:6379",
     "redis_password": "",
@@ -32,58 +90,13 @@
     "openai_path_prefix": "/v1",
     "provider_header": "X-Gateyes-Provider",
     "provider_query": "provider",
-    "default_provider": "openai",
+    "default_provider": "openai-primary",
     "agent_to_prod_prefix": "/prod",
-    "agent_to_mcp_prefix": "/mcp",
     "agent_to_prod_upstream": "http://prod-gateway:9000",
-    "agent_to_mcp_upstream": "http://mcp-gateway:7000",
-    "mcp_guard": {
-      "enabled": true,
-      "health_check": {
-        "enabled": true,
-        "interval": "30s",
-        "timeout": "5s",
-        "healthy_threshold": 2,
-        "unhealthy_threshold": 3,
-        "endpoint": "/health"
-      },
-      "circuit_breaker": {
-        "enabled": true,
-        "failure_threshold": 5,
-        "success_threshold": 2,
-        "timeout": "60s",
-        "half_open_requests": 3
-      },
-      "timeout": {
-        "connect": "5s",
-        "read": "30s",
-        "write": "30s",
-        "idle": "90s"
-      },
-      "connection_pool": {
-        "enabled": true,
-        "max_connections": 10,
-        "max_idle_time": "5m",
-        "max_lifetime": "30m",
-        "health_check_freq": "1m"
-      },
-      "anomaly_detection": {
-        "enabled": true,
-        "error_rate_threshold": 0.5,
-        "latency_threshold": "10s",
-        "consecutive_errors": 5,
-        "alert_webhook": "https://your-webhook-url.com/alerts"
-      },
-      "fallback_behavior": {
-        "strategy": "fail",
-        "cache_ttl": "5m",
-        "alternative_mcp": ""
-      }
-    },
     "routing": {
       "enabled": true,
       "strategy": "least-latency",
-      "fallback": ["anthropic", "azure-openai"],
+      "fallback": ["openai-backup", "openai-dr"],
       "health_check": {
         "enabled": true,
         "interval": "30s",
@@ -93,9 +106,9 @@
       },
       "retry": {
         "enabled": true,
-        "max_retries": 3,
+        "max_retries": 2,
         "initial_delay": "100ms",
-        "max_delay": "5s",
+        "max_delay": "2s",
         "multiplier": 2.0
       },
       "circuit_breaker": {
@@ -107,162 +120,72 @@
       },
       "custom_rules": [
         {
-          "name": "Route GPT-4 to Azure",
-          "description": "Route all GPT-4 requests to Azure OpenAI for better performance",
-          "priority": 100,
-          "enabled": true,
-          "conditions": [
-            {
-              "type": "body",
-              "field": "",
-              "operator": "contains",
-              "value": "gpt-4"
-            }
-          ],
-          "action": {
-            "type": "route",
-            "provider": "azure-openai"
-          }
-        },
-        {
-          "name": "Block expensive models for free users",
-          "description": "Reject requests to expensive models from free tier users",
+          "name": "Route gpt-4o-mini to backup",
+          "description": "Small model traffic uses backup first",
           "priority": 200,
           "enabled": true,
           "conditions": [
             {
-              "type": "header",
-              "field": "X-User-Tier",
-              "operator": "equals",
-              "value": "free"
-            },
-            {
-              "type": "body",
-              "field": "",
-              "operator": "regex",
-              "value": "(gpt-4|claude-opus)"
-            }
-          ],
-          "action": {
-            "type": "reject",
-            "status": 403,
-            "message": "Upgrade to access premium models"
-          }
-        },
-        {
-          "name": "Route embeddings to Cohere",
-          "description": "Route embedding requests to cheaper provider",
-          "priority": 75,
-          "enabled": true,
-          "conditions": [
-            {
-              "type": "path",
+              "type": "model",
               "field": "",
               "operator": "contains",
-              "value": "/embeddings"
+              "value": "gpt-4o-mini"
             }
           ],
           "action": {
             "type": "route",
-            "provider": "cohere"
+            "provider": "openai-backup"
+          }
+        },
+        {
+          "name": "Route gpt-4.1 to primary",
+          "description": "High-end model traffic stays on primary",
+          "priority": 150,
+          "enabled": true,
+          "conditions": [
+            {
+              "type": "model",
+              "field": "",
+              "operator": "regex",
+              "value": "^gpt-4(\\.1|o)"
+            }
+          ],
+          "action": {
+            "type": "route",
+            "provider": "openai-primary"
           }
         }
       ]
     }
   },
   "policy": {
-    "enabled": true,
-    "mode": "enforce",
-    "guardrails": {
-      "enabled": true,
-      "pii_detection": {
-        "enabled": true,
-        "redact": true,
-        "patterns": [],
-        "entity_types": ["email", "phone", "ssn", "credit_card"]
-      },
-      "content_filter": {
-        "enabled": true,
-        "block_profanity": false,
-        "block_toxicity": false,
-        "block_prompt_injection": true,
-        "custom_blocklist": ["admin password", "system override"],
-        "toxicity_threshold": 0.8
-      },
-      "response_validator": {
-        "enabled": true,
-        "max_tokens": 4096,
-        "max_response_size": 1048576,
-        "validate_json": false,
-        "validate_structure": false,
-        "required_fields": []
-      },
-      "anomaly_detection": {
-        "enabled": true,
-        "max_requests_per_minute": 100,
-        "max_tokens_per_request": 8000,
-        "suspicious_patterns": ["execute code", "run command"],
-        "block_repeated_requests": true,
-        "block_rapid_requests": true
-      },
-      "custom_rules": [
-        {
-          "name": "Block SQL Injection",
-          "description": "Detect potential SQL injection attempts",
-          "type": "request",
-          "pattern": "'; DROP TABLE",
-          "action": "block",
-          "message": "Potential SQL injection detected"
-        }
-      ]
-    }
+    "enabled": false,
+    "mode": "audit"
   },
   "providers": {
-    "openai": {
+    "openai-primary": {
       "base_url": "https://api.openai.com",
       "ws_base_url": "wss://api.openai.com",
-      "api_key": "sk-your-openai-key",
+      "api_key": "sk-your-primary-key",
       "auth_header": "Authorization",
       "auth_scheme": "Bearer",
-      "headers": {
-        "OpenAI-Organization": "org-placeholder"
-      },
-      "weight": 50,
-      "input_cost": 10.0,
-      "output_cost": 30.0
+      "headers": {}
     },
-    "anthropic": {
-      "base_url": "https://api.anthropic.com",
-      "api_key": "sk-ant-your-anthropic-key",
-      "auth_header": "x-api-key",
-      "auth_scheme": "",
-      "headers": {
-        "anthropic-version": "2023-06-01"
-      },
-      "weight": 30,
-      "input_cost": 15.0,
-      "output_cost": 75.0
-    },
-    "azure-openai": {
-      "base_url": "https://your-resource.openai.azure.com",
-      "api_key": "your-azure-key",
-      "auth_header": "api-key",
-      "auth_scheme": "",
-      "headers": {
-        "api-version": "2024-02-01"
-      },
-      "weight": 20,
-      "input_cost": 10.0,
-      "output_cost": 30.0
-    },
-    "cohere": {
-      "base_url": "https://api.cohere.ai",
-      "api_key": "your-cohere-key",
+    "openai-backup": {
+      "base_url": "https://api.openai.com",
+      "ws_base_url": "wss://api.openai.com",
+      "api_key": "sk-your-backup-key",
       "auth_header": "Authorization",
       "auth_scheme": "Bearer",
-      "weight": 10,
-      "input_cost": 0.4,
-      "output_cost": 1.2
+      "headers": {}
+    },
+    "openai-dr": {
+      "base_url": "https://api.openai.com",
+      "ws_base_url": "wss://api.openai.com",
+      "api_key": "sk-your-dr-key",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer",
+      "headers": {}
     }
   }
 }

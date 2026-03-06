@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -114,6 +115,20 @@ func buildReverseProxy(target *url.URL, headers map[string]string, authHeader, a
 	proxy := &httputil.ReverseProxy{
 		Director:      director,
 		FlushInterval: 50 * time.Millisecond,
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   5 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          512,
+			MaxIdleConnsPerHost:   128,
+			MaxConnsPerHost:       256,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			slog.Error("reverse proxy error", "error", err, "path", r.URL.Path)
 			http.Error(w, "upstream error", http.StatusBadGateway)
@@ -180,14 +195,14 @@ func applyHeaders(header http.Header, extra map[string]string, authHeader, authS
 }
 
 type websocketProxy struct {
-	baseURL    *url.URL
-	headers    map[string]string
-	authHeader string
-	authScheme string
-	apiKey     string
+	baseURL     *url.URL
+	headers     map[string]string
+	authHeader  string
+	authScheme  string
+	apiKey      string
 	stripPrefix string
-	dialer     websocket.Dialer
-	upgrader   websocket.Upgrader
+	dialer      websocket.Dialer
+	upgrader    websocket.Upgrader
 }
 
 func newWebSocketProxy(baseURL *url.URL, headers map[string]string, authHeader, authScheme, apiKey, stripPrefix string) *websocketProxy {

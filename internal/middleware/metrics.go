@@ -79,8 +79,6 @@ func normalizePath(path string) string {
 		return "/v1/*"
 	case strings.HasPrefix(path, "/prod/"):
 		return "/prod/*"
-	case strings.HasPrefix(path, "/mcp/"):
-		return "/mcp/*"
 	default:
 		return path
 	}

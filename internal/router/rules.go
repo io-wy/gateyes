@@ -11,18 +11,18 @@ import (
 
 // CustomRule defines a user-defined routing rule
 type CustomRule struct {
-	Name        string            `json:"name"`
-	Description string            `json:"description"`
-	Priority    int               `json:"priority"` // Higher priority rules are evaluated first
-	Conditions  []RuleCondition   `json:"conditions"`
-	Action      RuleAction        `json:"action"`
-	Enabled     bool              `json:"enabled"`
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Priority    int             `json:"priority"` // Higher priority rules are evaluated first
+	Conditions  []RuleCondition `json:"conditions"`
+	Action      RuleAction      `json:"action"`
+	Enabled     bool            `json:"enabled"`
 }
 
 // RuleCondition defines a condition that must be met
 type RuleCondition struct {
-	Type     string `json:"type"`  // "header", "path", "method", "query", "body", "time", "user"
-	Field    string `json:"field"` // Field name (e.g., header name, query param)
+	Type     string `json:"type"`     // "header", "path", "method", "query", "body", "time", "user"
+	Field    string `json:"field"`    // Field name (e.g., header name, query param)
 	Operator string `json:"operator"` // "equals", "contains", "regex", "gt", "lt", "in"
 	Value    string `json:"value"`
 }
@@ -321,24 +321,6 @@ var ExampleRules = `[
     "action": {
       "type": "route",
       "provider": "openai-eu"
-    }
-  },
-  {
-    "name": "Cost optimization for embeddings",
-    "description": "Route embedding requests to cheaper provider",
-    "priority": 75,
-    "enabled": true,
-    "conditions": [
-      {
-        "type": "path",
-        "field": "",
-        "operator": "contains",
-        "value": "/embeddings"
-      }
-    ],
-    "action": {
-      "type": "route",
-      "provider": "cohere"
     }
   }
 ]`
