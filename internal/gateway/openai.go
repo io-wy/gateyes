@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"net/http"
 	"regexp"
 	"sort"
@@ -38,6 +39,11 @@ type OpenAIProxy struct {
 	initialDelay     time.Duration
 	maxDelay         time.Duration
 	retryMultiplier  float64
+	circuitEnabled   bool
+	failureThreshold int
+	successThreshold int
+	openTimeout      time.Duration
+	halfOpenRequests int
 
 	virtualKeys      map[string]config.VirtualKeyConfig
 	providerProfiles map[string]providerProfile
@@ -56,12 +62,23 @@ type modelRouteRule struct {
 	pattern  *regexp.Regexp
 }
 
+type providerCircuitState int
+
+const (
+	circuitClosed providerCircuitState = iota
+	circuitOpen
+	circuitHalfOpen
+)
+
 type providerRuntime struct {
 	avgLatency         time.Duration
 	totalRequests      int64
 	failedRequests     int64
 	consecutiveFailure int
+	consecutiveSuccess int
 	unhealthyUntil     time.Time
+	state              providerCircuitState
+	halfOpenRemaining  int
 }
 
 type providerProfile struct {
@@ -151,9 +168,46 @@ func NewOpenAIProxy(
 		retryMultiplier = 2.0
 	}
 
+	failureThreshold := cfg.Routing.HealthCheck.UnhealthyThreshold
+	if failureThreshold <= 0 {
+		failureThreshold = 3
+	}
+	successThreshold := cfg.Routing.HealthCheck.HealthyThreshold
+	if successThreshold <= 0 {
+		successThreshold = 1
+	}
+	openTimeout := markUnhealthyFor
+	halfOpenRequests := 1
+	circuitEnabled := cfg.Routing.CircuitBreaker.Enabled
+	if circuitEnabled {
+		if cfg.Routing.CircuitBreaker.FailureThreshold > 0 {
+			failureThreshold = cfg.Routing.CircuitBreaker.FailureThreshold
+		} else {
+			failureThreshold = 5
+		}
+		if cfg.Routing.CircuitBreaker.SuccessThreshold > 0 {
+			successThreshold = cfg.Routing.CircuitBreaker.SuccessThreshold
+		} else {
+			successThreshold = 2
+		}
+		openTimeout = cfg.Routing.CircuitBreaker.Timeout.Duration
+		if openTimeout <= 0 {
+			openTimeout = markUnhealthyFor
+		}
+		halfOpenRequests = cfg.Routing.CircuitBreaker.HalfOpenRequests
+		if halfOpenRequests <= 0 {
+			halfOpenRequests = successThreshold
+		}
+		if halfOpenRequests < 1 {
+			halfOpenRequests = 1
+		}
+	}
+
 	stats := make(map[string]*providerRuntime, len(providerNames))
 	for _, providerName := range providerNames {
-		stats[providerName] = &providerRuntime{}
+		stats[providerName] = &providerRuntime{
+			state: circuitClosed,
+		}
 	}
 
 	virtualKeys := normalizeVirtualKeys(authCfg.VirtualKeys, registry)
@@ -174,6 +228,11 @@ func NewOpenAIProxy(
 		initialDelay:     initialDelay,
 		maxDelay:         maxDelay,
 		retryMultiplier:  retryMultiplier,
+		circuitEnabled:   circuitEnabled,
+		failureThreshold: failureThreshold,
+		successThreshold: successThreshold,
+		openTimeout:      openTimeout,
+		halfOpenRequests: halfOpenRequests,
 		virtualKeys:      virtualKeys,
 		providerProfiles: providerProfiles,
 		stats:            stats,
@@ -208,7 +267,7 @@ func (o *OpenAIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if stream {
 		r.Header.Set(requestmeta.HeaderStreamRequest, "1")
-		o.proxyStreaming(w, r, body, providersOrder[0])
+		o.proxyStreaming(w, r, body, providersOrder)
 		return
 	}
 
@@ -216,22 +275,206 @@ func (o *OpenAIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	o.proxyWithFallback(w, r, body, providersOrder)
 }
 
-func (o *OpenAIProxy) proxyStreaming(w http.ResponseWriter, r *http.Request, body []byte, provider string) {
+type streamProviderResult struct {
+	attempts       int
+	statusCode     int
+	circuitOpens   int64
+	shouldFallback bool
+	handled        bool
+}
+
+func (o *OpenAIProxy) proxyStreaming(
+	w http.ResponseWriter,
+	r *http.Request,
+	body []byte,
+	providersOrder []string,
+) {
+	totalRetries := int64(0)
+	totalFallbacks := int64(0)
+	totalCircuitOpens := int64(0)
+
+	for index, provider := range providersOrder {
+		allowFallback := index < len(providersOrder)-1
+		result := o.executeStreamingProvider(w, r, body, provider, allowFallback)
+		totalRetries += int64(maxInt(result.attempts-1, 0))
+		totalCircuitOpens += result.circuitOpens
+
+		if result.shouldFallback && allowFallback {
+			totalFallbacks++
+			slog.Warn(
+				"stream fallback to next provider",
+				"failed_provider", provider,
+				"attempts", result.attempts,
+				"status", result.statusCode,
+				"next_provider", providersOrder[index+1],
+				"path", r.URL.Path,
+			)
+			continue
+		}
+
+		r.Header.Set(requestmeta.HeaderRetryCount, strconv.FormatInt(totalRetries, 10))
+		r.Header.Set(requestmeta.HeaderFallbackCount, strconv.FormatInt(totalFallbacks, 10))
+		r.Header.Set(requestmeta.HeaderCircuitOpenCount, strconv.FormatInt(totalCircuitOpens, 10))
+		if provider != "" {
+			r.Header.Set(requestmeta.HeaderResolvedProvider, provider)
+		}
+		if result.handled {
+			return
+		}
+	}
+
+	r.Header.Set(requestmeta.HeaderRetryCount, strconv.FormatInt(totalRetries, 10))
+	r.Header.Set(requestmeta.HeaderFallbackCount, strconv.FormatInt(totalFallbacks, 10))
+	r.Header.Set(requestmeta.HeaderCircuitOpenCount, strconv.FormatInt(totalCircuitOpens, 10))
+	writeGatewayError(w, http.StatusBadGateway, "all providers failed")
+}
+
+func (o *OpenAIProxy) executeStreamingProvider(
+	w http.ResponseWriter,
+	r *http.Request,
+	body []byte,
+	provider string,
+	allowFallback bool,
+) streamProviderResult {
+	result := streamProviderResult{}
 	proxy, ok := o.providers[provider]
 	if !ok {
-		writeGatewayError(w, http.StatusBadRequest, "unknown provider")
-		return
+		if allowFallback {
+			result.shouldFallback = true
+			result.statusCode = http.StatusBadGateway
+		} else {
+			writeGatewayError(w, http.StatusBadGateway, "unknown provider")
+			result.handled = true
+		}
+		return result
 	}
 
-	recorder := &statusCaptureWriter{
-		ResponseWriter: w,
-		statusCode:     http.StatusOK,
+	delay := o.initialDelay
+	maxAttempts := o.maxRetryAttempts()
+	if maxAttempts < 1 {
+		maxAttempts = 1
 	}
 
-	start := time.Now()
-	proxy.ServeHTTP(recorder, cloneRequestWithBody(r, body))
-	o.observeProvider(provider, recorder.statusCode, time.Since(start))
-	r.Header.Set(requestmeta.HeaderResolvedProvider, provider)
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		result.attempts = attempt
+
+		outReq, cancel, err := prepareUpstreamRequest(proxy, r, body)
+		if err != nil {
+			cancel()
+			result.statusCode = http.StatusBadGateway
+			if opened := o.observeProvider(provider, result.statusCode, 0); opened {
+				result.circuitOpens++
+			}
+			if allowFallback {
+				result.shouldFallback = true
+				return result
+			}
+			writeGatewayError(w, http.StatusBadGateway, "upstream unavailable")
+			result.handled = true
+			return result
+		}
+
+		start := time.Now()
+		resp, upstreamErr := proxy.client.Do(outReq)
+		if upstreamErr != nil {
+			cancel()
+			result.statusCode = upstreamErrorStatus(r.Context(), upstreamErr)
+			if opened := o.observeProvider(provider, result.statusCode, time.Since(start)); opened {
+				result.circuitOpens++
+			}
+
+			if errors.Is(r.Context().Err(), context.Canceled) || errors.Is(upstreamErr, context.Canceled) {
+				result.handled = true
+				return result
+			}
+
+			if attempt < maxAttempts && shouldFallback(result.statusCode) {
+				slog.Warn(
+					"retry on same provider (stream)",
+					"provider", provider,
+					"attempt", attempt,
+					"max_attempts", maxAttempts,
+					"status", result.statusCode,
+					"next_delay_ms", delay.Milliseconds(),
+					"path", r.URL.Path,
+				)
+				if !waitRetryDelay(r.Context(), delay) {
+					if allowFallback {
+						result.shouldFallback = true
+						return result
+					}
+					result.handled = true
+					return result
+				}
+				delay = nextRetryDelay(delay, o.maxDelay, o.retryMultiplier)
+				continue
+			}
+
+			if allowFallback && shouldFallback(result.statusCode) {
+				result.shouldFallback = true
+				return result
+			}
+
+			writeGatewayError(w, result.statusCode, "upstream request failed")
+			result.handled = true
+			return result
+		}
+
+		result.statusCode = resp.StatusCode
+		if opened := o.observeProvider(provider, resp.StatusCode, time.Since(start)); opened {
+			result.circuitOpens++
+		}
+
+		if shouldFallback(resp.StatusCode) && attempt < maxAttempts {
+			slog.Warn(
+				"retry on same provider (stream)",
+				"provider", provider,
+				"attempt", attempt,
+				"max_attempts", maxAttempts,
+				"status", resp.StatusCode,
+				"next_delay_ms", delay.Milliseconds(),
+				"path", r.URL.Path,
+			)
+			drainAndClose(resp.Body)
+			cancel()
+			if !waitRetryDelay(r.Context(), delay) {
+				if allowFallback {
+					result.shouldFallback = true
+					return result
+				}
+				result.handled = true
+				return result
+			}
+			delay = nextRetryDelay(delay, o.maxDelay, o.retryMultiplier)
+			continue
+		}
+
+		if shouldFallback(resp.StatusCode) && allowFallback {
+			drainAndClose(resp.Body)
+			cancel()
+			result.shouldFallback = true
+			return result
+		}
+
+		copyResponseHeaders(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+
+		streaming := isStreamingResponse(resp)
+		usage, usageFound, copyErr := copyResponseBodyWithUsage(w, resp.Body, r.Context(), streaming)
+		if copyErr != nil && !errors.Is(copyErr, context.Canceled) {
+			slog.Debug("stream proxy copy interrupted", "error", copyErr, "provider", provider, "path", r.URL.Path)
+		}
+
+		drainAndClose(resp.Body)
+		cancel()
+		if usageFound {
+			attachUsageHeaders(r, usage)
+		}
+		result.handled = true
+		return result
+	}
+
+	return result
 }
 
 func (o *OpenAIProxy) proxyWithFallback(
@@ -240,13 +483,20 @@ func (o *OpenAIProxy) proxyWithFallback(
 	body []byte,
 	providersOrder []string,
 ) {
+	totalRetries := int64(0)
+	totalFallbacks := int64(0)
+	totalCircuitOpens := int64(0)
+
 	for index, provider := range providersOrder {
-		buffered, attempts, ok := o.executeProviderWithRetry(provider, r, body)
+		buffered, attempts, circuitOpens, ok := o.executeProviderWithRetry(provider, r, body)
 		if !ok {
 			continue
 		}
+		totalRetries += int64(maxInt(attempts-1, 0))
+		totalCircuitOpens += circuitOpens
 
 		if shouldFallback(buffered.statusCode) && index < len(providersOrder)-1 {
+			totalFallbacks++
 			slog.Warn(
 				"fallback to next provider",
 				"failed_provider", provider,
@@ -258,11 +508,17 @@ func (o *OpenAIProxy) proxyWithFallback(
 			continue
 		}
 
+		r.Header.Set(requestmeta.HeaderRetryCount, strconv.FormatInt(totalRetries, 10))
+		r.Header.Set(requestmeta.HeaderFallbackCount, strconv.FormatInt(totalFallbacks, 10))
+		r.Header.Set(requestmeta.HeaderCircuitOpenCount, strconv.FormatInt(totalCircuitOpens, 10))
 		o.attachResponseMetadata(r, provider, buffered)
 		buffered.CopyTo(w)
 		return
 	}
 
+	r.Header.Set(requestmeta.HeaderRetryCount, strconv.FormatInt(totalRetries, 10))
+	r.Header.Set(requestmeta.HeaderFallbackCount, strconv.FormatInt(totalFallbacks, 10))
+	r.Header.Set(requestmeta.HeaderCircuitOpenCount, strconv.FormatInt(totalCircuitOpens, 10))
 	writeGatewayError(w, http.StatusBadGateway, "all providers failed")
 }
 
@@ -270,22 +526,17 @@ func (o *OpenAIProxy) executeProviderWithRetry(
 	provider string,
 	r *http.Request,
 	body []byte,
-) (*bufferedResponse, int, bool) {
+) (*bufferedResponse, int, int64, bool) {
 	proxy, ok := o.providers[provider]
 	if !ok {
-		return nil, 0, false
+		return nil, 0, 0, false
 	}
 
-	maxAttempts := 1
-	if o.retryEnabled {
-		maxAttempts = o.maxRetries + 1
-	}
-	if maxAttempts < 1 {
-		maxAttempts = 1
-	}
+	maxAttempts := o.maxRetryAttempts()
 
 	delay := o.initialDelay
 	var buffered *bufferedResponse
+	circuitOpens := int64(0)
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		cloned := cloneRequestWithBody(r, body)
@@ -293,10 +544,12 @@ func (o *OpenAIProxy) executeProviderWithRetry(
 
 		start := time.Now()
 		proxy.ServeHTTP(buffered, cloned)
-		o.observeProvider(provider, buffered.statusCode, time.Since(start))
+		if opened := o.observeProvider(provider, buffered.statusCode, time.Since(start)); opened {
+			circuitOpens++
+		}
 
 		if !shouldFallback(buffered.statusCode) || attempt == maxAttempts {
-			return buffered, attempt, true
+			return buffered, attempt, circuitOpens, true
 		}
 
 		slog.Warn(
@@ -310,12 +563,23 @@ func (o *OpenAIProxy) executeProviderWithRetry(
 		)
 
 		if !waitRetryDelay(r.Context(), delay) {
-			return buffered, attempt, true
+			return buffered, attempt, circuitOpens, true
 		}
 		delay = nextRetryDelay(delay, o.maxDelay, o.retryMultiplier)
 	}
 
-	return buffered, maxAttempts, true
+	return buffered, maxAttempts, circuitOpens, true
+}
+
+func (o *OpenAIProxy) maxRetryAttempts() int {
+	maxAttempts := 1
+	if o.retryEnabled {
+		maxAttempts = o.maxRetries + 1
+	}
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	return maxAttempts
 }
 
 func waitRetryDelay(ctx context.Context, delay time.Duration) bool {
@@ -342,7 +606,16 @@ func nextRetryDelay(current, maxDelay time.Duration, multiplier float64) time.Du
 	if next <= 0 {
 		return maxDelay
 	}
-	return next
+	jitterRange := float64(next) * 0.2
+	jitter := (rand.Float64()*2 - 1) * jitterRange
+	candidate := time.Duration(float64(next) + jitter)
+	if candidate <= 0 {
+		return next
+	}
+	if candidate > maxDelay {
+		return maxDelay
+	}
+	return candidate
 }
 
 func (o *OpenAIProxy) resolveProviderOrder(r *http.Request, model string) ([]string, error) {
@@ -689,23 +962,14 @@ func buildModelRules(
 }
 
 func (o *OpenAIProxy) selectLeastLatencyProvider(candidates []string) string {
-	o.statsMu.RLock()
-	defer o.statsMu.RUnlock()
-
-	now := time.Now()
 	bestProvider := ""
 	bestLatency := time.Duration(1<<63 - 1)
 
 	for _, provider := range candidates {
-		stats, ok := o.stats[provider]
-		if !ok {
+		if o.isProviderTemporarilyUnhealthy(provider) {
 			continue
 		}
-		if now.Before(stats.unhealthyUntil) {
-			continue
-		}
-
-		latency := stats.avgLatency
+		latency := o.providerLatency(provider)
 		if latency <= 0 {
 			latency = 500 * time.Millisecond
 		}
@@ -719,18 +983,52 @@ func (o *OpenAIProxy) selectLeastLatencyProvider(candidates []string) string {
 	return bestProvider
 }
 
-func (o *OpenAIProxy) isProviderTemporarilyUnhealthy(provider string) bool {
+func (o *OpenAIProxy) providerLatency(provider string) time.Duration {
 	o.statsMu.RLock()
 	defer o.statsMu.RUnlock()
 
 	stats, ok := o.stats[provider]
 	if !ok {
-		return false
+		return 0
 	}
-	return time.Now().Before(stats.unhealthyUntil)
+	return stats.avgLatency
 }
 
-func (o *OpenAIProxy) observeProvider(provider string, status int, latency time.Duration) {
+func (o *OpenAIProxy) isProviderTemporarilyUnhealthy(provider string) bool {
+	o.statsMu.Lock()
+	defer o.statsMu.Unlock()
+
+	stats, ok := o.stats[provider]
+	if !ok {
+		return false
+	}
+
+	now := time.Now()
+	if !o.circuitEnabled {
+		return now.Before(stats.unhealthyUntil)
+	}
+
+	switch stats.state {
+	case circuitOpen:
+		if now.Before(stats.unhealthyUntil) {
+			return true
+		}
+		stats.state = circuitHalfOpen
+		stats.consecutiveSuccess = 0
+		stats.halfOpenRemaining = o.halfOpenRequests
+		return false
+	case circuitHalfOpen:
+		if stats.halfOpenRemaining <= 0 {
+			_ = o.openProviderCircuitLocked(stats, now, o.openTimeout)
+			return true
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+func (o *OpenAIProxy) observeProvider(provider string, status int, latency time.Duration) bool {
 	o.statsMu.Lock()
 	defer o.statsMu.Unlock()
 
@@ -739,24 +1037,97 @@ func (o *OpenAIProxy) observeProvider(provider string, status int, latency time.
 		stats = &providerRuntime{}
 		o.stats[provider] = stats
 	}
+	now := time.Now()
 
 	stats.totalRequests++
 	if shouldFallback(status) {
 		stats.failedRequests++
 		stats.consecutiveFailure++
-		if stats.consecutiveFailure >= 3 {
-			stats.unhealthyUntil = time.Now().Add(o.markUnhealthyFor)
+		stats.consecutiveSuccess = 0
+
+		if !o.circuitEnabled {
+			if stats.consecutiveFailure >= o.failureThreshold {
+				return o.openProviderCircuitLocked(stats, now, o.markUnhealthyFor)
+			}
+			return false
 		}
-		return
+
+		switch stats.state {
+		case circuitHalfOpen:
+			return o.openProviderCircuitLocked(stats, now, o.openTimeout)
+		case circuitOpen:
+			stats.unhealthyUntil = now.Add(o.openTimeout)
+			return false
+		default:
+			if stats.consecutiveFailure >= o.failureThreshold {
+				return o.openProviderCircuitLocked(stats, now, o.openTimeout)
+			}
+			return false
+		}
 	}
 
 	stats.consecutiveFailure = 0
-	stats.unhealthyUntil = time.Time{}
 	if stats.avgLatency <= 0 {
 		stats.avgLatency = latency
-		return
+	} else {
+		stats.avgLatency = time.Duration(float64(stats.avgLatency)*0.7 + float64(latency)*0.3)
 	}
-	stats.avgLatency = time.Duration(float64(stats.avgLatency)*0.7 + float64(latency)*0.3)
+
+	if !o.circuitEnabled {
+		stats.unhealthyUntil = time.Time{}
+		stats.state = circuitClosed
+		stats.halfOpenRemaining = 0
+		stats.consecutiveSuccess = 0
+		return false
+	}
+
+	switch stats.state {
+	case circuitHalfOpen:
+		if stats.halfOpenRemaining > 0 {
+			stats.halfOpenRemaining--
+		}
+		stats.consecutiveSuccess++
+		if stats.consecutiveSuccess >= o.successThreshold {
+			stats.state = circuitClosed
+			stats.unhealthyUntil = time.Time{}
+			stats.halfOpenRemaining = 0
+			stats.consecutiveSuccess = 0
+			return false
+		}
+		if stats.halfOpenRemaining <= 0 {
+			return o.openProviderCircuitLocked(stats, now, o.openTimeout)
+		}
+	case circuitOpen:
+		if now.After(stats.unhealthyUntil) {
+			stats.state = circuitHalfOpen
+			stats.halfOpenRemaining = o.halfOpenRequests
+			stats.consecutiveSuccess = 0
+		}
+	default:
+		stats.consecutiveSuccess = 0
+	}
+
+	return false
+}
+
+func (o *OpenAIProxy) openProviderCircuitLocked(
+	stats *providerRuntime,
+	now time.Time,
+	timeout time.Duration,
+) bool {
+	if stats == nil {
+		return false
+	}
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+
+	wasOpen := stats.state == circuitOpen && now.Before(stats.unhealthyUntil)
+	stats.state = circuitOpen
+	stats.unhealthyUntil = now.Add(timeout)
+	stats.consecutiveSuccess = 0
+	stats.halfOpenRemaining = 0
+	return !wasOpen
 }
 
 func normalizeProviderList(
@@ -820,6 +1191,7 @@ func supportsOpenAIPath(path string) bool {
 	clean := strings.TrimSuffix(path, "/")
 	switch {
 	case strings.HasSuffix(clean, "/chat/completions"),
+		strings.HasSuffix(clean, "/responses"),
 		strings.HasSuffix(clean, "/completions"),
 		strings.HasSuffix(clean, "/models"),
 		strings.Contains(clean, "/models/"):
@@ -880,6 +1252,161 @@ func cloneRequestWithBody(r *http.Request, body []byte) *http.Request {
 	cloned.ContentLength = 0
 	cloned.GetBody = nil
 	return cloned
+}
+
+func prepareUpstreamRequest(
+	proxy *UpstreamProxy,
+	r *http.Request,
+	body []byte,
+) (*http.Request, context.CancelFunc, error) {
+	if proxy == nil || proxy.baseURL == nil {
+		return nil, func() {}, errors.New("upstream not configured")
+	}
+
+	target := *proxy.baseURL
+	target.Path = joinURLPath(proxy.baseURL.Path, stripPath(r.URL.Path, proxy.stripPrefix))
+	target.RawQuery = r.URL.RawQuery
+
+	ctx := r.Context()
+	cancel := func() {}
+	if proxy.requestTimeout > 0 && !isStreamingRequest(r) {
+		ctx, cancel = context.WithTimeout(ctx, proxy.requestTimeout)
+	}
+
+	outReq := cloneRequestWithBody(r, body).WithContext(ctx)
+	outReq.URL = &target
+	outReq.Host = target.Host
+	outReq.RequestURI = ""
+	sanitizeHopHeaders(outReq.Header)
+	sanitizeInternalHeaders(outReq.Header)
+	applyHeaders(outReq.Header, proxy.headers, proxy.authHeader, proxy.authScheme, proxy.apiKey)
+	return outReq, cancel, nil
+}
+
+func upstreamErrorStatus(ctx context.Context, err error) int {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+		return http.StatusGatewayTimeout
+	}
+	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+		return 499
+	}
+	return http.StatusBadGateway
+}
+
+func copyResponseBodyWithUsage(
+	dst http.ResponseWriter,
+	src io.Reader,
+	ctx context.Context,
+	flush bool,
+) (responseUsage, bool, error) {
+	if !flush {
+		payload, err := io.ReadAll(src)
+		if len(payload) > 0 {
+			if _, writeErr := dst.Write(payload); writeErr != nil {
+				return responseUsage{}, false, writeErr
+			}
+		}
+		if err != nil {
+			return responseUsage{}, false, err
+		}
+		usage, ok := extractUsageFromBody(payload)
+		return usage, ok, nil
+	}
+
+	flusher, ok := dst.(http.Flusher)
+	if !ok {
+		_, err := io.Copy(dst, src)
+		return responseUsage{}, false, err
+	}
+
+	parser := &streamUsageParser{}
+	buffer := make([]byte, 32*1024)
+	for {
+		select {
+		case <-ctx.Done():
+			return parser.usage, parser.found, ctx.Err()
+		default:
+		}
+
+		n, err := src.Read(buffer)
+		if n > 0 {
+			chunk := buffer[:n]
+			if _, writeErr := dst.Write(chunk); writeErr != nil {
+				return parser.usage, parser.found, writeErr
+			}
+			parser.ingest(chunk)
+			flusher.Flush()
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				parser.finalize()
+				return parser.usage, parser.found, nil
+			}
+			return parser.usage, parser.found, err
+		}
+	}
+}
+
+type streamUsageParser struct {
+	pending bytes.Buffer
+	usage   responseUsage
+	found   bool
+}
+
+func (p *streamUsageParser) ingest(chunk []byte) {
+	if len(chunk) == 0 {
+		return
+	}
+	_, _ = p.pending.Write(chunk)
+	for {
+		line, ok := p.nextLine()
+		if !ok {
+			return
+		}
+		p.consumeLine(line)
+	}
+}
+
+func (p *streamUsageParser) finalize() {
+	if p.pending.Len() == 0 {
+		return
+	}
+	line := strings.TrimSpace(p.pending.String())
+	p.pending.Reset()
+	p.consumeLine(line)
+}
+
+func (p *streamUsageParser) nextLine() (string, bool) {
+	data := p.pending.Bytes()
+	index := bytes.IndexByte(data, '\n')
+	if index < 0 {
+		return "", false
+	}
+
+	line := strings.TrimSpace(string(data[:index]))
+	p.pending.Next(index + 1)
+	return line, true
+}
+
+func (p *streamUsageParser) consumeLine(line string) {
+	if line == "" || strings.HasPrefix(line, ":") {
+		return
+	}
+	if !strings.HasPrefix(line, "data:") {
+		return
+	}
+
+	payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	if payload == "" || payload == "[DONE]" {
+		return
+	}
+
+	usage, ok := extractUsageFromBody([]byte(payload))
+	if !ok {
+		return
+	}
+	p.usage = usage
+	p.found = true
 }
 
 func writeGatewayError(w http.ResponseWriter, status int, message string) {
@@ -956,6 +1483,26 @@ func normalizeProviderName(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
 }
 
+func incrementHeaderCounter(r *http.Request, key string, delta int64) {
+	if r == nil || delta <= 0 {
+		return
+	}
+	current := int64(0)
+	if raw := strings.TrimSpace(r.Header.Get(key)); raw != "" {
+		if value, err := strconv.ParseInt(raw, 10, 64); err == nil && value > 0 {
+			current = value
+		}
+	}
+	r.Header.Set(key, strconv.FormatInt(current+delta, 10))
+}
+
+func maxInt(left, right int) int {
+	if left > right {
+		return left
+	}
+	return right
+}
+
 func (o *OpenAIProxy) attachResponseMetadata(r *http.Request, provider string, response *bufferedResponse) {
 	if r == nil || response == nil {
 		return
@@ -966,18 +1513,25 @@ func (o *OpenAIProxy) attachResponseMetadata(r *http.Request, provider string, r
 	}
 
 	if usage, ok := extractUsageFromBody(response.body.Bytes()); ok {
-		if usage.Model != "" {
-			r.Header.Set(requestmeta.HeaderResolvedModel, usage.Model)
-		}
-		if usage.Usage.PromptTokens > 0 {
-			r.Header.Set(requestmeta.HeaderUsagePromptTokens, strconv.FormatInt(usage.Usage.PromptTokens, 10))
-		}
-		if usage.Usage.CompletionTokens > 0 {
-			r.Header.Set(requestmeta.HeaderUsageCompletionTokens, strconv.FormatInt(usage.Usage.CompletionTokens, 10))
-		}
-		if usage.Usage.TotalTokens > 0 {
-			r.Header.Set(requestmeta.HeaderUsageTotalTokens, strconv.FormatInt(usage.Usage.TotalTokens, 10))
-		}
+		attachUsageHeaders(r, usage)
+	}
+}
+
+func attachUsageHeaders(r *http.Request, usage responseUsage) {
+	if r == nil {
+		return
+	}
+	if usage.Model != "" {
+		r.Header.Set(requestmeta.HeaderResolvedModel, usage.Model)
+	}
+	if usage.Usage.PromptTokens > 0 {
+		r.Header.Set(requestmeta.HeaderUsagePromptTokens, strconv.FormatInt(usage.Usage.PromptTokens, 10))
+	}
+	if usage.Usage.CompletionTokens > 0 {
+		r.Header.Set(requestmeta.HeaderUsageCompletionTokens, strconv.FormatInt(usage.Usage.CompletionTokens, 10))
+	}
+	if usage.Usage.TotalTokens > 0 {
+		r.Header.Set(requestmeta.HeaderUsageTotalTokens, strconv.FormatInt(usage.Usage.TotalTokens, 10))
 	}
 }
 
@@ -1008,4 +1562,12 @@ func extractUsageFromBody(body []byte) (responseUsage, bool) {
 		payload.Usage.TotalTokens = payload.Usage.PromptTokens + payload.Usage.CompletionTokens
 	}
 	return payload, true
+}
+
+func drainAndClose(body io.ReadCloser) {
+	if body == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(body, 64*1024))
+	_ = body.Close()
 }

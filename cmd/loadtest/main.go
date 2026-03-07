@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -33,7 +34,6 @@ const (
 
 var (
 	defaultPayload = []byte(`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`)
-	responseBody   = []byte(`{"id":"chatcmpl-load","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"}}]}`)
 )
 
 type options struct {
@@ -248,14 +248,64 @@ func parseConcurrencyList(raw string) ([]int, error) {
 
 func startMockUpstream(delay time.Duration) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
+		var req struct {
+			Model    string `json:"model"`
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+			Stream bool `json:"stream"`
+		}
+
+		body, _ := io.ReadAll(r.Body)
 		_ = r.Body.Close()
+		_ = json.Unmarshal(body, &req)
+
 		if delay > 0 {
 			time.Sleep(delay)
 		}
+
+		// 计算 token 数（简单模拟）
+		promptTokens := 0
+		for _, msg := range req.Messages {
+			// 粗略估算：每 4 个字符 ≈ 1 token
+			promptTokens += len(msg.Content) / 4
+		}
+		if promptTokens == 0 {
+			promptTokens = 10 // 默认值
+		}
+		completionTokens := 5
+
+		// 如果没有指定 model，使用默认值
+		if req.Model == "" {
+			req.Model = "gpt-4o-mini"
+		}
+
+		response := map[string]interface{}{
+			"id":      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
+			"object":  "chat.completion",
+			"created": time.Now().Unix(),
+			"model":   req.Model,
+			"choices": []map[string]interface{}{
+				{
+					"index": 0,
+					"message": map[string]string{
+						"role":    "assistant",
+						"content": "ok",
+					},
+					"finish_reason": "stop",
+				},
+			},
+			"usage": map[string]int{
+				"prompt_tokens":     promptTokens,
+				"completion_tokens": completionTokens,
+				"total_tokens":      promptTokens + completionTokens,
+			},
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(responseBody)
+		_ = json.NewEncoder(w).Encode(response)
 	}))
 }
 
