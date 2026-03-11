@@ -18,7 +18,6 @@ type Config struct {
 	Cache     CacheConfig               `json:"cache"`
 	Gateway   GatewayConfig             `json:"gateway"`
 	Providers map[string]ProviderConfig `json:"providers"`
-	Policy    PolicyConfig              `json:"policy"`
 }
 
 type ServerConfig struct {
@@ -57,6 +56,7 @@ type RateLimitConfig struct {
 	RedisPassword     string                `json:"redis_password"`
 	RedisDB           int                   `json:"redis_db"`
 	RedisPrefix       string                `json:"redis_prefix"`
+	RedisStrict       bool                  `json:"redis_strict"`
 	TenantHeader      string                `json:"tenant_header"`
 	DefaultCompletion int                   `json:"default_completion_tokens"`
 	Rules             []RateLimitRuleConfig `json:"rules"`
@@ -74,6 +74,7 @@ type QuotaConfig struct {
 	RedisPassword     string            `json:"redis_password"`
 	RedisDB           int               `json:"redis_db"`
 	RedisPrefix       string            `json:"redis_prefix"`
+	RedisStrict       bool              `json:"redis_strict"`
 	TenantHeader      string            `json:"tenant_header"`
 	DefaultCompletion int               `json:"default_completion_tokens"`
 	TokensPerDay      int64             `json:"tokens_per_day"`
@@ -104,9 +105,14 @@ type QuotaRuleConfig struct {
 }
 
 type MetricsConfig struct {
-	Enabled   bool   `json:"enabled"`
-	Path      string `json:"path"`
-	Namespace string `json:"namespace"`
+	Enabled             bool   `json:"enabled"`
+	Path                string `json:"path"`
+	Namespace           string `json:"namespace"`
+	MaxVirtualKeyLabels int    `json:"max_virtual_key_labels"`
+	MaxModelLabels      int    `json:"max_model_labels"`
+	MaxProviderLabels   int    `json:"max_provider_labels"`
+	MaskVirtualKey      bool   `json:"mask_virtual_key"`
+	LabelValueMaxLen    int    `json:"label_value_max_len"`
 }
 
 type GatewayConfig struct {
@@ -120,6 +126,7 @@ type GatewayConfig struct {
 }
 
 type ProviderConfig struct {
+	Type       string            `json:"type"`
 	BaseURL    string            `json:"base_url"`
 	WSBaseURL  string            `json:"ws_base_url"`
 	APIKey     string            `json:"api_key"`
@@ -201,11 +208,6 @@ type CacheConfig struct {
 	RedisDB       int      `json:"redis_db"`
 }
 
-type PolicyConfig struct {
-	Enabled bool   `json:"enabled"`
-	Mode    string `json:"mode"`
-}
-
 type Duration struct {
 	time.Duration
 }
@@ -264,6 +266,7 @@ func DefaultConfig() Config {
 			SkipPaths:         []string{"/healthz", "/metrics"},
 			Backend:           "memory",
 			RedisPrefix:       "gateyes",
+			RedisStrict:       true,
 			TenantHeader:      "X-Tenant-ID",
 			DefaultCompletion: 256,
 		},
@@ -275,13 +278,27 @@ func DefaultConfig() Config {
 			SkipPaths:         []string{"/healthz", "/metrics"},
 			Backend:           "memory",
 			RedisPrefix:       "gateyes",
+			RedisStrict:       true,
 			TenantHeader:      "X-Tenant-ID",
 			DefaultCompletion: 256,
 		},
 		Metrics: MetricsConfig{
-			Enabled:   true,
-			Path:      "/metrics",
-			Namespace: "gateyes",
+			Enabled:             true,
+			Path:                "/metrics",
+			Namespace:           "gateyes",
+			MaxVirtualKeyLabels: 200,
+			MaxModelLabels:      200,
+			MaxProviderLabels:   64,
+			MaskVirtualKey:      true,
+			LabelValueMaxLen:    64,
+		},
+		Cache: CacheConfig{
+			Enabled:     false,
+			Backend:     "memory",
+			TTL:         Duration{Duration: 5 * time.Minute},
+			MaxSize:     100 * 1024 * 1024,
+			MaxEntries:  5000,
+			KeyStrategy: "full",
 		},
 		Gateway: GatewayConfig{
 			OpenAIPathPrefix:  "/v1",
@@ -289,10 +306,6 @@ func DefaultConfig() Config {
 			ProviderQuery:     "provider",
 			DefaultProvider:   "",
 			AgentToProdPrefix: "/prod",
-		},
-		Policy: PolicyConfig{
-			Enabled: false,
-			Mode:    "audit",
 		},
 		Providers: map[string]ProviderConfig{},
 	}
@@ -313,6 +326,18 @@ func Load(path string) (Config, error) {
 func (c Config) Validate() error {
 	if c.Server.ListenAddr == "" {
 		return errors.New("server.listen_addr is required")
+	}
+	if c.Metrics.MaxVirtualKeyLabels < 0 {
+		return errors.New("metrics.max_virtual_key_labels must be >= 0")
+	}
+	if c.Metrics.MaxModelLabels < 0 {
+		return errors.New("metrics.max_model_labels must be >= 0")
+	}
+	if c.Metrics.MaxProviderLabels < 0 {
+		return errors.New("metrics.max_provider_labels must be >= 0")
+	}
+	if c.Metrics.LabelValueMaxLen < 0 {
+		return errors.New("metrics.label_value_max_len must be >= 0")
 	}
 	if c.RateLimit.Enabled {
 		backend := strings.ToLower(strings.TrimSpace(c.RateLimit.Backend))

@@ -1,4 +1,4 @@
-package middleware
+package budget
 
 import (
 	"context"
@@ -9,146 +9,19 @@ import (
 	"sync"
 	"time"
 
+	"gateyes/internal/dto"
+
 	"github.com/redis/go-redis/v9"
 )
 
-type budgetCounter struct {
-	Key   string
-	Limit int64
-	Cost  int64
-	TTL   time.Duration
-}
-
-type budgetAdjustment struct {
-	Key   string
-	Delta int64
-	TTL   time.Duration
-}
-
-type budgetConsumeResult struct {
-	Allowed    bool
-	RetryAfter time.Duration
-	FailedKey  string
-}
-
-type BudgetService interface {
-	Consume(ctx context.Context, counters []budgetCounter) (budgetConsumeResult, error)
-	Adjust(ctx context.Context, adjustments []budgetAdjustment) error
-}
-
-type memoryBudgetEntry struct {
-	value   int64
-	resetAt time.Time
-}
-
-type MemoryBudgetService struct {
-	mu     sync.Mutex
-	values map[string]*memoryBudgetEntry
-	now    func() time.Time
-}
-
-func NewMemoryBudgetService() *MemoryBudgetService {
-	return &MemoryBudgetService{
-		values: make(map[string]*memoryBudgetEntry),
-		now:    time.Now,
-	}
-}
-
-func (s *MemoryBudgetService) Consume(_ context.Context, counters []budgetCounter) (budgetConsumeResult, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	now := s.now()
-	s.cleanup(now)
-
-	maxRetry := time.Duration(0)
-	failedKey := ""
-
-	for _, counter := range counters {
-		if counter.Key == "" || counter.Limit <= 0 || counter.Cost <= 0 {
-			continue
-		}
-		ttl := normalizeTTL(counter.TTL)
-		entry := s.ensureEntry(counter.Key, ttl, now)
-		if entry.value+counter.Cost > counter.Limit {
-			retry := entry.resetAt.Sub(now)
-			if retry < 0 {
-				retry = 0
-			}
-			if retry > maxRetry {
-				maxRetry = retry
-			}
-			failedKey = counter.Key
-		}
-	}
-
-	if failedKey != "" {
-		return budgetConsumeResult{
-			Allowed:    false,
-			RetryAfter: maxRetry,
-			FailedKey:  failedKey,
-		}, nil
-	}
-
-	for _, counter := range counters {
-		if counter.Key == "" || counter.Limit <= 0 || counter.Cost <= 0 {
-			continue
-		}
-		ttl := normalizeTTL(counter.TTL)
-		entry := s.ensureEntry(counter.Key, ttl, now)
-		entry.value += counter.Cost
-	}
-
-	return budgetConsumeResult{Allowed: true}, nil
-}
-
-func (s *MemoryBudgetService) Adjust(_ context.Context, adjustments []budgetAdjustment) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	now := s.now()
-	s.cleanup(now)
-
-	for _, adjustment := range adjustments {
-		if adjustment.Key == "" || adjustment.Delta == 0 {
-			continue
-		}
-		ttl := normalizeTTL(adjustment.TTL)
-		entry := s.ensureEntry(adjustment.Key, ttl, now)
-		entry.value += adjustment.Delta
-		if entry.value < 0 {
-			entry.value = 0
-		}
-	}
-
-	return nil
-}
-
-func (s *MemoryBudgetService) ensureEntry(key string, ttl time.Duration, now time.Time) *memoryBudgetEntry {
-	entry, ok := s.values[key]
-	if !ok || now.After(entry.resetAt) {
-		entry = &memoryBudgetEntry{value: 0, resetAt: now.Add(ttl)}
-		s.values[key] = entry
-	}
-	return entry
-}
-
-func (s *MemoryBudgetService) cleanup(now time.Time) {
-	for key, entry := range s.values {
-		if now.After(entry.resetAt) {
-			delete(s.values, key)
-		}
-	}
-}
-
-type RedisBudgetService struct {
+type RedisBackend struct {
 	client *redis.Client
 	prefix string
 }
 
 var sharedRedisClients sync.Map
 
-func NewRedisBudgetService(addr, password string, db int, prefix string) (*RedisBudgetService, error) {
+func NewRedisBackend(addr, password string, db int, prefix string) (*RedisBackend, error) {
 	if strings.TrimSpace(addr) == "" {
 		return nil, errors.New("redis address is required")
 	}
@@ -158,7 +31,7 @@ func NewRedisBudgetService(addr, password string, db int, prefix string) (*Redis
 		return nil, err
 	}
 
-	return &RedisBudgetService{
+	return &RedisBackend{
 		client: client,
 		prefix: strings.TrimSpace(prefix),
 	}, nil
@@ -199,7 +72,7 @@ func getSharedRedisClient(addr, password string, db int) (*redis.Client, error) 
 	return client, nil
 }
 
-func (s *RedisBudgetService) Consume(ctx context.Context, counters []budgetCounter) (budgetConsumeResult, error) {
+func (s *RedisBackend) Consume(ctx context.Context, counters []dto.BudgetCounter) (dto.BudgetConsumeResult, error) {
 	keys := make([]string, 0, len(counters))
 	args := make([]interface{}, 0, len(counters)*3)
 
@@ -209,38 +82,34 @@ func (s *RedisBudgetService) Consume(ctx context.Context, counters []budgetCount
 		}
 
 		keys = append(keys, s.fullKey(counter.Key))
-		args = append(args,
-			counter.Cost,
-			counter.Limit,
-			int64(normalizeTTL(counter.TTL).Seconds()),
-		)
+		args = append(args, counter.Cost, counter.Limit, int64(normalizeTTL(counter.TTL).Seconds()))
 	}
 
 	if len(keys) == 0 {
-		return budgetConsumeResult{Allowed: true}, nil
+		return dto.BudgetConsumeResult{Allowed: true}, nil
 	}
 
 	result, err := redisConsumeScript.Run(ctx, s.client, keys, args...).Result()
 	if err != nil {
-		return budgetConsumeResult{}, err
+		return dto.BudgetConsumeResult{}, err
 	}
 
 	raw, ok := result.([]interface{})
 	if !ok || len(raw) < 2 {
-		return budgetConsumeResult{}, errors.New("unexpected redis consume response")
+		return dto.BudgetConsumeResult{}, errors.New("unexpected redis consume response")
 	}
 
 	allowed, err := toInt64(raw[0])
 	if err != nil {
-		return budgetConsumeResult{}, err
+		return dto.BudgetConsumeResult{}, err
 	}
 	if allowed == 1 {
-		return budgetConsumeResult{Allowed: true}, nil
+		return dto.BudgetConsumeResult{Allowed: true}, nil
 	}
 
 	retrySeconds, err := toInt64(raw[1])
 	if err != nil {
-		return budgetConsumeResult{}, err
+		return dto.BudgetConsumeResult{}, err
 	}
 
 	failedKey := ""
@@ -250,14 +119,14 @@ func (s *RedisBudgetService) Consume(ctx context.Context, counters []budgetCount
 		}
 	}
 
-	return budgetConsumeResult{
+	return dto.BudgetConsumeResult{
 		Allowed:    false,
 		RetryAfter: time.Duration(retrySeconds) * time.Second,
 		FailedKey:  failedKey,
 	}, nil
 }
 
-func (s *RedisBudgetService) Adjust(ctx context.Context, adjustments []budgetAdjustment) error {
+func (s *RedisBackend) Adjust(ctx context.Context, adjustments []dto.BudgetAdjustment) error {
 	keys := make([]string, 0, len(adjustments))
 	args := make([]interface{}, 0, len(adjustments)*2)
 
@@ -266,10 +135,7 @@ func (s *RedisBudgetService) Adjust(ctx context.Context, adjustments []budgetAdj
 			continue
 		}
 		keys = append(keys, s.fullKey(adjustment.Key))
-		args = append(args,
-			adjustment.Delta,
-			int64(normalizeTTL(adjustment.TTL).Seconds()),
-		)
+		args = append(args, adjustment.Delta, int64(normalizeTTL(adjustment.TTL).Seconds()))
 	}
 
 	if len(keys) == 0 {
@@ -279,18 +145,11 @@ func (s *RedisBudgetService) Adjust(ctx context.Context, adjustments []budgetAdj
 	return redisAdjustScript.Run(ctx, s.client, keys, args...).Err()
 }
 
-func (s *RedisBudgetService) fullKey(key string) string {
+func (s *RedisBackend) fullKey(key string) string {
 	if s.prefix == "" {
 		return key
 	}
 	return s.prefix + ":" + key
-}
-
-func normalizeTTL(ttl time.Duration) time.Duration {
-	if ttl <= 0 {
-		return time.Minute
-	}
-	return ttl
 }
 
 func toInt64(v interface{}) (int64, error) {

@@ -20,11 +20,8 @@ import (
 	"sync"
 	"time"
 
+	"gateyes/internal/bootstrap"
 	"gateyes/internal/config"
-	"gateyes/internal/middleware"
-	"gateyes/internal/router"
-
-	"github.com/gin-gonic/gin"
 )
 
 const (
@@ -79,7 +76,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	gin.SetMode(gin.ReleaseMode)
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	upstream := startMockUpstream(opts.upstreamLatency)
@@ -315,7 +311,6 @@ func startGateway(upstreamURL string, opts options) (string, func(context.Contex
 	cfg.Cache.Enabled = false
 	cfg.RateLimit.Enabled = false
 	cfg.Quota.Enabled = false
-	cfg.Policy.Enabled = false
 	cfg.Auth.Enabled = opts.enableAuth
 	cfg.Auth.Keys = nil
 	cfg.Auth.VirtualKeys = nil
@@ -365,8 +360,7 @@ func startGateway(upstreamURL string, opts options) (string, func(context.Contex
 		},
 	}
 
-	metrics := middleware.NewMetrics("gateyes_loadtest")
-	engine, err := router.New(&cfg, metrics)
+	engine, err := bootstrap.NewEngine(&cfg, nil)
 	if err != nil {
 		return "", nil, err
 	}

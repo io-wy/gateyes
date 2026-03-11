@@ -1,44 +1,32 @@
-package middleware
+package usage
 
 import (
 	"bytes"
 	"encoding/json"
 	"io"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
 
-	"gateyes/internal/config"
 	"gateyes/internal/requestmeta"
 )
 
-type tokenUsage struct {
+type TokenUsage struct {
 	Model            string
 	PromptTokens     int64
 	CompletionTokens int64
 	TotalTokens      int64
 }
 
-type quotaSubject struct {
-	User       string
-	VirtualKey string
-	Tenant     string
-	Model      string
-	Provider   string
-	IP         string
-	Path       string
-}
-
-func estimateTokenUsage(req *http.Request, defaultCompletion int) tokenUsage {
+func EstimateRequest(req *http.Request, defaultCompletion int) TokenUsage {
 	body, err := readAndRestoreRequestBody(req)
 	if err != nil || len(body) == 0 {
-		return tokenUsage{}
+		return TokenUsage{}
 	}
 
 	payload := map[string]interface{}{}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return tokenUsage{}
+		return TokenUsage{}
 	}
 
 	model := strings.TrimSpace(toString(payload["model"]))
@@ -49,7 +37,7 @@ func estimateTokenUsage(req *http.Request, defaultCompletion int) tokenUsage {
 		totalTokens = 0
 	}
 
-	return tokenUsage{
+	return TokenUsage{
 		Model:            model,
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
@@ -57,7 +45,7 @@ func estimateTokenUsage(req *http.Request, defaultCompletion int) tokenUsage {
 	}
 }
 
-func usageFromRequestMeta(req *http.Request) tokenUsage {
+func FromHeaders(req *http.Request) TokenUsage {
 	prompt := parseInt64Header(req.Header.Get(requestmeta.HeaderUsagePromptTokens))
 	completion := parseInt64Header(req.Header.Get(requestmeta.HeaderUsageCompletionTokens))
 	total := parseInt64Header(req.Header.Get(requestmeta.HeaderUsageTotalTokens))
@@ -65,7 +53,7 @@ func usageFromRequestMeta(req *http.Request) tokenUsage {
 		total = prompt + completion
 	}
 
-	return tokenUsage{
+	return TokenUsage{
 		Model:            strings.TrimSpace(req.Header.Get(requestmeta.HeaderResolvedModel)),
 		PromptTokens:     prompt,
 		CompletionTokens: completion,
@@ -73,126 +61,77 @@ func usageFromRequestMeta(req *http.Request) tokenUsage {
 	}
 }
 
-func clearInternalUsageHeaders(req *http.Request) {
+func ClearInternalHeaders(req *http.Request) {
 	req.Header.Del(requestmeta.HeaderResolvedProvider)
 	req.Header.Del(requestmeta.HeaderResolvedModel)
 	req.Header.Del(requestmeta.HeaderUsagePromptTokens)
 	req.Header.Del(requestmeta.HeaderUsageCompletionTokens)
 	req.Header.Del(requestmeta.HeaderUsageTotalTokens)
+	req.Header.Del(requestmeta.HeaderUsageEstimatedTokens)
+	req.Header.Del(requestmeta.HeaderRetryCount)
+	req.Header.Del(requestmeta.HeaderFallbackCount)
+	req.Header.Del(requestmeta.HeaderCircuitOpenCount)
+	req.Header.Del(requestmeta.HeaderCacheStatus)
 }
 
-func resolveQuotaSubject(
-	req *http.Request,
-	authCfg config.AuthConfig,
-	tenantHeader string,
-	fallbackModel string,
-) quotaSubject {
-	token := strings.TrimSpace(extractToken(req, authCfg.Header, authCfg.QueryParam))
-	virtualKey := ""
-	if token != "" {
-		if virtualCfg, ok := authCfg.VirtualKeys[token]; ok && virtualCfg.Enabled {
-			virtualKey = token
-		}
+func SetEstimatedHeader(req *http.Request, estimate TokenUsage) {
+	if req == nil || estimate.TotalTokens <= 0 {
+		return
 	}
+	req.Header.Set(requestmeta.HeaderUsageEstimatedTokens, strconv.FormatInt(estimate.TotalTokens, 10))
+}
 
-	tenantValue := strings.TrimSpace(req.Header.Get(tenantHeader))
-	if tenantValue == "" {
-		tenantValue = strings.TrimSpace(req.Header.Get("X-Tenant-ID"))
+func AttachToHeaders(req *http.Request, usage TokenUsage) {
+	if req == nil {
+		return
 	}
-
-	model := strings.TrimSpace(fallbackModel)
-	if model == "" {
-		model = strings.TrimSpace(req.Header.Get(requestmeta.HeaderResolvedModel))
+	if usage.Model != "" {
+		req.Header.Set(requestmeta.HeaderResolvedModel, usage.Model)
 	}
-
-	provider := strings.TrimSpace(req.Header.Get(requestmeta.HeaderResolvedProvider))
-	if provider == "" {
-		provider = strings.TrimSpace(req.Header.Get("X-Gateyes-Provider"))
+	if usage.PromptTokens > 0 {
+		req.Header.Set(requestmeta.HeaderUsagePromptTokens, strconv.FormatInt(usage.PromptTokens, 10))
 	}
-	if provider == "" {
-		provider = strings.TrimSpace(req.URL.Query().Get("provider"))
+	if usage.CompletionTokens > 0 {
+		req.Header.Set(requestmeta.HeaderUsageCompletionTokens, strconv.FormatInt(usage.CompletionTokens, 10))
 	}
-
-	return quotaSubject{
-		User:       token,
-		VirtualKey: virtualKey,
-		Tenant:     tenantValue,
-		Model:      model,
-		Provider:   provider,
-		IP:         normalizeRemoteAddr(req.RemoteAddr),
-		Path:       req.URL.Path,
+	if usage.TotalTokens > 0 {
+		req.Header.Set(requestmeta.HeaderUsageTotalTokens, strconv.FormatInt(usage.TotalTokens, 10))
 	}
 }
 
-func normalizeDimensionList(dimensions []string) []string {
-	if len(dimensions) == 0 {
-		return []string{"user"}
+func ExtractResponse(body []byte) (TokenUsage, bool) {
+	if len(body) == 0 || len(body) > 2*1024*1024 {
+		return TokenUsage{}, false
 	}
 
-	seen := map[string]struct{}{}
-	out := make([]string, 0, len(dimensions))
-	for _, dim := range dimensions {
-		value := strings.ToLower(strings.TrimSpace(dim))
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
+	var payload struct {
+		Model string `json:"model"`
+		Usage struct {
+			PromptTokens     int64 `json:"prompt_tokens"`
+			CompletionTokens int64 `json:"completion_tokens"`
+			TotalTokens      int64 `json:"total_tokens"`
+		} `json:"usage"`
 	}
-	if len(out) == 0 {
-		return []string{"user"}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return TokenUsage{}, false
 	}
-	return out
-}
+	if payload.Usage.TotalTokens <= 0 &&
+		payload.Usage.PromptTokens <= 0 &&
+		payload.Usage.CompletionTokens <= 0 {
+		return TokenUsage{}, false
+	}
 
-func buildDimensionKey(dimensions []string, subject quotaSubject) string {
-	parts := make([]string, 0, len(dimensions))
-	for _, dim := range normalizeDimensionList(dimensions) {
-		parts = append(parts, dim+"="+sanitizeDimensionValue(dimensionValue(dim, subject)))
+	totalTokens := payload.Usage.TotalTokens
+	if totalTokens <= 0 {
+		totalTokens = payload.Usage.PromptTokens + payload.Usage.CompletionTokens
 	}
-	return strings.Join(parts, "|")
-}
 
-func dimensionValue(dim string, subject quotaSubject) string {
-	switch dim {
-	case "user":
-		return subject.User
-	case "virtual_key":
-		return subject.VirtualKey
-	case "tenant":
-		return subject.Tenant
-	case "model":
-		return subject.Model
-	case "provider":
-		return subject.Provider
-	case "ip":
-		return subject.IP
-	case "path":
-		return subject.Path
-	default:
-		return ""
-	}
-}
-
-func sanitizeDimensionValue(value string) string {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return "unknown"
-	}
-	trimmed = strings.ReplaceAll(trimmed, "|", "_")
-	trimmed = strings.ReplaceAll(trimmed, "=", "_")
-	return trimmed
-}
-
-func normalizeRemoteAddr(addr string) string {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return addr
-	}
-	return host
+	return TokenUsage{
+		Model:            payload.Model,
+		PromptTokens:     payload.Usage.PromptTokens,
+		CompletionTokens: payload.Usage.CompletionTokens,
+		TotalTokens:      totalTokens,
+	}, true
 }
 
 func estimatePromptTokens(payload map[string]interface{}) int64 {

@@ -1,4 +1,4 @@
-package gateway
+package proxy
 
 import (
 	"bytes"
@@ -19,11 +19,14 @@ import (
 	"time"
 
 	"gateyes/internal/config"
+	"gateyes/internal/provider"
+	providerfactory "gateyes/internal/provider/factory"
 	"gateyes/internal/requestmeta"
+	usagex "gateyes/internal/service/usage"
 )
 
 type OpenAIProxy struct {
-	providers      map[string]*UpstreamProxy
+	providers      *provider.Registry
 	providerNames  []string
 	providerHeader string
 	providerQuery  string
@@ -95,25 +98,25 @@ type routingProfile struct {
 	modelRules      []modelRouteRule
 }
 
+type responseUsage = usagex.TokenUsage
+
 func NewOpenAIProxy(
 	cfg config.GatewayConfig,
 	authCfg config.AuthConfig,
 	providers map[string]config.ProviderConfig,
 ) (*OpenAIProxy, error) {
-	registry := make(map[string]*UpstreamProxy)
-	providerNames := make([]string, 0, len(providers))
+	registry, err := providerfactory.NewModelRegistry(providers)
+	if err != nil {
+		return nil, err
+	}
+
+	providerNames := registry.Names()
 	providerProfiles := make(map[string]providerProfile, len(providers))
 	for name, provider := range providers {
 		normalized := normalizeProviderName(name)
 		if normalized == "" {
 			continue
 		}
-		proxy, err := NewUpstreamProxy(provider.BaseURL, provider.WSBaseURL, provider.Headers, provider.AuthHeader, provider.AuthScheme, provider.APIKey, "")
-		if err != nil {
-			return nil, fmt.Errorf("provider %q: %w", name, err)
-		}
-		registry[normalized] = proxy
-		providerNames = append(providerNames, normalized)
 		weight := provider.Weight
 		if weight <= 0 {
 			weight = 1
@@ -126,7 +129,7 @@ func NewOpenAIProxy(
 	}
 	sort.Strings(providerNames)
 
-	if len(registry) == 0 {
+	if len(providerNames) == 0 {
 		slog.Warn("no providers configured")
 	}
 
@@ -135,7 +138,7 @@ func NewOpenAIProxy(
 		defaultProvider = providerNames[0]
 	}
 	if defaultProvider != "" {
-		if _, ok := registry[defaultProvider]; !ok && len(providerNames) > 0 {
+		if !registry.Has(defaultProvider) && len(providerNames) > 0 {
 			defaultProvider = providerNames[0]
 		}
 	}
@@ -337,7 +340,7 @@ func (o *OpenAIProxy) executeStreamingProvider(
 	allowFallback bool,
 ) streamProviderResult {
 	result := streamProviderResult{}
-	proxy, ok := o.providers[provider]
+	proxy, ok := o.providers.Get(provider)
 	if !ok {
 		if allowFallback {
 			result.shouldFallback = true
@@ -358,24 +361,8 @@ func (o *OpenAIProxy) executeStreamingProvider(
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		result.attempts = attempt
 
-		outReq, cancel, err := prepareUpstreamRequest(proxy, r, body)
-		if err != nil {
-			cancel()
-			result.statusCode = http.StatusBadGateway
-			if opened := o.observeProvider(provider, result.statusCode, 0); opened {
-				result.circuitOpens++
-			}
-			if allowFallback {
-				result.shouldFallback = true
-				return result
-			}
-			writeGatewayError(w, http.StatusBadGateway, "upstream unavailable")
-			result.handled = true
-			return result
-		}
-
 		start := time.Now()
-		resp, upstreamErr := proxy.client.Do(outReq)
+		resp, cancel, upstreamErr := proxy.ForwardRequest(r, body)
 		if upstreamErr != nil {
 			cancel()
 			result.statusCode = upstreamErrorStatus(r.Context(), upstreamErr)
@@ -410,12 +397,11 @@ func (o *OpenAIProxy) executeStreamingProvider(
 				continue
 			}
 
-			if allowFallback && shouldFallback(result.statusCode) {
+			if allowFallback {
 				result.shouldFallback = true
 				return result
 			}
-
-			writeGatewayError(w, result.statusCode, "upstream request failed")
+			writeGatewayError(w, result.statusCode, "upstream unavailable")
 			result.handled = true
 			return result
 		}
@@ -527,7 +513,7 @@ func (o *OpenAIProxy) executeProviderWithRetry(
 	r *http.Request,
 	body []byte,
 ) (*bufferedResponse, int, int64, bool) {
-	proxy, ok := o.providers[provider]
+	proxy, ok := o.providers.Get(provider)
 	if !ok {
 		return nil, 0, 0, false
 	}
@@ -626,7 +612,7 @@ func (o *OpenAIProxy) resolveProviderOrder(r *http.Request, model string) ([]str
 
 	explicit := o.resolveProviderFromRequest(r)
 	if explicit != "" {
-		if _, ok := o.providers[explicit]; !ok {
+		if !o.providers.Has(explicit) {
 			return nil, fmt.Errorf("unknown provider %q", explicit)
 		}
 		if !containsProvider(profile.providers, explicit) {
@@ -901,7 +887,7 @@ func (r modelRouteRule) Match(model string) bool {
 
 func buildModelRules(
 	customRules []config.CustomRule,
-	providers map[string]*UpstreamProxy,
+	providers *provider.Registry,
 ) []modelRouteRule {
 	rules := make([]modelRouteRule, 0)
 	for _, rule := range customRules {
@@ -912,7 +898,7 @@ func buildModelRules(
 		if provider == "" {
 			continue
 		}
-		if _, ok := providers[provider]; !ok {
+		if !providers.Has(provider) {
 			continue
 		}
 
@@ -1028,6 +1014,10 @@ func (o *OpenAIProxy) isProviderTemporarilyUnhealthy(provider string) bool {
 	}
 }
 
+func (o *OpenAIProxy) IsProviderTemporarilyUnhealthy(provider string) bool {
+	return o.isProviderTemporarilyUnhealthy(provider)
+}
+
 func (o *OpenAIProxy) observeProvider(provider string, status int, latency time.Duration) bool {
 	o.statsMu.Lock()
 	defer o.statsMu.Unlock()
@@ -1132,7 +1122,7 @@ func (o *OpenAIProxy) openProviderCircuitLocked(
 
 func normalizeProviderList(
 	candidates []string,
-	providers map[string]*UpstreamProxy,
+	providers *provider.Registry,
 ) []string {
 	seen := make(map[string]struct{}, len(candidates))
 	normalized := make([]string, 0, len(candidates))
@@ -1141,7 +1131,7 @@ func normalizeProviderList(
 		if name == "" {
 			continue
 		}
-		if _, ok := providers[name]; !ok {
+		if !providers.Has(name) {
 			continue
 		}
 		if _, ok := seen[name]; ok {
@@ -1155,7 +1145,7 @@ func normalizeProviderList(
 
 func normalizeVirtualKeys(
 	virtualKeys map[string]config.VirtualKeyConfig,
-	providers map[string]*UpstreamProxy,
+	providers *provider.Registry,
 ) map[string]config.VirtualKeyConfig {
 	normalized := make(map[string]config.VirtualKeyConfig)
 	for key, virtualConfig := range virtualKeys {
@@ -1252,35 +1242,6 @@ func cloneRequestWithBody(r *http.Request, body []byte) *http.Request {
 	cloned.ContentLength = 0
 	cloned.GetBody = nil
 	return cloned
-}
-
-func prepareUpstreamRequest(
-	proxy *UpstreamProxy,
-	r *http.Request,
-	body []byte,
-) (*http.Request, context.CancelFunc, error) {
-	if proxy == nil || proxy.baseURL == nil {
-		return nil, func() {}, errors.New("upstream not configured")
-	}
-
-	target := *proxy.baseURL
-	target.Path = joinURLPath(proxy.baseURL.Path, stripPath(r.URL.Path, proxy.stripPrefix))
-	target.RawQuery = r.URL.RawQuery
-
-	ctx := r.Context()
-	cancel := func() {}
-	if proxy.requestTimeout > 0 && !isStreamingRequest(r) {
-		ctx, cancel = context.WithTimeout(ctx, proxy.requestTimeout)
-	}
-
-	outReq := cloneRequestWithBody(r, body).WithContext(ctx)
-	outReq.URL = &target
-	outReq.Host = target.Host
-	outReq.RequestURI = ""
-	sanitizeHopHeaders(outReq.Header)
-	sanitizeInternalHeaders(outReq.Header)
-	applyHeaders(outReq.Header, proxy.headers, proxy.authHeader, proxy.authScheme, proxy.apiKey)
-	return outReq, cancel, nil
 }
 
 func upstreamErrorStatus(ctx context.Context, err error) int {
@@ -1518,50 +1479,11 @@ func (o *OpenAIProxy) attachResponseMetadata(r *http.Request, provider string, r
 }
 
 func attachUsageHeaders(r *http.Request, usage responseUsage) {
-	if r == nil {
-		return
-	}
-	if usage.Model != "" {
-		r.Header.Set(requestmeta.HeaderResolvedModel, usage.Model)
-	}
-	if usage.Usage.PromptTokens > 0 {
-		r.Header.Set(requestmeta.HeaderUsagePromptTokens, strconv.FormatInt(usage.Usage.PromptTokens, 10))
-	}
-	if usage.Usage.CompletionTokens > 0 {
-		r.Header.Set(requestmeta.HeaderUsageCompletionTokens, strconv.FormatInt(usage.Usage.CompletionTokens, 10))
-	}
-	if usage.Usage.TotalTokens > 0 {
-		r.Header.Set(requestmeta.HeaderUsageTotalTokens, strconv.FormatInt(usage.Usage.TotalTokens, 10))
-	}
-}
-
-type responseUsage struct {
-	Model string `json:"model"`
-	Usage struct {
-		PromptTokens     int64 `json:"prompt_tokens"`
-		CompletionTokens int64 `json:"completion_tokens"`
-		TotalTokens      int64 `json:"total_tokens"`
-	} `json:"usage"`
+	usagex.AttachToHeaders(r, usage)
 }
 
 func extractUsageFromBody(body []byte) (responseUsage, bool) {
-	if len(body) == 0 || len(body) > 2*1024*1024 {
-		return responseUsage{}, false
-	}
-
-	var payload responseUsage
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return responseUsage{}, false
-	}
-	if payload.Usage.TotalTokens <= 0 &&
-		payload.Usage.PromptTokens <= 0 &&
-		payload.Usage.CompletionTokens <= 0 {
-		return responseUsage{}, false
-	}
-	if payload.Usage.TotalTokens <= 0 {
-		payload.Usage.TotalTokens = payload.Usage.PromptTokens + payload.Usage.CompletionTokens
-	}
-	return payload, true
+	return usagex.ExtractResponse(body)
 }
 
 func drainAndClose(body io.ReadCloser) {

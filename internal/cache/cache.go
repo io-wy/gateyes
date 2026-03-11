@@ -23,23 +23,23 @@ type Cache interface {
 
 // CacheStats represents cache statistics
 type CacheStats struct {
-	Hits        int64
-	Misses      int64
-	Sets        int64
-	Deletes     int64
-	Evictions   int64
-	Size        int64
-	HitRate     float64
+	Hits      int64
+	Misses    int64
+	Sets      int64
+	Deletes   int64
+	Evictions int64
+	Size      int64
+	HitRate   float64
 }
 
 // CacheConfig defines cache configuration
 type CacheConfig struct {
 	Enabled       bool
-	Backend       string        // "memory", "redis"
+	Backend       string // "memory", "redis"
 	TTL           time.Duration
-	MaxSize       int64         // Max cache size in bytes (for memory cache)
-	MaxEntries    int           // Max number of entries (for memory cache)
-	KeyStrategy   string        // "full", "semantic"
+	MaxSize       int64  // Max cache size in bytes (for memory cache)
+	MaxEntries    int    // Max number of entries (for memory cache)
+	KeyStrategy   string // "full", "semantic"
 	RedisAddr     string
 	RedisPassword string
 	RedisDB       int
@@ -156,8 +156,8 @@ func (cm *CacheManager) Set(ctx context.Context, key string, value []byte) error
 	}
 
 	ttl := cm.config.TTL
-	if ttl == 0 {
-		ttl = 1 * time.Hour // Default TTL
+	if ttl <= 0 {
+		ttl = 5 * time.Minute
 	}
 
 	err := cm.cache.Set(ctx, key, value, ttl)
@@ -215,8 +215,8 @@ func (cm *CacheManager) Close() error {
 
 // Common errors
 var (
-	ErrCacheMiss     = errors.New("cache miss")
-	ErrCacheFull     = errors.New("cache full")
-	ErrInvalidKey    = errors.New("invalid cache key")
-	ErrExpired       = errors.New("cache entry expired")
+	ErrCacheMiss  = errors.New("cache miss")
+	ErrCacheFull  = errors.New("cache full")
+	ErrInvalidKey = errors.New("invalid cache key")
+	ErrExpired    = errors.New("cache entry expired")
 )

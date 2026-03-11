@@ -5,62 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"gateyes/internal/config"
 	"gateyes/internal/requestmeta"
 )
-
-func TestMemoryBudgetServiceConsumeAndAdjust(t *testing.T) {
-	service := NewMemoryBudgetService()
-
-	first, err := service.Consume(t.Context(), []budgetCounter{{
-		Key:   "k1",
-		Limit: 10,
-		Cost:  4,
-		TTL:   time.Minute,
-	}})
-	if err != nil {
-		t.Fatalf("consume failed: %v", err)
-	}
-	if !first.Allowed {
-		t.Fatalf("expected allowed")
-	}
-
-	second, err := service.Consume(t.Context(), []budgetCounter{{
-		Key:   "k1",
-		Limit: 10,
-		Cost:  7,
-		TTL:   time.Minute,
-	}})
-	if err != nil {
-		t.Fatalf("second consume failed: %v", err)
-	}
-	if second.Allowed {
-		t.Fatalf("expected denied on limit exceed")
-	}
-
-	if err := service.Adjust(t.Context(), []budgetAdjustment{{
-		Key:   "k1",
-		Delta: -2,
-		TTL:   time.Minute,
-	}}); err != nil {
-		t.Fatalf("adjust failed: %v", err)
-	}
-
-	third, err := service.Consume(t.Context(), []budgetCounter{{
-		Key:   "k1",
-		Limit: 10,
-		Cost:  6,
-		TTL:   time.Minute,
-	}})
-	if err != nil {
-		t.Fatalf("third consume failed: %v", err)
-	}
-	if !third.Allowed {
-		t.Fatalf("expected allowed after refund adjustment")
-	}
-}
 
 func TestRateLimiterMultiDimensionUserModel(t *testing.T) {
 	cfg := config.RateLimitConfig{

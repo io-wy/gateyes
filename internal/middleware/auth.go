@@ -10,10 +10,6 @@ import (
 )
 
 func Auth(cfg config.AuthConfig) Middleware {
-	if !cfg.Enabled {
-		return Noop()
-	}
-
 	keys := map[string]struct{}{}
 	for _, key := range cfg.Keys {
 		if strings.TrimSpace(key) == "" {
@@ -33,7 +29,15 @@ func Auth(cfg config.AuthConfig) Middleware {
 		virtualKeys[key] = virtualConfig
 	}
 
-	if len(keys) == 0 && len(virtualKeys) == 0 {
+	enforceVirtualOnly := !cfg.Enabled && len(virtualKeys) > 0
+	if !cfg.Enabled && !enforceVirtualOnly {
+		return Noop()
+	}
+	if enforceVirtualOnly {
+		slog.Info("auth.enabled=false but virtual_keys configured, enforcing virtual key auth")
+	}
+
+	if cfg.Enabled && len(keys) == 0 && len(virtualKeys) == 0 {
 		slog.Warn("auth enabled but no static or virtual keys configured")
 	}
 
@@ -54,13 +58,7 @@ func Auth(cfg config.AuthConfig) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Never trust user-provided internal routing metadata.
-			r.Header.Del(requestmeta.HeaderVirtualKey)
-			r.Header.Del(requestmeta.HeaderResolvedProvider)
-			r.Header.Del(requestmeta.HeaderResolvedModel)
-			r.Header.Del(requestmeta.HeaderUsagePromptTokens)
-			r.Header.Del(requestmeta.HeaderUsageCompletionTokens)
-			r.Header.Del(requestmeta.HeaderUsageTotalTokens)
-			r.Header.Del(requestmeta.HeaderStreamRequest)
+			clearInternalHeaders(r)
 
 			if _, ok := skip[r.URL.Path]; ok {
 				next.ServeHTTP(w, r)
@@ -79,14 +77,14 @@ func Auth(cfg config.AuthConfig) Middleware {
 				return
 			}
 
-			if len(keys) > 0 {
+			if cfg.Enabled && len(keys) > 0 {
 				if _, ok := keys[token]; ok {
 					next.ServeHTTP(w, r)
 					return
 				}
 			}
 
-			if len(keys) > 0 || len(virtualKeys) > 0 {
+			if len(virtualKeys) > 0 || (cfg.Enabled && len(keys) > 0) {
 				http.Error(w, "invalid auth token", http.StatusUnauthorized)
 				return
 			}

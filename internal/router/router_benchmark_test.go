@@ -1,4 +1,4 @@
-package router
+package router_test
 
 import (
 	"bytes"
@@ -8,10 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"gateyes/internal/bootstrap"
 	"gateyes/internal/config"
-	"gateyes/internal/middleware"
-
-	"github.com/gin-gonic/gin"
 )
 
 var benchRequestBody = []byte(`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`)
@@ -54,7 +52,6 @@ type benchOptions struct {
 
 func newBenchEngine(b *testing.B, opts benchOptions) (*http.ServeMux, func()) {
 	b.Helper()
-	gin.SetMode(gin.ReleaseMode)
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -69,7 +66,6 @@ func newBenchEngine(b *testing.B, opts benchOptions) (*http.ServeMux, func()) {
 	cfg.Cache.Enabled = false
 	cfg.RateLimit.Enabled = false
 	cfg.Quota.Enabled = false
-	cfg.Policy.Enabled = false
 	cfg.Auth.Enabled = opts.enableAuth
 	cfg.Auth.Keys = nil
 	cfg.Auth.VirtualKeys = nil
@@ -101,11 +97,10 @@ func newBenchEngine(b *testing.B, opts benchOptions) (*http.ServeMux, func()) {
 		},
 	}
 
-	metrics := middleware.NewMetrics("gateyes_bench")
-	engine, err := New(&cfg, metrics)
+	engine, err := bootstrap.NewEngine(&cfg, nil)
 	if err != nil {
 		upstream.Close()
-		b.Fatalf("new router failed: %v", err)
+		b.Fatalf("new engine failed: %v", err)
 	}
 
 	mux := http.NewServeMux()

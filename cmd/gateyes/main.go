@@ -9,9 +9,8 @@ import (
 	"syscall"
 	"time"
 
+	"gateyes/internal/bootstrap"
 	"gateyes/internal/config"
-	"gateyes/internal/middleware"
-	"gateyes/internal/router"
 	"gateyes/internal/server"
 )
 
@@ -27,21 +26,18 @@ func main() {
 		cfg = config.DefaultConfig()
 	}
 
-	metrics := middleware.NewMetrics(cfg.Metrics.Namespace)
-	engine, err := router.New(&cfg, metrics)
+	app, err := bootstrap.New(&cfg)
 	if err != nil {
-		slog.Error("failed to build router", "error", err)
+		slog.Error("failed to bootstrap application", "error", err)
 		os.Exit(1)
 	}
-
-	srv := server.New(&cfg, engine)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	go func() {
 		slog.Info("gateyes listening", "addr", cfg.Server.ListenAddr)
-		if err := srv.Start(); err != nil {
+		if err := app.Server.Start(); err != nil {
 			if err == server.ErrServerClosed {
 				return
 			}
@@ -54,7 +50,7 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := srv.Shutdown(shutdownCtx); err != nil {
+	if err := app.Server.Shutdown(shutdownCtx); err != nil {
 		slog.Error("shutdown error", "error", err)
 	}
 }

@@ -1,4 +1,4 @@
-package gateway
+package proxy
 
 import (
 	"context"
@@ -237,7 +237,12 @@ func sanitizeInternalHeaders(header http.Header) {
 	header.Del(requestmeta.HeaderUsagePromptTokens)
 	header.Del(requestmeta.HeaderUsageCompletionTokens)
 	header.Del(requestmeta.HeaderUsageTotalTokens)
+	header.Del(requestmeta.HeaderUsageEstimatedTokens)
 	header.Del(requestmeta.HeaderStreamRequest)
+	header.Del(requestmeta.HeaderRetryCount)
+	header.Del(requestmeta.HeaderFallbackCount)
+	header.Del(requestmeta.HeaderCircuitOpenCount)
+	header.Del(requestmeta.HeaderCacheStatus)
 }
 
 func sanitizeHopHeaders(header http.Header) {

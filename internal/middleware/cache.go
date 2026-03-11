@@ -69,7 +69,8 @@ func (cm *CacheMiddleware) Middleware() func(http.Handler) http.Handler {
 			if provider == "" {
 				provider = r.URL.Query().Get("provider")
 			}
-			if virtualKey := strings.TrimSpace(r.Header.Get(requestmeta.HeaderVirtualKey)); virtualKey != "" {
+			virtualKey := strings.TrimSpace(r.Header.Get(requestmeta.HeaderVirtualKey))
+			if virtualKey != "" {
 				if provider == "" {
 					provider = "vk:" + virtualKey
 				} else {
@@ -83,11 +84,13 @@ func (cm *CacheMiddleware) Middleware() func(http.Handler) http.Handler {
 			model, _ := reqData["model"].(string)
 			messages := reqData["messages"]
 			if stream, ok := reqData["stream"].(bool); ok && stream {
+				r.Header.Set(requestmeta.HeaderCacheStatus, "BYPASS")
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			cacheKey, err := cm.cacheManager.GenerateKey(provider, model, messages)
+			cachePayload := buildCachePayload(messages, reqData)
+			cacheKey, err := cm.cacheManager.GenerateKey(provider, model, cachePayload)
 			if err != nil {
 				slog.Error("failed to generate cache key", "error", err)
 				next.ServeHTTP(w, r)
@@ -109,23 +112,30 @@ func (cm *CacheMiddleware) Middleware() func(http.Handler) http.Handler {
 					"key", cacheKey[:16]+"...",
 				)
 
+				r.Header.Set(requestmeta.HeaderResolvedProvider, provider)
+				r.Header.Set(requestmeta.HeaderResolvedModel, model)
+				r.Header.Set(requestmeta.HeaderCacheStatus, "HIT")
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("X-Cache", "HIT")
 				w.WriteHeader(http.StatusOK)
-				w.Write(cachedResponse)
+				_, _ = w.Write(cachedResponse)
 				return
 			}
 
 			// Cache miss - capture response and cache it
 			slog.Debug("cache miss", "key", cacheKey[:16]+"...")
+			r.Header.Set(requestmeta.HeaderResolvedProvider, provider)
+			r.Header.Set(requestmeta.HeaderResolvedModel, model)
 			rw := &cacheResponseWriter{
 				ResponseWriter: w,
 				cacheManager:   cm.cacheManager,
 				cacheKey:       cacheKey,
 				ctx:            ctx,
+				request:        r,
 			}
 
 			next.ServeHTTP(rw, r)
+			rw.finalize()
 		})
 	}
 }
@@ -162,8 +172,10 @@ type cacheResponseWriter struct {
 	cacheManager *cache.CacheManager
 	cacheKey     string
 	ctx          context.Context
+	request      *http.Request
 	body         bytes.Buffer
 	statusCode   int
+	cached       bool
 }
 
 func (crw *cacheResponseWriter) Write(b []byte) (int, error) {
@@ -178,19 +190,76 @@ func (crw *cacheResponseWriter) WriteHeader(statusCode int) {
 }
 
 func (crw *cacheResponseWriter) Flush() {
-	// Cache the response if successful
-	if crw.statusCode == 0 || crw.statusCode == http.StatusOK {
-		if crw.body.Len() > 0 {
-			err := crw.cacheManager.Set(crw.ctx, crw.cacheKey, crw.body.Bytes())
-			if err != nil {
-				slog.Error("failed to cache response", "error", err)
-			} else {
-				crw.ResponseWriter.Header().Set("X-Cache", "MISS")
-			}
-		}
-	}
-
 	if flusher, ok := crw.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
 	}
+}
+
+func (crw *cacheResponseWriter) finalize() {
+	if crw.cached {
+		return
+	}
+	crw.cached = true
+
+	status := crw.statusCode
+	if status == 0 {
+		status = http.StatusOK
+	}
+
+	if status != http.StatusOK || crw.body.Len() == 0 {
+		if crw.request != nil {
+			crw.request.Header.Set(requestmeta.HeaderCacheStatus, "BYPASS")
+		}
+		return
+	}
+
+	if isStreamingContentType(crw.ResponseWriter.Header().Get("Content-Type")) {
+		if crw.request != nil {
+			crw.request.Header.Set(requestmeta.HeaderCacheStatus, "BYPASS")
+		}
+		return
+	}
+
+	if err := crw.cacheManager.Set(crw.ctx, crw.cacheKey, crw.body.Bytes()); err != nil {
+		slog.Error("failed to cache response", "error", err)
+		if crw.request != nil {
+			crw.request.Header.Set(requestmeta.HeaderCacheStatus, "MISS")
+		}
+		return
+	}
+
+	if crw.request != nil {
+		crw.request.Header.Set(requestmeta.HeaderCacheStatus, "MISS")
+	}
+	crw.ResponseWriter.Header().Set("X-Cache", "MISS")
+}
+
+func buildCachePayload(messages interface{}, reqData map[string]interface{}) map[string]interface{} {
+	payload := map[string]interface{}{
+		"messages": messages,
+	}
+
+	optionalKeys := []string{
+		"temperature",
+		"top_p",
+		"max_tokens",
+		"max_completion_tokens",
+	}
+	for _, key := range optionalKeys {
+		if value, ok := reqData[key]; ok {
+			payload[key] = value
+		}
+	}
+	return payload
+}
+
+func isStreamingContentType(contentType string) bool {
+	return strings.Contains(strings.ToLower(contentType), "text/event-stream")
+}
+
+func (crw *cacheResponseWriter) cacheStatus() string {
+	if crw.ResponseWriter.Header().Get("X-Cache") == "HIT" {
+		return "HIT"
+	}
+	return "MISS"
 }
