@@ -8,3 +8,5 @@
 *.log
 *.tmp
 nul
+./bin/
+TESTING.md

@@ -1,0 +1,47 @@
+server:
+  listenAddr: ":8080"
+  readTimeout: 30
+  writeTimeout: 300
+
+metrics:
+  namespace: gateway
+  enabled: true
+
+router:
+  strategy: round_robin
+  stickySession: false
+
+limiter:
+  globalQPS: 1000
+  globalTPM: 1000000
+  burst: 100
+  queueSize: 1000
+
+cache:
+  enabled: true
+  maxSize: 10000
+  ttl: 3600
+
+# LongCat Provider
+providers:
+  - name: longcat
+    type: openai
+    baseURL: https://api.longcat.chat/openai
+    apiKey: ak_1so2TW4PC7As4oJ1Qy73C08t1hc2Q
+    model: LongCat-Flash-Chat
+    weight: 10
+    priceInput: 0.0001
+    priceOutput: 0.0003
+    maxTokens: 4096
+    timeout: 60
+
+# 兼容旧格式
+apiKeys:
+  - key: test-key-001
+    secret: test-secret
+    quota: 1000000
+    qps: 100
+    models: []
+
+admin:
+  adminKey: admin-secret-key

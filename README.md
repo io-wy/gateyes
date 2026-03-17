@@ -1,435 +1,306 @@
-# Gateyes - Agent网关和铠甲系统
+[English](./README.en.md) | 简体中文
 
-**🛡️ 为AI Agent提供智能路由、安全防护和可靠性保障的企业级网关**
+# Gateyes
 
----
+Gateyes 是一个用 Go 编写的 LLM Gateway，目标是作为应用与模型提供商之间的统一接入层。
 
-## 🎯 核心定位
+当前仓库已经实现了一套可运行的最小核心能力：
 
-Gateyes 是一个专为 **AI Agent** 设计的网关和铠甲系统，提供：
+- 基于静态 API Key 的请求认证
+- 面向聊天场景的上游代理转发
+- 多个 provider 之间的基础路由策略
+- 内存缓存与基础限流
+- SSE 流式转发
+- 管理接口与基础观测接口
 
-- 🔀 **智能路由** - 多种路由策略、自动故障转移、负载均衡、自定义规则
-- 🛡️ **安全防护** - PII检测、内容过滤、Prompt注入防护
-- 🔌 **MCP防护** - Model Context Protocol连接保护和监控（可插拔）
-- 📊 **可观测性** - 详细的指标、追踪和健康检查
-- ⚡ **高性能** - Go语言实现，低延迟，高并发
-- 🔧 **可插拔** - 所有功能模块化，按需启用
+项目的长期方向不止于当前这套 API 形态。Gateyes 计划演进为一个支持多种 provider 协议的网关，例如 OpenAI 风格接口、Anthropic 以及其他模型厂商，通过不同 adapter 统一接入。
 
----
+## 当前状态
 
-## 🚀 快速开始
+这个仓库现在更适合被理解为“早期可运行版本”，还不是完整平台。
 
-### 本地运行
+当前已经落地的接口：
+
+- `POST /v1/chat/completions`
+- `POST /v1/responses`
+- `GET /v1/responses`，用于 WebSocket
+- `GET /v1/models`
+- `GET /health`
+- `GET /ready`
+- `GET /metrics`
+- `GET /debug/pprof/*`
+- `GET/POST/PUT/DELETE /admin/...`
+
+当前实现边界：
+
+- 运行时认证依赖配置文件中的 `apiKeys`
+- 上游 provider 调用目前基于 chat-completions 风格请求
+- 缓存、用户数据、provider 状态都在内存中
+- 管理端的用户接口已经存在，但还没有接入运行时认证链路
+- provider 统计接口已经暴露，但完整的实时统计还没有全部打通
+
+这份 README 会严格区分“已经实现”和“未来规划”，避免把想法写成既有能力。
+
+## 为什么做这个项目
+
+很多团队一开始都是直接在业务代码里调用单一模型厂商 SDK。随着需求增加，通常会逐步遇到这些问题：
+
+- 认证逻辑分散
+- 配额和限流难以统一治理
+- 更换 provider 的成本高
+- 观测能力重复建设
+- 缺少一层稳定的网关来隔离上游差异
+
+Gateyes 的目标就是逐步补上这一层，从一个足够小、足够容易跑起来的网关开始往前迭代。
+
+## 架构概览
+
+当前请求流程：
+
+1. 客户端调用 `/v1/*` 接口
+2. 认证中间件校验 `Authorization: Bearer key:secret`
+3. 对非流式请求先尝试命中缓存
+4. 限流器执行全局和按 key 的限制
+5. Router 从已配置 provider 中选择一个上游
+6. Provider 将请求转发到上游模型服务
+7. 结果以普通 JSON 或 SSE 的形式返回
+
+当前核心目录：
+
+- `cmd/gateway`：程序入口
+- `internal/handler`：HTTP handler、路由与服务装配
+- `internal/service/provider`：上游 provider 调用逻辑
+- `internal/service/router`：路由策略
+- `internal/service/limiter`：限流与排队
+- `internal/service/cache`：内存 KV 缓存
+- `internal/service/streaming`：流式透传
+- `internal/repository`：内存中的 API Key / User 仓库
+- `internal/config`：YAML 配置加载与环境变量替换
+
+## 快速开始
+
+### 运行要求
+
+- Go 1.21+
+
+### 构建
 
 ```bash
-# 克隆仓库
-git clone https://github.com/yourusername/gateyes.git
-cd gateyes
-
-# 构建
-go build -o gateyes ./cmd/gateyes
-
-# 运行
-./gateyes -config config/gateyes.json
+go build -o ./bin/gateway ./cmd/gateway
 ```
 
-### Docker部署
+### 配置
+
+直接编辑 [`configs/config.yaml`](./configs/config.yaml)。
+
+最小示例：
+
+```yaml
+server:
+  listenAddr: ":8080"
+
+metrics:
+  namespace: gateway
+  enabled: true
+
+router:
+  strategy: round_robin
+  stickySession: false
+
+limiter:
+  globalQPS: 1000
+  globalTPM: 1000000
+  burst: 100
+  queueSize: 1000
+
+cache:
+  enabled: true
+  maxSize: 10000
+  ttl: 3600
+
+providers:
+  - name: primary
+    type: openai
+    baseURL: https://your-upstream.example.com
+    apiKey: ${UPSTREAM_API_KEY}
+    model: your-model-name
+    weight: 10
+    priceInput: 0.0001
+    priceOutput: 0.0003
+    maxTokens: 4096
+    timeout: 60
+
+apiKeys:
+  - key: demo-key
+    secret: demo-secret
+    quota: 1000000
+    qps: 100
+    models: []
+
+admin:
+  adminKey: change-me
+```
+
+`internal/config/config.go` 里的加载逻辑支持 `${ENV_VAR}` 形式的环境变量替换，因此上游密钥可以放在环境变量里。
+
+### 启动
 
 ```bash
-# 构建镜像
-docker build -t gateyes:latest .
-
-# 运行容器
-docker run -p 8080:8080 -v $(pwd)/config:/config gateyes:latest
+./bin/gateway -config configs/config.yaml
 ```
 
----
+默认监听 `:8080`。
 
-## 📋 核心功能
+## API 示例
 
-### 1️⃣ 智能路由系统
+### 健康检查
 
-支持多种路由策略，确保请求总是发送到最优的LLM提供商。
-
-#### 路由策略
-
-| 策略 | 描述 | 适用场景 |
-|------|------|----------|
-| **Round-Robin** | 轮询分配请求 | 负载均衡 |
-| **Least-Latency** | 选择延迟最低的提供商 | 性能优先 |
-| **Weighted** | 按权重分配流量 | 灰度发布 |
-| **Cost-Optimized** | 选择成本最低的提供商 | 成本优化 |
-| **Priority** | 按优先级顺序选择 | 主备模式 |
-
-#### 自定义路由规则
-
-支持用户自定义路由规则，基于请求内容、用户属性等动态路由：
-
-```json
-{
-  "custom_rules": [
-    {
-      "name": "Route GPT-4 to Azure",
-      "priority": 100,
-      "conditions": [
-        {"type": "body", "operator": "contains", "value": "gpt-4"}
-      ],
-      "action": {"type": "route", "provider": "azure-openai"}
-    }
-  ]
-}
+```bash
+curl http://localhost:8080/health
 ```
 
-#### 故障转移和重试
-
-- 自动故障转移到备用提供商
-- 可配置的重试策略（指数退避）
-- 熔断器保护
-- 健康检查和自动恢复
-
----
-
-### 2️⃣ MCP防护机制（可插拔）
-
-为Model Context Protocol连接提供全方位保护，确保Agent与MCP服务器的通信稳定可靠。
-
-#### 核心功能
-
-- 🏥 **健康检查** - 定期检测MCP服务器健康状态
-- 🔌 **熔断器** - 防止级联故障
-- 🔗 **连接池** - 复用连接，提高性能
-- 📊 **异常检测** - 实时监控错误率和延迟
-- ⏱️ **超时控制** - 防止请求hang住
-- 🔔 **告警通知** - Webhook告警集成
-
-#### 配置示例
-
-```json
-{
-  "mcp_guard": {
-    "enabled": true,
-    "health_check": {
-      "enabled": true,
-      "interval": "30s",
-      "unhealthy_threshold": 3
-    },
-    "circuit_breaker": {
-      "enabled": true,
-      "failure_threshold": 5
-    },
-    "anomaly_detection": {
-      "enabled": true,
-      "error_rate_threshold": 0.5
-    }
-  }
-}
-```
-
----
-
-### 3️⃣ Agent保护层（Guardrails）
-
-多层安全防护，保护Agent免受恶意输入和输出的影响。
-
-#### 防护功能
-
-| 功能 | 描述 | 动作 |
-|------|------|------|
-| **PII检测** | 检测和脱敏敏感信息（邮箱、电话、SSN等） | 脱敏/拒绝 |
-| **内容过滤** | 过滤有害内容和Prompt注入 | 拒绝 |
-| **响应验证** | 验证响应格式和大小 | 拒绝 |
-| **异常检测** | 检测异常行为模式 | 警告/拒绝 |
-| **自定义规则** | 用户自定义安全规则 | 可配置 |
-
-#### PII检测示例
-
-输入: "My email is john@example.com and phone is 555-1234"
-输出: "My email is [REDACTED] and phone is [REDACTED]"
-
-#### Prompt注入防护
-
-自动检测和阻止常见的Prompt注入攻击模式。
-
----
-
-### 4️⃣ 响应缓存系统
-
-智能缓存LLM响应，显著降低API成本和延迟。
-
-#### 缓存后端
-
-| 后端 | 描述 | 适用场景 |
-|------|------|----------|
-| **Memory** | 内存LRU缓存 | 单实例部署 |
-| **Redis** | Redis分布式缓存 | 多实例部署 |
-
-#### 核心功能
-
-- 🔑 **智能缓存键** - 基于provider、model和messages生成唯一键
-- ⏱️ **可配置TTL** - 灵活的缓存过期时间
-- 📊 **缓存统计** - 命中率、大小等详细统计
-- 🔄 **LRU淘汰** - 内存缓存使用LRU策略
-- 🌐 **分布式支持** - Redis后端支持多实例共享缓存
-
-#### 配置示例
-
-```json
-{
-  "cache": {
-    "enabled": true,
-    "backend": "memory",
-    "ttl": "1h",
-    "max_size": 104857600,
-    "max_entries": 10000
-  }
-}
-```
-
-#### 使用Redis
-
-```json
-{
-  "cache": {
-    "enabled": true,
-    "backend": "redis",
-    "ttl": "2h",
-    "redis_addr": "localhost:6379",
-    "redis_password": "",
-    "redis_db": 0
-  }
-}
-```
-
-#### 缓存效果
-
-- **成本节省**: 缓存命中可节省30-70%的API成本
-- **延迟降低**: 缓存响应延迟 < 5ms
-- **自动管理**: LRU自动淘汰旧条目
-
----
-
-### 5️⃣ 多提供商支持
-
-统一的OpenAI兼容接口，支持多个LLM提供商：
-
-- OpenAI
-- Anthropic (Claude)
-- Azure OpenAI
-- Google Gemini (计划中)
-- AWS Bedrock (计划中)
-- 本地模型 (Ollama) (计划中)
-
----
-
-### 6️⃣ 可观测性
-
-#### 监控端点
-
-| 端点 | 描述 |
-|------|------|
-| `/healthz` | 健康检查 |
-| `/metrics` | Prometheus指标 |
-| `/stats` | 路由统计 |
-| `/mcp-stats` | MCP防护统计 |
-| `/cache-stats` | 缓存统计 |
-
----
-
-## 🔧 配置指南
-
-查看 `config/gateyes.example.json` 获取完整配置示例。
-
-### 核心配置项
-
-#### 1. 智能路由配置
-
-```json
-{
-  "routing": {
-    "enabled": true,
-    "strategy": "least-latency",
-    "fallback": ["anthropic", "azure-openai"],
-    "health_check": {"enabled": true, "interval": "30s"},
-    "retry": {"enabled": true, "max_retries": 3},
-    "circuit_breaker": {"enabled": true, "failure_threshold": 5}
-  }
-}
-```
-
-#### 2. MCP防护配置
-
-```json
-{
-  "mcp_guard": {
-    "enabled": true,
-    "health_check": {"enabled": true, "interval": "30s"},
-    "circuit_breaker": {"enabled": true},
-    "connection_pool": {"enabled": true, "max_connections": 10},
-    "anomaly_detection": {"enabled": true, "error_rate_threshold": 0.5}
-  }
-}
-```
-
-#### 3. Guardrails配置
-
-```json
-{
-  "policy": {
-    "enabled": true,
-    "guardrails": {
-      "enabled": true,
-      "pii_detection": {"enabled": true, "redact": true},
-      "content_filter": {"enabled": true, "block_prompt_injection": true},
-      "anomaly_detection": {"enabled": true}
-    }
-  }
-}
-```
-
----
-
-## 📖 使用示例
-
-### 基本请求
+### Chat Completions
 
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer demo-key:demo-secret" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer your-api-key" \
   -d '{
-    "model": "gpt-4",
-    "messages": [{"role": "user", "content": "Hello!"}]
+    "model": "your-model-name",
+    "messages": [
+      {"role": "user", "content": "hello"}
+    ]
   }'
 ```
 
-### 指定提供商
+### Responses API
+
+当前 `POST /v1/responses` 内部仍然复用 chat 处理链路。
 
 ```bash
-# 通过Header指定
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "X-Gateyes-Provider: anthropic" \
-  -d '...'
-
-# 通过Query参数指定
-curl -X POST "http://localhost:8080/v1/chat/completions?provider=anthropic" \
-  -d '...'
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Authorization: Bearer demo-key:demo-secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "your-model-name",
+    "messages": [
+      {"role": "user", "content": "hello"}
+    ]
+  }'
 ```
 
-### Agent到MCP请求
+### Streaming
 
 ```bash
-curl -X POST http://localhost:8080/mcp/tools/list \
-  -H "Authorization: Bearer your-api-key"
+curl -N -X POST http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer demo-key:demo-secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "your-model-name",
+    "stream": true,
+    "messages": [
+      {"role": "user", "content": "say hi"}
+    ]
+  }'
 ```
 
-### 查看统计信息
+### Models
 
 ```bash
-# 路由统计
-curl http://localhost:8080/stats
-
-# MCP防护统计
-curl http://localhost:8080/mcp-stats
-
-# 缓存统计
-curl http://localhost:8080/cache-stats
-
-# Prometheus指标
-curl http://localhost:8080/metrics
+curl http://localhost:8080/v1/models \
+  -H "Authorization: Bearer demo-key:demo-secret"
 ```
 
----
+### 管理接口
 
-## 🏗️ 架构设计
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                         Gateyes                              │
-│                                                              │
-│  ┌────────────────────────────────────────────────────┐    │
-│  │              Middleware Chain                       │    │
-│  │  Logging → Metrics → RateLimit → Auth → Guardrails │    │
-│  └────────────────────────────────────────────────────┘    │
-│                           ↓                                  │
-│  ┌────────────────────────────────────────────────────┐    │
-│  │              Smart Router                           │    │
-│  │  • Custom Rules                                     │    │
-│  │  • Strategy Selection (RR/LL/Weighted/Cost)        │    │
-│  │  • Health Check                                     │    │
-│  │  • Circuit Breaker                                  │    │
-│  │  • Retry Logic                                      │    │
-│  └────────────────────────────────────────────────────┘    │
-│                           ↓                                  │
-│  ┌─────────────┬──────────────┬──────────────┬─────────┐  │
-│  │   OpenAI    │  Anthropic   │ Azure OpenAI │   MCP   │  │
-│  │   Proxy     │    Proxy     │    Proxy     │  Guard  │  │
-│  └─────────────┴──────────────┴──────────────┴─────────┘  │
-└─────────────────────────────────────────────────────────────┘
+```bash
+curl http://localhost:8080/admin/dashboard \
+  -H "X-Admin-Key: change-me"
 ```
 
----
+当前服务还暴露了这些管理接口：
 
-## 🎨 设计理念
+- `GET /admin/providers`
+- `GET /admin/providers/:name`
+- `GET /admin/providers/:name/stats`
+- `GET /admin/users`
+- `POST /admin/users`
+- `GET /admin/users/:id`
+- `PUT /admin/users/:id`
+- `DELETE /admin/users/:id`
+- `POST /admin/users/:id/reset`
 
-### 1. Agent-First设计
+## 配置说明
 
-专为AI Agent设计，理解Agent的特殊需求：
+当前生效的配置结构以 [`internal/config/config.go`](./internal/config/config.go) 为准。
 
-- **可靠性优先** - 自动故障转移，确保Agent不会因单点故障停止工作
-- **安全防护** - 多层防护，保护Agent免受恶意输入
-- **MCP支持** - 原生支持Model Context Protocol
-- **可观测性** - 详细的监控和追踪
+主要字段：
 
-### 2. 可插拔架构
+- `server.listenAddr`
+- `server.readTimeout`
+- `server.writeTimeout`
+- `metrics.namespace`
+- `metrics.enabled`
+- `router.strategy`
+- `router.stickySession`
+- `limiter.globalQPS`
+- `limiter.globalTPM`
+- `limiter.burst`
+- `limiter.queueSize`
+- `cache.enabled`
+- `cache.maxSize`
+- `cache.ttl`
+- `providers[]`
+- `apiKeys[]`
+- `admin.adminKey`
 
-所有功能都是可插拔的，通过配置文件启用/禁用：
+当前 Router 支持的策略：
 
-```json
-{
-  "routing": {"enabled": true},
-  "mcp_guard": {"enabled": true},
-  "policy": {"guardrails": {"enabled": true}}
-}
-```
+- `round_robin`
+- `random`
+- `least_load`
+- `cost_based`
+- `sticky`
 
-### 3. 性能优先
+当前 provider 配置假定上游具备 chat-completions 风格能力，主要字段包括：
 
-- **Go语言实现** - 高性能、低延迟
-- **连接池** - 复用连接，减少开销
-- **并发处理** - 充分利用多核CPU
-- **轻量级** - 单二进制部署
+- `baseURL`
+- `apiKey`
+- `model`
+- `timeout`
 
----
+配置里的 `type` 字段已经预留出来，便于后续接入不同 provider adapter，但当前实现还没有依据 `type` 切换不同协议逻辑。
 
-## 🛣️ 路线图
+## 开发说明
 
-### Phase 1: 核心功能 ✅
-- [x] 智能路由系统
-- [x] MCP防护机制
-- [x] Agent保护层（Guardrails）
-- [x] 自定义路由规则
-- [x] 响应缓存系统
+建议先读这些文件：
 
-### Phase 2: 扩展功能 (计划中)
-- [ ] 更多LLM提供商支持
-- [ ] 增强可观测性（OpenTelemetry）
-- [ ] 成本追踪和预算管理
-- [ ] 语义缓存
+- [`cmd/gateway/main.go`](./cmd/gateway/main.go)
+- [`internal/handler/handler.go`](./internal/handler/handler.go)
+- [`internal/handler/admin.go`](./internal/handler/admin.go)
+- [`internal/service/provider/provider.go`](./internal/service/provider/provider.go)
+- [`internal/service/router/router.go`](./internal/service/router/router.go)
+- [`TESTING.md`](./TESTING.md)
 
-### Phase 3: 高级功能 (计划中)
-- [ ] Prompt管理和版本控制
-- [ ] A/B测试和金丝雀部署
-- [ ] Web UI管理界面
-- [ ] 多租户支持
+当前比较明确的实现缺口：
 
----
+- admin 创建的用户还没有进入实际鉴权链路
+- 用户、缓存、状态都没有持久化
+- provider 统计只接了部分骨架
+- 路由策略目前是基础实现
+- 非 chat-completions 风格的 provider adapter 还没实现
 
-## 📄 许可证
+## Roadmap
 
-MIT License
+接下来比较合理的演进方向包括：
 
----
+- 更完整的智能路由，结合健康度、延迟、成本、失败历史做选择
+- 对 Anthropic 等非 OpenAI 风格协议提供专用 adapter
+- 持久化用户、API Key、配额和使用量
+- 多租户隔离
+- 更完整的管理后台与使用量统计
+- 熔断、重试、健康检查
+- 更准确的 token 计量
+- 分布式缓存与共享限流
 
-## 🙏 致谢
-
-感谢所有贡献者和开源社区的支持！
+README 故意把这些内容放在 roadmap，而不是写成“已经支持”，这样对外信息才不会失真。
