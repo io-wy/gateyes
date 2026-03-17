@@ -2,14 +2,20 @@
 
 # Gateyes
 
-Gateyes is a Go-based gateway for LLM providers.
+Gateyes is a Go-based LLM gateway.
 
-The project is intended to evolve into a multi-provider gateway with support for different upstream protocols, including OpenAI-style APIs, Anthropic, and other model vendors.
+The current implementation now includes:
 
-At the moment, the Chinese README is the maintained source of truth:
+- DB-backed runtime auth
+- SQLite / PostgreSQL / MySQL support via `database/sql`
+- auto migrations at startup
+- admin-created users and API keys wired into the runtime path
+- provider adapters for:
+  - OpenAI
+  - Anthropic
 
-- For current capabilities, setup, API examples, and configuration, see [README.md](./README.md).
-- The current implementation is still an early runnable version, not a finished platform.
-- The runtime path today is centered on chat-style upstream proxying, basic routing, caching, limiting, streaming, and admin endpoints.
+The Chinese README is the maintained source of truth:
 
-An expanded English document can be added later if needed. For now, please refer to the Chinese version for accurate and up-to-date details.
+- architecture and setup: [README.md](./README.md)
+- current API surface: [README.md](./README.md)
+- current limitations and roadmap: [README.md](./README.md)

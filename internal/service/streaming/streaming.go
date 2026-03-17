@@ -29,10 +29,6 @@ func (s *Streaming) ProxyChat(c *gin.Context, stream <-chan string, errCh <-chan
 		return
 	}
 
-	// Send SSE prefix
-	fmt.Fprintf(c.Writer, "data: ")
-	flusher.Flush()
-
 	var totalTokens int
 	for {
 		select {

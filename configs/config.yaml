@@ -3,6 +3,14 @@ server:
   readTimeout: 30
   writeTimeout: 300
 
+database:
+  driver: sqlite
+  dsn: gateyes.db
+  autoMigrate: true
+  maxOpenConns: 10
+  maxIdleConns: 5
+  connMaxLifetimeSeconds: 300
+
 metrics:
   namespace: gateway
   enabled: true
@@ -22,20 +30,31 @@ cache:
   maxSize: 10000
   ttl: 3600
 
-# LongCat Provider
 providers:
-  - name: longcat
+  - name: openai-primary
     type: openai
-    baseURL: https://api.longcat.chat/openai
-    apiKey: ak_1so2TW4PC7As4oJ1Qy73C08t1hc2Q
-    model: LongCat-Flash-Chat
+    baseURL: https://api.openai.com/v1
+    apiKey: ${OPENAI_API_KEY}
+    model: gpt-4o-mini
     weight: 10
-    priceInput: 0.0001
-    priceOutput: 0.0003
+    priceInput: 0
+    priceOutput: 0
     maxTokens: 4096
     timeout: 60
+    enabled: true
 
-# 兼容旧格式
+  - name: anthropic-primary
+    type: anthropic
+    baseURL: https://api.anthropic.com
+    apiKey: ${ANTHROPIC_API_KEY}
+    model: claude-3-5-sonnet-latest
+    weight: 10
+    priceInput: 0
+    priceOutput: 0
+    maxTokens: 4096
+    timeout: 60
+    enabled: false
+
 apiKeys:
   - key: test-key-001
     secret: test-secret
@@ -44,4 +63,6 @@ apiKeys:
     models: []
 
 admin:
-  adminKey: admin-secret-key
+  defaultTenant: default
+  bootstrapKey: admin-key-001
+  bootstrapSecret: admin-secret-001

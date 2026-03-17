@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/gateyes/gateway/internal/config"
+	"github.com/gateyes/gateway/internal/db"
 	"github.com/gateyes/gateway/internal/handler"
 	"github.com/gateyes/gateway/internal/repository"
+	"github.com/gateyes/gateway/internal/repository/sqlstore"
 	"github.com/gateyes/gateway/internal/service/cache"
 	"github.com/gateyes/gateway/internal/service/limiter"
 	"github.com/gateyes/gateway/internal/service/provider"
@@ -31,32 +33,66 @@ func main() {
 		cfg = config.DefaultConfig()
 	}
 
-	// 初始化各层组件
-	apiKeyRepo := repository.NewAPIKeyRepository(cfg.APIKeys)
-	userRepo := repository.NewUserRepository()
+	database, err := db.Open(cfg.Database)
+	if err != nil {
+		slog.Error("failed to open database", "error", err)
+		os.Exit(1)
+	}
+	defer database.Close()
+
+	if cfg.Database.AutoMigrate {
+		if err := database.Migrate(context.Background()); err != nil {
+			slog.Error("failed to migrate database", "error", err)
+			os.Exit(1)
+		}
+	}
+
+	store := sqlstore.New(database)
+	defaultTenant, err := store.EnsureTenant(context.Background(), repository.EnsureTenantParams{
+		ID:     cfg.Admin.DefaultTenant,
+		Slug:   cfg.Admin.DefaultTenant,
+		Name:   cfg.Admin.DefaultTenant,
+		Status: repository.StatusActive,
+	})
+	if err != nil {
+		slog.Error("failed to ensure default tenant", "error", err)
+		os.Exit(1)
+	}
+
+	if err := store.ReplaceTenantProviders(context.Background(), defaultTenant.ID, enabledProviderNames(cfg.Providers)); err != nil {
+		slog.Error("failed to seed default tenant providers", "error", err)
+		os.Exit(1)
+	}
+	if err := store.BackfillDefaultTenant(context.Background(), defaultTenant.ID); err != nil {
+		slog.Error("failed to backfill default tenant", "error", err)
+		os.Exit(1)
+	}
+
+	if err := seedConfiguredAPIKeys(context.Background(), store, defaultTenant.ID, cfg.APIKeys); err != nil {
+		slog.Error("failed to seed configured api keys", "error", err)
+		os.Exit(1)
+	}
+	if err := seedBootstrapAdmin(context.Background(), store, defaultTenant.ID, cfg.Admin); err != nil {
+		slog.Error("failed to seed bootstrap admin", "error", err)
+		os.Exit(1)
+	}
+
 	metrics := handler.NewMetrics(cfg.Metrics.Namespace)
+	providerMgr, err := provider.NewManager(cfg.Providers)
+	if err != nil {
+		slog.Error("failed to initialize providers", "error", err)
+		os.Exit(1)
+	}
 
-	// Provider 层
-	providerMgr := provider.NewManager(cfg.Providers)
-
-	// Cache 层 (KV Cache)
 	kvCache := cache.NewMemoryCache(cfg.Cache)
-
-	// Limiter 层
 	limiterSvc := limiter.NewLimiter(cfg.Limiter)
-
-	// Router 层
 	routerSvc := router.NewRouter(cfg.Router)
 	routerSvc.SetProviders(providerMgr.List())
-
-	// Streaming 服务
 	streamingSvc := streaming.NewStreaming()
 
-	// 初始化 Handler
 	h := handler.NewHandler(&handler.Dependencies{
 		Config:      cfg,
-		APIKeyRepo:  apiKeyRepo,
-		UserRepo:    userRepo,
+		Store:       store,
 		Metrics:     metrics,
 		ProviderMgr: providerMgr,
 		KVCache:     kvCache,
@@ -65,10 +101,7 @@ func main() {
 		Streaming:   streamingSvc,
 	})
 
-	// 初始化 Admin Handler
-	adminHandler := handler.NewAdminHandler(userRepo, providerMgr, cfg.Admin.AdminKey)
-
-	// 启动服务器
+	adminHandler := handler.NewAdminHandler(store, providerMgr)
 	srv := handler.NewServer(cfg.Server, h, adminHandler)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -92,4 +125,49 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("shutdown error", "error", err)
 	}
+}
+
+func seedConfiguredAPIKeys(ctx context.Context, store repository.IdentityStore, tenantID string, configured []config.APIKeyConfig) error {
+	for _, item := range configured {
+		if err := store.EnsureBootstrapKey(ctx, repository.BootstrapAPIKeyParams{
+			TenantID:   tenantID,
+			Key:        item.Key,
+			SecretHash: repository.HashSecret(item.Secret),
+			Name:       "bootstrap-" + item.Key,
+			Role:       repository.RoleTenantUser,
+			Quota:      item.Quota,
+			QPS:        item.QPS,
+			Models:     item.Models,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func seedBootstrapAdmin(ctx context.Context, store repository.IdentityStore, tenantID string, cfg config.AdminConfig) error {
+	if cfg.BootstrapKey == "" || cfg.BootstrapSecret == "" {
+		return nil
+	}
+
+	return store.EnsureBootstrapKey(ctx, repository.BootstrapAPIKeyParams{
+		TenantID:   tenantID,
+		Key:        cfg.BootstrapKey,
+		SecretHash: repository.HashSecret(cfg.BootstrapSecret),
+		Name:       "bootstrap-admin",
+		Role:       repository.RoleSuperAdmin,
+		Quota:      -1,
+		QPS:        0,
+		Models:     nil,
+	})
+}
+
+func enabledProviderNames(providers []config.ProviderConfig) []string {
+	names := make([]string, 0, len(providers))
+	for _, provider := range providers {
+		if provider.Enabled {
+			names = append(names, provider.Name)
+		}
+	}
+	return names
 }

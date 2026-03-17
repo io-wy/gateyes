@@ -11,29 +11,29 @@ import (
 )
 
 type AdminHandler struct {
-	userRepo    *repository.UserRepository
+	store       repository.Store
 	providerMgr *provider.Manager
-	adminKey    string
+	startedAt   time.Time
 }
 
-func NewAdminHandler(userRepo *repository.UserRepository, providerMgr *provider.Manager, adminKey string) *AdminHandler {
+func NewAdminHandler(store repository.Store, providerMgr *provider.Manager) *AdminHandler {
 	return &AdminHandler{
-		userRepo:    userRepo,
+		store:       store,
 		providerMgr: providerMgr,
-		adminKey:    adminKey,
+		startedAt:   time.Now(),
 	}
 }
 
-// ============ Middleware ============
-
-func (h *AdminHandler) AdminAuthMiddleware() gin.HandlerFunc {
+func (h *AdminHandler) RequireRoles(roles ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 简单的管理员验证，实际应该用更安全的方式
-		adminKey := c.GetHeader("X-Admin-Key")
-		if adminKey == "" || adminKey != h.adminKey {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"error": "invalid admin key",
-			})
+		identity, ok := adminIdentity(c)
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid api key"})
+			c.Abort()
+			return
+		}
+		if !repository.HasRole(identity.Role, roles...) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 			c.Abort()
 			return
 		}
@@ -41,149 +41,174 @@ func (h *AdminHandler) AdminAuthMiddleware() gin.HandlerFunc {
 	}
 }
 
-// ============ Provider Status ============
-
 func (h *AdminHandler) GetProviders(c *gin.Context) {
-	stats := h.providerMgr.Stats.List()
-	c.JSON(http.StatusOK, gin.H{
-		"data": stats,
-	})
-}
-
-func (h *AdminHandler) GetProvider(c *gin.Context) {
-	name := c.Param("name")
-
-	stats, ok := h.providerMgr.Stats.Get(name)
+	identity, _ := adminIdentity(c)
+	tenantID, ok := h.scopeTenantID(c, identity)
 	if !ok {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": "provider not found",
-		})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"data": stats,
-	})
+	c.JSON(http.StatusOK, gin.H{"data": h.providerResponses(c, tenantID)})
+}
+
+func (h *AdminHandler) GetProvider(c *gin.Context) {
+	identity, _ := adminIdentity(c)
+	tenantID, ok := h.scopeTenantID(c, identity)
+	if !ok {
+		return
+	}
+
+	providers := h.providerResponses(c, tenantID)
+	for _, item := range providers {
+		if item["name"] == c.Param("name") {
+			c.JSON(http.StatusOK, gin.H{"data": item})
+			return
+		}
+	}
+
+	c.JSON(http.StatusNotFound, gin.H{"error": "provider not found"})
 }
 
 func (h *AdminHandler) GetProviderStats(c *gin.Context) {
-	totalReq, successReq, failedReq, totalTokens, avgLatency := h.providerMgr.Stats.GlobalStats()
-
-	c.JSON(http.StatusOK, gin.H{
-		"data": gin.H{
-			"total_requests":    totalReq,
-			"success_requests":  successReq,
-			"failed_requests":   failedReq,
-			"total_tokens":      totalTokens,
-			"avg_latency_ms":    avgLatency,
-			"error_rate":        func() float64 {
-				if totalReq > 0 {
-					return float64(failedReq) / float64(totalReq)
-				}
-				return 0
-			}(),
-		},
-	})
+	h.GetProvider(c)
 }
 
-// ============ User Management ============
-
 type CreateUserRequest struct {
-	Name   string   `json:"name" binding:"required"`
-	Email  string   `json:"email"`
-	Quota  int      `json:"quota"` // -1 for unlimited
-	QPS    int      `json:"qps"`
-	Models []string `json:"models"`
+	TenantID string   `json:"tenant_id"`
+	Name     string   `json:"name" binding:"required"`
+	Email    string   `json:"email"`
+	Role     string   `json:"role"`
+	Quota    int      `json:"quota"`
+	QPS      int      `json:"qps"`
+	Models   []string `json:"models"`
 }
 
 func (h *AdminHandler) CreateUser(c *gin.Context) {
+	identity, _ := adminIdentity(c)
+
 	var req CreateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// -1 表示无限额
+	tenantID, ok := h.resolveTargetTenant(c, identity, req.TenantID)
+	if !ok {
+		return
+	}
+	if _, err := h.store.GetTenant(c.Request.Context(), tenantID); err != nil {
+		if err == repository.ErrNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "tenant not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	role := req.Role
+	if role == "" {
+		role = repository.RoleTenantUser
+	}
+	if role == repository.RoleSuperAdmin && identity.Role != repository.RoleSuperAdmin {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+
 	quota := req.Quota
 	if quota == 0 {
 		quota = -1
 	}
 
-	user := h.userRepo.Create(req.Name, req.Email, quota, req.QPS, req.Models)
+	apiKey, err := repository.GenerateToken("gk-", 8)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	apiSecret, err := repository.GenerateToken("gs-", 16)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
-	c.JSON(http.StatusCreated, gin.H{
-		"data": gin.H{
-			"id":         user.ID,
-			"api_key":    user.APIKey,
-			"name":       user.Name,
-			"email":      user.Email,
-			"quota":      user.Quota,
-			"used":       user.Used,
-			"remaining":  user.Quota - user.Used,
-			"qps":        user.QPS,
-			"models":     user.Models,
-			"status":     user.Status,
-			"created_at": user.CreatedAt,
-		},
+	user, err := h.store.CreateUser(c.Request.Context(), repository.CreateUserParams{
+		TenantID:   tenantID,
+		Name:       req.Name,
+		Email:      req.Email,
+		Role:       role,
+		Quota:      quota,
+		QPS:        req.QPS,
+		Models:     req.Models,
+		Status:     repository.StatusActive,
+		APIKey:     apiKey,
+		SecretHash: repository.HashSecret(apiSecret),
 	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"data": gin.H{
+		"id":          user.ID,
+		"tenant_id":   user.TenantID,
+		"tenant_slug": user.TenantSlug,
+		"api_key":     user.APIKey,
+		"api_secret":  apiSecret,
+		"token":       user.APIKey + ":" + apiSecret,
+		"name":        user.Name,
+		"email":       user.Email,
+		"role":        user.Role,
+		"quota":       user.Quota,
+		"used":        user.Used,
+		"remaining":   remaining(user),
+		"qps":         user.QPS,
+		"models":      user.Models,
+		"status":      user.Status,
+		"created_at":  user.CreatedAt,
+	}})
 }
 
 func (h *AdminHandler) ListUsers(c *gin.Context) {
-	users := h.userRepo.List()
+	identity, _ := adminIdentity(c)
+	tenantID, ok := h.scopeTenantID(c, identity)
+	if !ok {
+		return
+	}
 
-	var result []gin.H
-	for _, u := range users {
-		result = append(result, gin.H{
-			"id":         u.ID,
-			"api_key":    u.APIKey,
-			"name":       u.Name,
-			"email":      u.Email,
-			"quota":      u.Quota,
-			"used":       u.Used,
-			"remaining":  u.Quota - u.Used,
-			"qps":        u.QPS,
-			"models":     u.Models,
-			"status":     u.Status,
-			"created_at": u.CreatedAt,
-			"updated_at": u.UpdatedAt,
-		})
+	users, err := h.store.ListUsers(c.Request.Context(), tenantID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	result := make([]gin.H, 0, len(users))
+	for _, user := range users {
+		result = append(result, userToResponse(user))
 	}
 
 	c.JSON(http.StatusOK, gin.H{"data": result})
 }
 
 func (h *AdminHandler) GetUser(c *gin.Context) {
-	id := c.Param("id")
+	identity, _ := adminIdentity(c)
+	tenantID := scopedTenant(identity)
+	if identity.Role == repository.RoleSuperAdmin {
+		tenantID = ""
+	}
 
-	user, ok := h.userRepo.Get(id)
-	if !ok {
-		// 尝试用 apiKey 查找
-		user, ok = h.userRepo.GetByAPIKey(id)
-		if !ok {
+	user, err := h.store.GetUser(c.Request.Context(), tenantID, c.Param("id"))
+	if err != nil {
+		if err == repository.ErrNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
 			return
 		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"data": gin.H{
-			"id":         user.ID,
-			"api_key":    user.APIKey,
-			"name":       user.Name,
-			"email":      user.Email,
-			"quota":      user.Quota,
-			"used":       user.Used,
-			"remaining":  user.Quota - user.Used,
-			"qps":        user.QPS,
-			"models":     user.Models,
-			"status":     user.Status,
-			"created_at": user.CreatedAt,
-			"updated_at": user.UpdatedAt,
-		},
-	})
+	c.JSON(http.StatusOK, gin.H{"data": userToResponse(*user)})
 }
 
 type UpdateUserRequest struct {
+	Role   *string   `json:"role"`
 	Quota  *int      `json:"quota"`
 	QPS    *int      `json:"qps"`
 	Models *[]string `json:"models"`
@@ -191,86 +216,55 @@ type UpdateUserRequest struct {
 }
 
 func (h *AdminHandler) UpdateUser(c *gin.Context) {
-	id := c.Param("id")
+	identity, _ := adminIdentity(c)
 
 	var req UpdateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-
-	// 检查用户是否存在
-	user, ok := h.userRepo.Get(id)
-	if !ok {
-		// 尝试用 apiKey 查找
-		user, ok = h.userRepo.GetByAPIKey(id)
-		if !ok {
-			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
-			return
-		}
-	}
-
-	quota := -1
-	if req.Quota != nil {
-		quota = *req.Quota
-	}
-
-	qps := -1
-	if req.QPS != nil {
-		qps = *req.QPS
-	}
-
-	var models []string
-	if req.Models != nil {
-		models = *req.Models
-	}
-
-	status := ""
-	if req.Status != nil {
-		status = *req.Status
-	}
-
-	updated := h.userRepo.Update(user.ID, quota, qps, models, status)
-	if !updated {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "update failed"})
+	if req.Role != nil && *req.Role == repository.RoleSuperAdmin && identity.Role != repository.RoleSuperAdmin {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 		return
 	}
 
-	user, _ = h.userRepo.Get(user.ID)
+	tenantID := scopedTenant(identity)
+	if identity.Role == repository.RoleSuperAdmin {
+		tenantID = ""
+	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"data": gin.H{
-			"id":         user.ID,
-			"api_key":    user.APIKey,
-			"name":       user.Name,
-			"email":      user.Email,
-			"quota":      user.Quota,
-			"used":       user.Used,
-			"remaining":  user.Quota - user.Used,
-			"qps":        user.QPS,
-			"models":     user.Models,
-			"status":     user.Status,
-			"updated_at": user.UpdatedAt,
-		},
+	user, err := h.store.UpdateUser(c.Request.Context(), tenantID, c.Param("id"), repository.UpdateUserParams{
+		Role:   req.Role,
+		Quota:  req.Quota,
+		QPS:    req.QPS,
+		Models: req.Models,
+		Status: req.Status,
 	})
-}
-
-func (h *AdminHandler) DeleteUser(c *gin.Context) {
-	id := c.Param("id")
-
-	// 先获取用户
-	user, ok := h.userRepo.Get(id)
-	if !ok {
-		user, ok = h.userRepo.GetByAPIKey(id)
-		if !ok {
+	if err != nil {
+		if err == repository.ErrNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
 			return
 		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
 
-	deleted := h.userRepo.Delete(user.ID)
-	if !deleted {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "delete failed"})
+	c.JSON(http.StatusOK, gin.H{"data": userToResponse(*user)})
+}
+
+func (h *AdminHandler) DeleteUser(c *gin.Context) {
+	identity, _ := adminIdentity(c)
+	tenantID := scopedTenant(identity)
+	if identity.Role == repository.RoleSuperAdmin {
+		tenantID = ""
+	}
+
+	if err := h.store.DeleteUser(c.Request.Context(), tenantID, c.Param("id")); err != nil {
+		if err == repository.ErrNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -278,69 +272,343 @@ func (h *AdminHandler) DeleteUser(c *gin.Context) {
 }
 
 func (h *AdminHandler) ResetUserUsage(c *gin.Context) {
-	id := c.Param("id")
+	identity, _ := adminIdentity(c)
+	tenantID := scopedTenant(identity)
+	if identity.Role == repository.RoleSuperAdmin {
+		tenantID = ""
+	}
 
-	user, ok := h.userRepo.Get(id)
-	if !ok {
-		user, ok = h.userRepo.GetByAPIKey(id)
-		if !ok {
+	user, err := h.store.ResetUserUsage(c.Request.Context(), tenantID, c.Param("id"))
+	if err != nil {
+		if err == repository.ErrNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
 			return
 		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
 
-	// 重置使用量
-	h.userRepo.Update(user.ID, -1, -1, nil, "")
-	updated, _ := h.userRepo.Get(user.ID)
-
-	c.JSON(http.StatusOK, gin.H{
-		"data": gin.H{
-			"id":        updated.ID,
-			"used":      0,
-			"remaining": updated.Quota,
-		},
-	})
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"id":        user.ID,
+		"used":      user.Used,
+		"remaining": remaining(user),
+	}})
 }
 
-// ============ Dashboard ============
-
 func (h *AdminHandler) Dashboard(c *gin.Context) {
-	// Provider stats
-	providerStats := h.providerMgr.Stats.List()
-	totalReq, successReq, failedReq, totalTokens, avgLatency := h.providerMgr.Stats.GlobalStats()
+	identity, _ := adminIdentity(c)
+	tenantID, ok := h.scopeTenantID(c, identity)
+	if !ok {
+		return
+	}
 
-	// User stats
-	totalUsers, activeUsers, totalQuota, totalUsed := h.userRepo.Stats()
+	userStats, err := h.store.Stats(c.Request.Context(), tenantID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	usageStats, err := h.store.GetUsageSummary(c.Request.Context(), tenantID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"data": gin.H{
-			"providers": gin.H{
-				"list":              providerStats,
-				"total_requests":    totalReq,
-				"success_requests":  successReq,
-				"failed_requests":   failedReq,
-				"total_tokens":      totalTokens,
-				"avg_latency_ms":   avgLatency,
-				"error_rate":        func() float64 {
-					if totalReq > 0 {
-						return float64(failedReq) / float64(totalReq)
-					}
-					return 0
-				}(),
-			},
-			"users": gin.H{
-				"total_users":     totalUsers,
-				"active_users":    activeUsers,
-				"total_quota":     totalQuota,
-				"total_used":      totalUsed,
-				"usage_percent":   func() float64 {
-					if totalQuota > 0 {
-						return float64(totalUsed) / float64(totalQuota) * 100
-					}
-					return 0
-				}(),
-			},
-			"uptime": time.Since(time.Now()).String(), // 需要单独记录启动时间
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"providers": gin.H{
+			"list":             h.providerResponses(c, tenantID),
+			"total_requests":   usageStats.TotalRequests,
+			"success_requests": usageStats.SuccessRequests,
+			"failed_requests":  usageStats.FailedRequests,
+			"total_tokens":     usageStats.TotalTokens,
+			"avg_latency_ms":   usageStats.AvgLatencyMs,
+			"error_rate":       errorRate(usageStats.TotalRequests, usageStats.FailedRequests),
 		},
+		"users": gin.H{
+			"total_users":   userStats.TotalUsers,
+			"active_users":  userStats.ActiveUsers,
+			"total_quota":   userStats.TotalQuota,
+			"total_used":    userStats.TotalUsed,
+			"usage_percent": usagePercent(userStats),
+		},
+		"uptime": time.Since(h.startedAt).String(),
+	}})
+}
+
+func (h *AdminHandler) ListTenants(c *gin.Context) {
+	tenants, err := h.store.ListTenants(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": tenants})
+}
+
+type CreateTenantRequest struct {
+	ID   string `json:"id"`
+	Slug string `json:"slug" binding:"required"`
+	Name string `json:"name"`
+}
+
+func (h *AdminHandler) CreateTenant(c *gin.Context) {
+	var req CreateTenantRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	tenant, err := h.store.EnsureTenant(c.Request.Context(), repository.EnsureTenantParams{
+		ID:     req.ID,
+		Slug:   req.Slug,
+		Name:   req.Name,
+		Status: repository.StatusActive,
 	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.store.ReplaceTenantProviders(c.Request.Context(), tenant.ID, providerNames(h.providerMgr.List())); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"data": tenant})
+}
+
+func (h *AdminHandler) GetTenant(c *gin.Context) {
+	tenant, err := h.store.GetTenant(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		if err == repository.ErrNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "tenant not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	providers, err := h.store.ListTenantProviders(c.Request.Context(), tenant.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"tenant":    tenant,
+		"providers": providers,
+	}})
+}
+
+type UpdateTenantRequest struct {
+	Name   *string `json:"name"`
+	Status *string `json:"status"`
+}
+
+func (h *AdminHandler) UpdateTenant(c *gin.Context) {
+	var req UpdateTenantRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	tenant, err := h.store.UpdateTenant(c.Request.Context(), c.Param("id"), repository.UpdateTenantParams{
+		Name:   req.Name,
+		Status: req.Status,
+	})
+	if err != nil {
+		if err == repository.ErrNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "tenant not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": tenant})
+}
+
+type ReplaceTenantProvidersRequest struct {
+	Providers []string `json:"providers"`
+}
+
+func (h *AdminHandler) ReplaceTenantProviders(c *gin.Context) {
+	var req ReplaceTenantProvidersRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if !h.allProvidersExist(req.Providers) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown provider in list"})
+		return
+	}
+
+	tenant, err := h.store.GetTenant(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		if err == repository.ErrNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "tenant not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := h.store.ReplaceTenantProviders(c.Request.Context(), tenant.ID, req.Providers); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"tenant_id": tenant.ID,
+		"providers": req.Providers,
+	}})
+}
+
+func (h *AdminHandler) providerResponses(c *gin.Context, tenantID string) []gin.H {
+	providerNames, err := h.store.ListTenantProviders(c.Request.Context(), tenantID)
+	if err != nil {
+		return nil
+	}
+	usageByProvider, err := h.store.GetProviderUsageSummary(c.Request.Context(), tenantID)
+	if err != nil {
+		return nil
+	}
+
+	statsByName := make(map[string]*provider.ProviderStats)
+	for _, item := range h.providerMgr.Stats.List() {
+		statsByName[item.Name] = item
+	}
+
+	result := make([]gin.H, 0, len(providerNames))
+	for _, providerItem := range h.providerMgr.ListByNames(providerNames) {
+		globalStats := statsByName[providerItem.Name()]
+		usageStats := usageByProvider[providerItem.Name()]
+		result = append(result, gin.H{
+			"name":             providerItem.Name(),
+			"type":             providerItem.Type(),
+			"model":            providerItem.Model(),
+			"base_url":         providerItem.BaseURL(),
+			"status":           providerStatus(globalStats),
+			"current_load":     providerLoad(globalStats),
+			"total_requests":   usageStats.TotalRequests,
+			"success_requests": usageStats.SuccessRequests,
+			"failed_requests":  usageStats.FailedRequests,
+			"total_tokens":     usageStats.TotalTokens,
+			"avg_latency_ms":   usageStats.AvgLatencyMs,
+			"error_rate":       errorRate(usageStats.TotalRequests, usageStats.FailedRequests),
+		})
+	}
+
+	return result
+}
+
+func (h *AdminHandler) scopeTenantID(c *gin.Context, identity *repository.AuthIdentity) (string, bool) {
+	if identity.Role == repository.RoleSuperAdmin {
+		tenantID := c.Query("tenant_id")
+		if tenantID == "" {
+			tenantID = identity.TenantID
+		}
+		return tenantID, true
+	}
+	return identity.TenantID, true
+}
+
+func (h *AdminHandler) resolveTargetTenant(c *gin.Context, identity *repository.AuthIdentity, requested string) (string, bool) {
+	if identity.Role == repository.RoleSuperAdmin {
+		if requested == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "tenant_id is required"})
+			return "", false
+		}
+		return requested, true
+	}
+	return identity.TenantID, true
+}
+
+func (h *AdminHandler) allProvidersExist(names []string) bool {
+	known := make(map[string]struct{})
+	for _, providerItem := range h.providerMgr.List() {
+		known[providerItem.Name()] = struct{}{}
+	}
+	for _, name := range names {
+		if _, ok := known[name]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func adminIdentity(c *gin.Context) (*repository.AuthIdentity, bool) {
+	value, ok := c.Get("auth_identity")
+	if !ok {
+		return nil, false
+	}
+	identity, ok := value.(*repository.AuthIdentity)
+	return identity, ok
+}
+
+func scopedTenant(identity *repository.AuthIdentity) string {
+	if identity == nil {
+		return ""
+	}
+	return identity.TenantID
+}
+
+func providerNames(items []provider.Provider) []string {
+	names := make([]string, 0, len(items))
+	for _, item := range items {
+		names = append(names, item.Name())
+	}
+	return names
+}
+
+func providerStatus(stats *provider.ProviderStats) string {
+	if stats == nil {
+		return "unknown"
+	}
+	return stats.Status
+}
+
+func providerLoad(stats *provider.ProviderStats) int64 {
+	if stats == nil {
+		return 0
+	}
+	return stats.CurrentLoad
+}
+
+func userToResponse(user repository.UserRecord) gin.H {
+	return gin.H{
+		"id":          user.ID,
+		"tenant_id":   user.TenantID,
+		"tenant_slug": user.TenantSlug,
+		"api_key":     user.APIKey,
+		"name":        user.Name,
+		"email":       user.Email,
+		"role":        user.Role,
+		"quota":       user.Quota,
+		"used":        user.Used,
+		"remaining":   remaining(&user),
+		"qps":         user.QPS,
+		"models":      user.Models,
+		"status":      user.Status,
+		"created_at":  user.CreatedAt,
+		"updated_at":  user.UpdatedAt,
+	}
+}
+
+func remaining(user *repository.UserRecord) int {
+	if user.Quota <= 0 {
+		return -1
+	}
+	return user.Quota - user.Used
+}
+
+func usagePercent(stats *repository.UserStats) float64 {
+	if stats.TotalQuota <= 0 {
+		return 0
+	}
+	return float64(stats.TotalUsed) / float64(stats.TotalQuota) * 100
+}
+
+func errorRate(total, failed int64) float64 {
+	if total == 0 {
+		return 0
+	}
+	return float64(failed) / float64(total)
 }

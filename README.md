@@ -2,224 +2,30 @@
 
 # Gateyes
 
-Gateyes 是一个用 Go 编写的 LLM Gateway，目标是作为应用与模型提供商之间的统一接入层。
+Gateyes 是一个用 Go 编写的 LLM Gateway，定位是应用与上游模型提供商之间的统一接入层。
 
-当前仓库已经实现了一套可运行的最小核心能力：
+当前版本已经从内存原型推进到可持久化、可管理的早期可运行版本，重点放在：
 
-- 基于静态 API Key 的请求认证
-- 面向聊天场景的上游代理转发
-- 多个 provider 之间的基础路由策略
-- 内存缓存与基础限流
-- SSE 流式转发
-- 管理接口与基础观测接口
+- 统一 API 接入
+- 多 provider 路由
+- 数据库存储用户、API Key、租户和 usage
+- 多租户隔离
+- 固定角色 RBAC
+- 通过 adapter 接入不同上游协议
 
-项目的长期方向不止于当前这套 API 形态。Gateyes 计划演进为一个支持多种 provider 协议的网关，例如 OpenAI 风格接口、Anthropic 以及其他模型厂商，通过不同 adapter 统一接入。
+## 当前已实现
 
-## 当前状态
+API：
 
-这个仓库现在更适合被理解为“早期可运行版本”，还不是完整平台。
-
-当前已经落地的接口：
-
-- `POST /v1/chat/completions`
-- `POST /v1/responses`
-- `GET /v1/responses`，用于 WebSocket
-- `GET /v1/models`
 - `GET /health`
 - `GET /ready`
 - `GET /metrics`
 - `GET /debug/pprof/*`
-- `GET/POST/PUT/DELETE /admin/...`
-
-当前实现边界：
-
-- 运行时认证依赖配置文件中的 `apiKeys`
-- 上游 provider 调用目前基于 chat-completions 风格请求
-- 缓存、用户数据、provider 状态都在内存中
-- 管理端的用户接口已经存在，但还没有接入运行时认证链路
-- provider 统计接口已经暴露，但完整的实时统计还没有全部打通
-
-这份 README 会严格区分“已经实现”和“未来规划”，避免把想法写成既有能力。
-
-## 为什么做这个项目
-
-很多团队一开始都是直接在业务代码里调用单一模型厂商 SDK。随着需求增加，通常会逐步遇到这些问题：
-
-- 认证逻辑分散
-- 配额和限流难以统一治理
-- 更换 provider 的成本高
-- 观测能力重复建设
-- 缺少一层稳定的网关来隔离上游差异
-
-Gateyes 的目标就是逐步补上这一层，从一个足够小、足够容易跑起来的网关开始往前迭代。
-
-## 架构概览
-
-当前请求流程：
-
-1. 客户端调用 `/v1/*` 接口
-2. 认证中间件校验 `Authorization: Bearer key:secret`
-3. 对非流式请求先尝试命中缓存
-4. 限流器执行全局和按 key 的限制
-5. Router 从已配置 provider 中选择一个上游
-6. Provider 将请求转发到上游模型服务
-7. 结果以普通 JSON 或 SSE 的形式返回
-
-当前核心目录：
-
-- `cmd/gateway`：程序入口
-- `internal/handler`：HTTP handler、路由与服务装配
-- `internal/service/provider`：上游 provider 调用逻辑
-- `internal/service/router`：路由策略
-- `internal/service/limiter`：限流与排队
-- `internal/service/cache`：内存 KV 缓存
-- `internal/service/streaming`：流式透传
-- `internal/repository`：内存中的 API Key / User 仓库
-- `internal/config`：YAML 配置加载与环境变量替换
-
-## 快速开始
-
-### 运行要求
-
-- Go 1.21+
-
-### 构建
-
-```bash
-go build -o ./bin/gateway ./cmd/gateway
-```
-
-### 配置
-
-直接编辑 [`configs/config.yaml`](./configs/config.yaml)。
-
-最小示例：
-
-```yaml
-server:
-  listenAddr: ":8080"
-
-metrics:
-  namespace: gateway
-  enabled: true
-
-router:
-  strategy: round_robin
-  stickySession: false
-
-limiter:
-  globalQPS: 1000
-  globalTPM: 1000000
-  burst: 100
-  queueSize: 1000
-
-cache:
-  enabled: true
-  maxSize: 10000
-  ttl: 3600
-
-providers:
-  - name: primary
-    type: openai
-    baseURL: https://your-upstream.example.com
-    apiKey: ${UPSTREAM_API_KEY}
-    model: your-model-name
-    weight: 10
-    priceInput: 0.0001
-    priceOutput: 0.0003
-    maxTokens: 4096
-    timeout: 60
-
-apiKeys:
-  - key: demo-key
-    secret: demo-secret
-    quota: 1000000
-    qps: 100
-    models: []
-
-admin:
-  adminKey: change-me
-```
-
-`internal/config/config.go` 里的加载逻辑支持 `${ENV_VAR}` 形式的环境变量替换，因此上游密钥可以放在环境变量里。
-
-### 启动
-
-```bash
-./bin/gateway -config configs/config.yaml
-```
-
-默认监听 `:8080`。
-
-## API 示例
-
-### 健康检查
-
-```bash
-curl http://localhost:8080/health
-```
-
-### Chat Completions
-
-```bash
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer demo-key:demo-secret" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "your-model-name",
-    "messages": [
-      {"role": "user", "content": "hello"}
-    ]
-  }'
-```
-
-### Responses API
-
-当前 `POST /v1/responses` 内部仍然复用 chat 处理链路。
-
-```bash
-curl -X POST http://localhost:8080/v1/responses \
-  -H "Authorization: Bearer demo-key:demo-secret" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "your-model-name",
-    "messages": [
-      {"role": "user", "content": "hello"}
-    ]
-  }'
-```
-
-### Streaming
-
-```bash
-curl -N -X POST http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer demo-key:demo-secret" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "your-model-name",
-    "stream": true,
-    "messages": [
-      {"role": "user", "content": "say hi"}
-    ]
-  }'
-```
-
-### Models
-
-```bash
-curl http://localhost:8080/v1/models \
-  -H "Authorization: Bearer demo-key:demo-secret"
-```
-
-### 管理接口
-
-```bash
-curl http://localhost:8080/admin/dashboard \
-  -H "X-Admin-Key: change-me"
-```
-
-当前服务还暴露了这些管理接口：
-
+- `POST /v1/chat/completions`
+- `POST /v1/responses`
+- `GET /v1/responses/:id`
+- `GET /v1/models`
+- `GET /admin/dashboard`
 - `GET /admin/providers`
 - `GET /admin/providers/:name`
 - `GET /admin/providers/:name/stats`
@@ -229,78 +35,306 @@ curl http://localhost:8080/admin/dashboard \
 - `PUT /admin/users/:id`
 - `DELETE /admin/users/:id`
 - `POST /admin/users/:id/reset`
+- `GET /admin/tenants`
+- `POST /admin/tenants`
+- `GET /admin/tenants/:id`
+- `PUT /admin/tenants/:id`
+- `POST /admin/tenants/:id/providers`
+
+能力：
+
+- 运行时鉴权走数据库，不再只依赖内存配置
+- 支持 SQLite / PostgreSQL / MySQL 三种 `database/sql` 驱动
+- 启动时自动执行 migration
+- 配置中的 `apiKeys` 会作为 bootstrap 数据写入数据库
+- 启动时自动确保默认 tenant，并回填历史无 tenant 数据
+- 启动时自动创建 bootstrap `super_admin`
+- admin 创建用户时会生成 `api_key` 和 `api_secret`
+- admin 创建出的 key 可以直接用于 `/v1/*` 请求
+- 支持多租户隔离：
+  - user / api key / usage / responses
+  - tenant 可见 provider 列表
+- 支持固定角色 RBAC：
+  - `super_admin`
+  - `tenant_admin`
+  - `tenant_user`
+- `/admin/*` 已统一改为 Bearer 鉴权，不再使用 `X-Admin-Key`
+- 用户状态、租户状态、配额、模型白名单进入运行时鉴权链路
+- provider adapter 已支持：
+  - `openai`
+  - `anthropic`
+- 支持基础路由策略：
+  - `round_robin`
+  - `random`
+  - `least_load`
+  - `cost_based`
+  - `sticky`
+- 支持非流式内存缓存
+- 支持基础限流
+- 支持 SSE 流式转发
+- 支持 provider 统计接口
+- 请求 usage 会写入数据库
+- `POST /v1/responses` 已是独立 handler
+- `GET /v1/responses/:id` 可读取已持久化 response
+
+## 当前边界
+
+这版仍然是早期网关，不是完整平台。
+
+当前还没做完的部分：
+
+- `POST /v1/responses` 虽然已经独立成路由和持久化对象，但内部仍复用 chat provider 能力做协议映射，不是完整的 Responses 协议兼容层
+- stream 请求的 usage/token 统计仍然是近似值，不是精确闭环
+- provider 目前仍然从配置加载，不是数据库动态管理
+- Anthropic adapter 当前聚焦 messages/chat 主路径
+- 预算、billing、熔断、重试、主动健康检查还没接上
+- cache 仍然是内存实现，不是分布式缓存
+
+## 架构概览
+
+当前请求流程：
+
+1. 客户端请求 `/v1/*`
+2. `Authorization: Bearer key:secret` 进入鉴权
+3. 从数据库读取 key、user、tenant、角色、模型权限、配额
+4. 非流式请求先尝试 cache
+5. limiter 执行限流
+6. 根据 tenant 可用 provider 集合做路由选择
+7. provider adapter 将内部统一请求转换成上游协议
+8. 响应返回客户端，并写入 usage / responses
+
+核心目录：
+
+- `cmd/gateway`：程序入口
+- `internal/config`：配置结构
+- `internal/db`：数据库连接和 migration
+- `internal/repository`：领域接口
+- `internal/repository/sqlstore`：`database/sql` 实现
+- `internal/handler`：HTTP handler 和 admin API
+- `internal/service/auth`：运行时鉴权和角色判断
+- `internal/service/provider`：provider interface + OpenAI / Anthropic adapter
+- `internal/service/router`：路由策略
+- `internal/service/cache`：内存缓存
+- `internal/service/limiter`：限流
+- `internal/service/streaming`：SSE 转发
+
+## 快速开始
+
+### 运行要求
+
+- Go 1.25+
+
+### 构建
+
+```bash
+go build -o ./bin/gateway ./cmd/gateway
+```
+
+### 配置
+
+编辑 [`configs/config.yaml`](./configs/config.yaml)。
+
+最小示例：
+
+```yaml
+server:
+  listenAddr: ":8080"
+
+database:
+  driver: sqlite
+  dsn: gateyes.db
+  autoMigrate: true
+
+providers:
+  - name: openai-primary
+    type: openai
+    baseURL: https://api.openai.com/v1
+    apiKey: ${OPENAI_API_KEY}
+    model: gpt-4o-mini
+    maxTokens: 4096
+    timeout: 60
+    enabled: true
+
+apiKeys:
+  - key: test-key-001
+    secret: test-secret
+    quota: 1000000
+    qps: 100
+    models: []
+
+admin:
+  defaultTenant: default
+  bootstrapKey: admin-key-001
+  bootstrapSecret: admin-secret-001
+```
+
+数据库支持：
+
+- `sqlite`
+- `postgres`
+- `mysql`
+
+### 启动
+
+```bash
+./bin/gateway -config configs/config.yaml
+```
+
+## 鉴权与角色
+
+运行时和管理端统一使用：
+
+```text
+Authorization: Bearer <api_key>:<api_secret>
+```
+
+默认 bootstrap admin 由配置中的以下字段生成：
+
+- `admin.defaultTenant`
+- `admin.bootstrapKey`
+- `admin.bootstrapSecret`
+
+固定角色说明：
+
+- `super_admin`：跨 tenant 管理，拥有 tenant 管理能力
+- `tenant_admin`：管理本 tenant 的用户、provider 绑定和统计
+- `tenant_user`：只允许访问 `/v1/*`
+
+## API 示例
+
+健康检查：
+
+```bash
+curl http://localhost:8080/health
+```
+
+聊天请求：
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer test-key-001:test-secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [
+      {"role": "user", "content": "hello"}
+    ]
+  }'
+```
+
+Responses 请求：
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Authorization: Bearer test-key-001:test-secret" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [
+      {"role": "user", "content": "hello"}
+    ]
+  }'
+```
+
+读取已创建 response：
+
+```bash
+curl http://localhost:8080/v1/responses/<response_id> \
+  -H "Authorization: Bearer test-key-001:test-secret"
+```
+
+创建 tenant：
+
+```bash
+curl -X POST http://localhost:8080/admin/tenants \
+  -H "Authorization: Bearer admin-key-001:admin-secret-001" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "slug": "demo",
+    "name": "Demo Tenant"
+  }'
+```
+
+为 tenant 绑定 provider：
+
+```bash
+curl -X POST http://localhost:8080/admin/tenants/demo/providers \
+  -H "Authorization: Bearer admin-key-001:admin-secret-001" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "providers": ["openai-primary"]
+  }'
+```
+
+创建 tenant 用户：
+
+```bash
+curl -X POST http://localhost:8080/admin/users \
+  -H "Authorization: Bearer admin-key-001:admin-secret-001" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tenant_id": "demo",
+    "name": "demo-user",
+    "role": "tenant_user",
+    "quota": 1000000,
+    "qps": 20,
+    "models": ["gpt-4o-mini"]
+  }'
+```
+
+返回会包含：
+
+- `api_key`
+- `api_secret`
+- `token`
+
+可以直接用返回的 `token` 访问 `/v1/*`。
 
 ## 配置说明
 
-当前生效的配置结构以 [`internal/config/config.go`](./internal/config/config.go) 为准。
+当前主要配置字段：
 
-主要字段：
-
-- `server.listenAddr`
-- `server.readTimeout`
-- `server.writeTimeout`
-- `metrics.namespace`
-- `metrics.enabled`
-- `router.strategy`
-- `router.stickySession`
-- `limiter.globalQPS`
-- `limiter.globalTPM`
-- `limiter.burst`
-- `limiter.queueSize`
-- `cache.enabled`
-- `cache.maxSize`
-- `cache.ttl`
+- `server.*`
+- `database.*`
+- `metrics.*`
+- `router.*`
+- `limiter.*`
+- `cache.*`
 - `providers[]`
 - `apiKeys[]`
-- `admin.adminKey`
+- `admin.defaultTenant`
+- `admin.bootstrapKey`
+- `admin.bootstrapSecret`
 
-当前 Router 支持的策略：
+`providers[].type` 当前支持：
 
-- `round_robin`
-- `random`
-- `least_load`
-- `cost_based`
-- `sticky`
+- `openai`
+- `anthropic`
 
-当前 provider 配置假定上游具备 chat-completions 风格能力，主要字段包括：
+`apiKeys[]` 当前主要用于 bootstrap：
 
-- `baseURL`
-- `apiKey`
-- `model`
-- `timeout`
+- 首次启动或后续启动时，会被同步到数据库
+- 默认归属 `admin.defaultTenant`
+- role 默认为 `tenant_user`
 
-配置里的 `type` 字段已经预留出来，便于后续接入不同 provider adapter，但当前实现还没有依据 `type` 切换不同协议逻辑。
+## 开发验证
 
-## 开发说明
+本轮改造后，已本地执行：
 
-建议先读这些文件：
+```bash
+go test ./...
+```
 
-- [`cmd/gateway/main.go`](./cmd/gateway/main.go)
-- [`internal/handler/handler.go`](./internal/handler/handler.go)
-- [`internal/handler/admin.go`](./internal/handler/admin.go)
-- [`internal/service/provider/provider.go`](./internal/service/provider/provider.go)
-- [`internal/service/router/router.go`](./internal/service/router/router.go)
-- [`TESTING.md`](./TESTING.md)
-
-当前比较明确的实现缺口：
-
-- admin 创建的用户还没有进入实际鉴权链路
-- 用户、缓存、状态都没有持久化
-- provider 统计只接了部分骨架
-- 路由策略目前是基础实现
-- 非 chat-completions 风格的 provider adapter 还没实现
+通过。
 
 ## Roadmap
 
-接下来比较合理的演进方向包括：
+下一阶段比较合理的方向：
 
-- 更完整的智能路由，结合健康度、延迟、成本、失败历史做选择
-- 对 Anthropic 等非 OpenAI 风格协议提供专用 adapter
-- 持久化用户、API Key、配额和使用量
-- 多租户隔离
-- 更完整的管理后台与使用量统计
-- 熔断、重试、健康检查
-- 更准确的 token 计量
-- 分布式缓存与共享限流
-
-README 故意把这些内容放在 roadmap，而不是写成“已经支持”，这样对外信息才不会失真。
+- 智能路由，结合健康度、延迟、成本、失败率
+- provider 动态管理与热更新
+- request / stream 更精确的 usage 统计
+- 预算与 billing
+- 熔断、重试、主动健康检查
+- Redis / 分布式缓存
+- 更完整的 Anthropic / OpenAI / 其他厂商协议兼容层

@@ -2,6 +2,7 @@ package router
 
 import (
 	"math"
+	"math/rand"
 	"sync"
 
 	"github.com/gateyes/gateway/internal/config"
@@ -10,10 +11,10 @@ import (
 
 type Router struct {
 	cfg       config.RouterConfig
-	providers []*provider.Provider
-	mu        sync.RWMutex
-	index     int // for round robin
+	providers []provider.Provider
+	index     int
 	loads     map[string]int64
+	mu        sync.Mutex
 }
 
 func NewRouter(cfg config.RouterConfig) *Router {
@@ -23,87 +24,36 @@ func NewRouter(cfg config.RouterConfig) *Router {
 	}
 }
 
-func (r *Router) SetProviders(providers []*provider.Provider) {
+func (r *Router) SetProviders(providers []provider.Provider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.providers = providers
 }
 
-func (r *Router) Select(model, sessionID string) *provider.Provider {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+func (r *Router) Select(model, sessionID string) provider.Provider {
+	return r.SelectFrom(r.providers, sessionID)
+}
 
-	if len(r.providers) == 0 {
+func (r *Router) SelectFrom(candidates []provider.Provider, sessionID string) provider.Provider {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if len(candidates) == 0 {
 		return nil
 	}
 
 	switch r.cfg.Strategy {
-	case "round_robin":
-		return r.roundRobin()
 	case "random":
-		return r.random()
+		return candidates[rand.Intn(len(candidates))]
 	case "least_load":
-		return r.leastLoad()
+		return r.leastLoadLocked(candidates)
 	case "cost_based":
-		return r.costBased(model)
+		return r.costBasedLocked(candidates)
 	case "sticky":
-		return r.sticky(sessionID)
+		return r.stickyLocked(sessionID, candidates)
 	default:
-		return r.roundRobin()
+		return r.roundRobinLocked(candidates)
 	}
-}
-
-func (r *Router) roundRobin() *provider.Provider {
-	r.index = (r.index + 1) % len(r.providers)
-	return r.providers[r.index]
-}
-
-func (r *Router) random() *provider.Provider {
-	// simple hash-based pseudo-random
-	idx := len(r.providers) - 1
-	return r.providers[idx]
-}
-
-func (r *Router) leastLoad() *provider.Provider {
-	var minLoad int64 = math.MaxInt64
-	var selected *provider.Provider
-	for _, p := range r.providers {
-		load := r.loads[p.Name]
-		if load < minLoad {
-			minLoad = load
-			selected = p
-		}
-	}
-	return selected
-}
-
-func (r *Router) costBased(model string) *provider.Provider {
-	var minCost float64 = math.MaxFloat64
-	var selected *provider.Provider
-	for _, p := range r.providers {
-		cost := p.PriceIn + p.PriceOut // per token cost
-		if cost < minCost {
-			minCost = cost
-			selected = p
-		}
-	}
-	return selected
-}
-
-func (r *Router) sticky(sessionID string) *provider.Provider {
-	if sessionID == "" {
-		return r.roundRobin()
-	}
-	// hash session to provider
-	hash := 0
-	for _, c := range sessionID {
-		hash = hash*31 + int(c)
-	}
-	idx := hash % len(r.providers)
-	if idx < 0 {
-		idx = -idx
-	}
-	return r.providers[idx]
 }
 
 func (r *Router) IncLoad(name string) {
@@ -115,11 +65,55 @@ func (r *Router) IncLoad(name string) {
 func (r *Router) DecLoad(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.loads[name]--
+	if r.loads[name] > 0 {
+		r.loads[name]--
+	}
 }
 
-func (r *Router) GetLoad(name string) int64 {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.loads[name]
+func (r *Router) roundRobinLocked(candidates []provider.Provider) provider.Provider {
+	selected := candidates[r.index%len(candidates)]
+	r.index = (r.index + 1) % len(candidates)
+	return selected
+}
+
+func (r *Router) leastLoadLocked(candidates []provider.Provider) provider.Provider {
+	var selected provider.Provider
+	minLoad := int64(math.MaxInt64)
+	for _, p := range candidates {
+		load := r.loads[p.Name()]
+		if load < minLoad {
+			minLoad = load
+			selected = p
+		}
+	}
+	return selected
+}
+
+func (r *Router) costBasedLocked(candidates []provider.Provider) provider.Provider {
+	var selected provider.Provider
+	minCost := math.MaxFloat64
+	for _, p := range candidates {
+		if p.UnitCost() < minCost {
+			minCost = p.UnitCost()
+			selected = p
+		}
+	}
+	return selected
+}
+
+func (r *Router) stickyLocked(sessionID string, candidates []provider.Provider) provider.Provider {
+	if sessionID == "" {
+		return r.roundRobinLocked(candidates)
+	}
+
+	hash := 0
+	for _, ch := range sessionID {
+		hash = hash*31 + int(ch)
+	}
+
+	index := hash % len(candidates)
+	if index < 0 {
+		index = -index
+	}
+	return candidates[index]
 }

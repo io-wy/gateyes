@@ -10,8 +10,8 @@ import (
 )
 
 type Cache struct {
-	items  map[string]*CacheItem
-	mu     sync.RWMutex
+	items   map[string]*CacheItem
+	mu      sync.RWMutex
 	maxSize int
 	ttl     time.Duration
 }
@@ -23,7 +23,7 @@ type CacheItem struct {
 
 func NewMemoryCache(cfg config.CacheConfig) *Cache {
 	return &Cache{
-		items:  make(map[string]*CacheItem),
+		items:   make(map[string]*CacheItem),
 		maxSize: cfg.MaxSize,
 		ttl:     time.Duration(cfg.TTL) * time.Second,
 	}

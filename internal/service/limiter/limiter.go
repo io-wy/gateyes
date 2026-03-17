@@ -9,13 +9,13 @@ import (
 )
 
 type Limiter struct {
-	cfg       config.LimiterConfig
+	cfg         config.LimiterConfig
 	globalToken *TokenBucket
-	userTokens map[string]*TokenBucket
-	queue     chan *Request
-	wg        sync.WaitGroup
-	stopCh    chan struct{}
-	mu        sync.RWMutex
+	userTokens  map[string]*TokenBucket
+	queue       chan *Request
+	wg          sync.WaitGroup
+	stopCh      chan struct{}
+	mu          sync.RWMutex
 }
 
 type TokenBucket struct {
@@ -35,11 +35,11 @@ type Request struct {
 
 func NewLimiter(cfg config.LimiterConfig) *Limiter {
 	l := &Limiter{
-		cfg:       cfg,
+		cfg:         cfg,
 		globalToken: NewTokenBucket(cfg.GlobalTPM/60, cfg.Burst),
-		userTokens: make(map[string]*TokenBucket),
-		queue:     make(chan *Request, cfg.QueueSize),
-		stopCh:    make(chan struct{}),
+		userTokens:  make(map[string]*TokenBucket),
+		queue:       make(chan *Request, cfg.QueueSize),
+		stopCh:      make(chan struct{}),
 	}
 
 	// 定期补充 token
