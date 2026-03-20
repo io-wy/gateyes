@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,34 @@ import (
 type openAIProvider struct {
 	cfg    config.ProviderConfig
 	client *http.Client
+}
+
+type openAIResponsePayload struct {
+	ID        string             `json:"id"`
+	Object    string             `json:"object"`
+	CreatedAt int64              `json:"created_at"`
+	Model     string             `json:"model"`
+	Status    string             `json:"status"`
+	Output    []openAIOutputItem `json:"output"`
+	Usage     struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+		TotalTokens  int `json:"total_tokens"`
+	} `json:"usage"`
+}
+
+type openAIOutputItem struct {
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	Role      string `json:"role"`
+	Status    string `json:"status"`
+	CallID    string `json:"call_id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+	Content   []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
 }
 
 func NewOpenAIProvider(cfg config.ProviderConfig) Provider {
@@ -37,14 +66,11 @@ func (p *openAIProvider) Cost(prompt, completion int) float64 {
 	return float64(prompt)*p.cfg.PriceInput + float64(completion)*p.cfg.PriceOutput
 }
 
-func (p *openAIProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
-	body, _ := json.Marshal(req)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(p.cfg.BaseURL, "/")+"/chat/completions", bytes.NewReader(body))
+func (p *openAIProvider) CreateResponse(ctx context.Context, req *ResponseRequest) (*Response, error) {
+	httpReq, err := p.newRequest(ctx, req, false)
 	if err != nil {
 		return nil, err
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
@@ -57,32 +83,26 @@ func (p *openAIProvider) Chat(ctx context.Context, req *ChatRequest) (*ChatRespo
 		return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, string(payload))
 	}
 
-	var chatResp ChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+	var raw openAIResponsePayload
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return nil, err
 	}
-	if chatResp.Model == "" {
-		chatResp.Model = req.Model
-	}
-	return &chatResp, nil
+	return convertOpenAIResponse(raw, req.Model), nil
 }
 
-func (p *openAIProvider) ChatStream(ctx context.Context, req *ChatRequest) (<-chan string, <-chan error) {
-	result := make(chan string)
+func (p *openAIProvider) StreamResponse(ctx context.Context, req *ResponseRequest) (<-chan ResponseEvent, <-chan error) {
+	result := make(chan ResponseEvent)
 	errCh := make(chan error, 1)
 
 	go func() {
 		defer close(result)
 		defer close(errCh)
 
-		body, _ := json.Marshal(req)
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(p.cfg.BaseURL, "/")+"/chat/completions", bytes.NewReader(body))
+		httpReq, err := p.newRequest(ctx, req, true)
 		if err != nil {
 			errCh <- err
 			return
 		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
 		httpReq.Header.Set("Accept", "text/event-stream")
 
 		resp, err := p.client.Do(httpReq)
@@ -114,14 +134,289 @@ func (p *openAIProvider) ChatStream(ctx context.Context, req *ChatRequest) (<-ch
 				continue
 			}
 
-			data := strings.TrimPrefix(line, "data: ")
+			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			if data == "[DONE]" {
 				return
 			}
 
-			result <- data
+			event, err := parseOpenAIResponseEvent(data, req.Model)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if event == nil {
+				continue
+			}
+			result <- *event
 		}
 	}()
 
 	return result, errCh
+}
+
+func (p *openAIProvider) newRequest(ctx context.Context, req *ResponseRequest, stream bool) (*http.Request, error) {
+	payload := map[string]any{
+		"model":  req.Model,
+		"input":  buildOpenAIInput(req.InputMessages()),
+		"stream": stream,
+	}
+	if maxTokens := req.RequestedMaxTokens(); maxTokens > 0 {
+		payload["max_output_tokens"] = maxTokens
+	}
+
+	body, _ := json.Marshal(payload)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(p.cfg.BaseURL, "/")+"/responses", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
+	return httpReq, nil
+}
+
+func buildOpenAIInput(messages []Message) []map[string]any {
+	items := make([]map[string]any, 0, len(messages))
+	for _, message := range messages {
+		if message.ToolCallID != "" {
+			items = append(items, map[string]any{
+				"type":    "function_call_output",
+				"call_id": message.ToolCallID,
+				"output":  collectText(message.Content),
+			})
+			continue
+		}
+
+		if content := buildOpenAIMessageContent(message.Content); len(content) > 0 {
+			role := message.Role
+			if role == "" {
+				role = "user"
+			}
+			items = append(items, map[string]any{
+				"role":    role,
+				"content": content,
+			})
+		}
+
+		for _, call := range message.ToolCalls {
+			items = append(items, map[string]any{
+				"type":      "function_call",
+				"id":        call.ID,
+				"call_id":   firstNonEmpty(call.ID, message.ToolCallID),
+				"name":      call.Function.Name,
+				"arguments": call.Function.Arguments,
+			})
+		}
+	}
+	return items
+}
+
+func buildOpenAIMessageContent(content any) []map[string]any {
+	switch current := content.(type) {
+	case nil:
+		return nil
+	case string:
+		if current == "" {
+			return nil
+		}
+		return []map[string]any{{
+			"type": "input_text",
+			"text": current,
+		}}
+	case []any:
+		parts := make([]map[string]any, 0, len(current))
+		for _, item := range current {
+			part, ok := buildOpenAIContentPart(item)
+			if ok {
+				parts = append(parts, part)
+			}
+		}
+		return parts
+	case map[string]any:
+		part, ok := buildOpenAIContentPart(current)
+		if !ok {
+			return nil
+		}
+		return []map[string]any{part}
+	default:
+		text := collectText(current)
+		if text == "" {
+			return nil
+		}
+		return []map[string]any{{
+			"type": "input_text",
+			"text": text,
+		}}
+	}
+}
+
+func buildOpenAIContentPart(value any) (map[string]any, bool) {
+	current, ok := value.(map[string]any)
+	if !ok {
+		text := collectText(value)
+		if text == "" {
+			return nil, false
+		}
+		return map[string]any{
+			"type": "input_text",
+			"text": text,
+		}, true
+	}
+
+	typeName := firstNonEmpty(stringValue(current["type"]), "input_text")
+	text := collectText(current)
+	if text == "" {
+		return nil, false
+	}
+	return map[string]any{
+		"type": normalizeOpenAITextType(typeName),
+		"text": text,
+	}, true
+}
+
+func normalizeOpenAITextType(typeName string) string {
+	switch typeName {
+	case "text", "output_text":
+		return "input_text"
+	default:
+		return typeName
+	}
+}
+
+func parseOpenAIResponseEvent(data string, requestedModel string) (*ResponseEvent, error) {
+	var envelope struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(data), &envelope); err != nil {
+		return nil, err
+	}
+
+	switch envelope.Type {
+	case "response.output_text.delta":
+		var payload struct {
+			Type  string `json:"type"`
+			Delta string `json:"delta"`
+		}
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			return nil, err
+		}
+		return &ResponseEvent{
+			Type:  payload.Type,
+			Delta: payload.Delta,
+		}, nil
+	case "response.output_item.done":
+		var payload struct {
+			Type       string           `json:"type"`
+			Item       openAIOutputItem `json:"item"`
+			OutputItem openAIOutputItem `json:"output_item"`
+		}
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			return nil, err
+		}
+		item := payload.Item
+		if item.Type == "" {
+			item = payload.OutputItem
+		}
+		output := convertOpenAIOutputItem(item)
+		if output == nil {
+			return nil, nil
+		}
+		return &ResponseEvent{
+			Type:   payload.Type,
+			Output: output,
+		}, nil
+	case "response.completed":
+		var payload struct {
+			Type     string                `json:"type"`
+			Response openAIResponsePayload `json:"response"`
+		}
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			return nil, err
+		}
+		resp := convertOpenAIResponse(payload.Response, requestedModel)
+		return &ResponseEvent{
+			Type:     payload.Type,
+			Response: resp,
+		}, nil
+	case "response.failed":
+		var payload struct {
+			Response struct {
+				Error struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			} `json:"response"`
+		}
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			return nil, err
+		}
+		if payload.Response.Error.Message == "" {
+			payload.Response.Error.Message = "upstream response failed"
+		}
+		return nil, errors.New(payload.Response.Error.Message)
+	default:
+		return nil, nil
+	}
+}
+
+func convertOpenAIResponse(raw openAIResponsePayload, requestedModel string) *Response {
+	output := make([]ResponseOutput, 0, len(raw.Output))
+	for _, item := range raw.Output {
+		converted := convertOpenAIOutputItem(item)
+		if converted == nil {
+			continue
+		}
+		output = append(output, *converted)
+	}
+
+	model := requestedModel
+	if model == "" {
+		model = raw.Model
+	}
+
+	return &Response{
+		ID:      raw.ID,
+		Object:  "response",
+		Created: raw.CreatedAt,
+		Model:   model,
+		Status:  raw.Status,
+		Output:  output,
+		Usage: Usage{
+			PromptTokens:     raw.Usage.InputTokens,
+			CompletionTokens: raw.Usage.OutputTokens,
+			TotalTokens:      raw.Usage.TotalTokens,
+		},
+	}
+}
+
+func convertOpenAIOutputItem(item openAIOutputItem) *ResponseOutput {
+	switch item.Type {
+	case "message":
+		content := make([]ResponseContent, 0, len(item.Content))
+		for _, block := range item.Content {
+			if block.Text == "" {
+				continue
+			}
+			content = append(content, ResponseContent{
+				Type: block.Type,
+				Text: block.Text,
+			})
+		}
+		return &ResponseOutput{
+			ID:      item.ID,
+			Type:    item.Type,
+			Role:    item.Role,
+			Status:  item.Status,
+			Content: content,
+		}
+	case "function_call":
+		return &ResponseOutput{
+			ID:     item.ID,
+			Type:   item.Type,
+			Status: item.Status,
+			CallID: firstNonEmpty(item.CallID, item.ID),
+			Name:   item.Name,
+			Args:   item.Arguments,
+		}
+	default:
+		return nil
+	}
 }

@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/gateyes/gateway/internal/middleware"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/provider"
 )
@@ -24,25 +25,8 @@ func NewAdminHandler(store repository.Store, providerMgr *provider.Manager) *Adm
 	}
 }
 
-func (h *AdminHandler) RequireRoles(roles ...string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		identity, ok := adminIdentity(c)
-		if !ok {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid api key"})
-			c.Abort()
-			return
-		}
-		if !repository.HasRole(identity.Role, roles...) {
-			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
-			c.Abort()
-			return
-		}
-		c.Next()
-	}
-}
-
 func (h *AdminHandler) GetProviders(c *gin.Context) {
-	identity, _ := adminIdentity(c)
+	identity, _ := middleware.Identity(c)
 	tenantID, ok := h.scopeTenantID(c, identity)
 	if !ok {
 		return
@@ -52,7 +36,7 @@ func (h *AdminHandler) GetProviders(c *gin.Context) {
 }
 
 func (h *AdminHandler) GetProvider(c *gin.Context) {
-	identity, _ := adminIdentity(c)
+	identity, _ := middleware.Identity(c)
 	tenantID, ok := h.scopeTenantID(c, identity)
 	if !ok {
 		return
@@ -84,7 +68,7 @@ type CreateUserRequest struct {
 }
 
 func (h *AdminHandler) CreateUser(c *gin.Context) {
-	identity, _ := adminIdentity(c)
+	identity, _ := middleware.Identity(c)
 
 	var req CreateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -168,7 +152,7 @@ func (h *AdminHandler) CreateUser(c *gin.Context) {
 }
 
 func (h *AdminHandler) ListUsers(c *gin.Context) {
-	identity, _ := adminIdentity(c)
+	identity, _ := middleware.Identity(c)
 	tenantID, ok := h.scopeTenantID(c, identity)
 	if !ok {
 		return
@@ -189,7 +173,7 @@ func (h *AdminHandler) ListUsers(c *gin.Context) {
 }
 
 func (h *AdminHandler) GetUser(c *gin.Context) {
-	identity, _ := adminIdentity(c)
+	identity, _ := middleware.Identity(c)
 	tenantID := scopedTenant(identity)
 	if identity.Role == repository.RoleSuperAdmin {
 		tenantID = ""
@@ -216,7 +200,7 @@ type UpdateUserRequest struct {
 }
 
 func (h *AdminHandler) UpdateUser(c *gin.Context) {
-	identity, _ := adminIdentity(c)
+	identity, _ := middleware.Identity(c)
 
 	var req UpdateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -253,7 +237,7 @@ func (h *AdminHandler) UpdateUser(c *gin.Context) {
 }
 
 func (h *AdminHandler) DeleteUser(c *gin.Context) {
-	identity, _ := adminIdentity(c)
+	identity, _ := middleware.Identity(c)
 	tenantID := scopedTenant(identity)
 	if identity.Role == repository.RoleSuperAdmin {
 		tenantID = ""
@@ -272,7 +256,7 @@ func (h *AdminHandler) DeleteUser(c *gin.Context) {
 }
 
 func (h *AdminHandler) ResetUserUsage(c *gin.Context) {
-	identity, _ := adminIdentity(c)
+	identity, _ := middleware.Identity(c)
 	tenantID := scopedTenant(identity)
 	if identity.Role == repository.RoleSuperAdmin {
 		tenantID = ""
@@ -296,7 +280,7 @@ func (h *AdminHandler) ResetUserUsage(c *gin.Context) {
 }
 
 func (h *AdminHandler) Dashboard(c *gin.Context) {
-	identity, _ := adminIdentity(c)
+	identity, _ := middleware.Identity(c)
 	tenantID, ok := h.scopeTenantID(c, identity)
 	if !ok {
 		return
@@ -462,13 +446,20 @@ func (h *AdminHandler) ReplaceTenantProviders(c *gin.Context) {
 }
 
 func (h *AdminHandler) providerResponses(c *gin.Context, tenantID string) []gin.H {
-	providerNames, err := h.store.ListTenantProviders(c.Request.Context(), tenantID)
-	if err != nil {
-		return nil
-	}
 	usageByProvider, err := h.store.GetProviderUsageSummary(c.Request.Context(), tenantID)
 	if err != nil {
 		return nil
+	}
+
+	var providers []provider.Provider
+	if tenantID == "" {
+		providers = h.providerMgr.List()
+	} else {
+		providerNames, err := h.store.ListTenantProviders(c.Request.Context(), tenantID)
+		if err != nil {
+			return nil
+		}
+		providers = h.providerMgr.ListByNames(providerNames)
 	}
 
 	statsByName := make(map[string]*provider.ProviderStats)
@@ -476,8 +467,8 @@ func (h *AdminHandler) providerResponses(c *gin.Context, tenantID string) []gin.
 		statsByName[item.Name] = item
 	}
 
-	result := make([]gin.H, 0, len(providerNames))
-	for _, providerItem := range h.providerMgr.ListByNames(providerNames) {
+	result := make([]gin.H, 0, len(providers))
+	for _, providerItem := range providers {
 		globalStats := statsByName[providerItem.Name()]
 		usageStats := usageByProvider[providerItem.Name()]
 		result = append(result, gin.H{
@@ -501,11 +492,7 @@ func (h *AdminHandler) providerResponses(c *gin.Context, tenantID string) []gin.
 
 func (h *AdminHandler) scopeTenantID(c *gin.Context, identity *repository.AuthIdentity) (string, bool) {
 	if identity.Role == repository.RoleSuperAdmin {
-		tenantID := c.Query("tenant_id")
-		if tenantID == "" {
-			tenantID = identity.TenantID
-		}
-		return tenantID, true
+		return c.Query("tenant_id"), true
 	}
 	return identity.TenantID, true
 }
@@ -532,15 +519,6 @@ func (h *AdminHandler) allProvidersExist(names []string) bool {
 		}
 	}
 	return true
-}
-
-func adminIdentity(c *gin.Context) (*repository.AuthIdentity, bool) {
-	value, ok := c.Get("auth_identity")
-	if !ok {
-		return nil, false
-	}
-	identity, ok := value.(*repository.AuthIdentity)
-	return identity, ok
 }
 
 func scopedTenant(identity *repository.AuthIdentity) string {

@@ -1,21 +1,19 @@
 package handler
 
 import (
-	"context"
-	"encoding/json"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 
+	"github.com/gateyes/gateway/internal/middleware"
 	"github.com/gateyes/gateway/internal/repository"
-	"github.com/gateyes/gateway/internal/service/auth"
 	"github.com/gateyes/gateway/internal/service/provider"
+	responseSvc "github.com/gateyes/gateway/internal/service/responses"
 )
 
 func (h *Handler) GetResponse(c *gin.Context) {
-	identity, ok := h.authIdentity(c)
+	identity, ok := middleware.Identity(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"message": "invalid API key", "type": "invalid_request_error"}})
 		return
@@ -41,142 +39,46 @@ func (h *Handler) GetResponse(c *gin.Context) {
 func (h *Handler) handleResponsesCreate(c *gin.Context) {
 	start := time.Now()
 
-	var req provider.ResponsesRequest
+	var req provider.ResponseRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.metrics.errors.WithLabelValues(req.Model, "invalid_request").Inc()
 		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": err.Error(), "type": "invalid_request_error"}})
 		return
 	}
+	req.Normalize()
 
-	identity, ok := h.authIdentity(c)
+	identity, ok := middleware.Identity(c)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"message": "invalid API key", "type": "invalid_request_error"}})
 		return
 	}
-	if !h.authSvc.CheckModel(identity, req.Model) {
-		c.JSON(http.StatusForbidden, gin.H{"error": gin.H{"message": auth.ErrModelNotAllowed.Error(), "type": "invalid_request_error"}})
-		return
-	}
-
-	estimatedPromptTokens := h.estimateTokens(req.Messages)
-	if !h.authSvc.HasQuota(identity, estimatedPromptTokens) {
-		c.JSON(http.StatusTooManyRequests, gin.H{"error": gin.H{"message": auth.ErrQuotaExceeded.Error(), "type": "rate_limit_error"}})
-		return
-	}
-	if !h.deps.Limiter.Allow(c.Request.Context(), identity.APIKey, estimatedPromptTokens) {
-		c.JSON(http.StatusTooManyRequests, gin.H{"error": gin.H{"message": "rate limit exceeded", "type": "rate_limit_error"}})
-		return
-	}
-
-	selected, err := h.selectProvider(c.Request.Context(), identity, c.GetHeader("X-Session-ID"))
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error(), "type": "internal_error"}})
-		return
-	}
-	if selected == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"message": "no provider available", "type": "internal_error"}})
-		return
-	}
-
-	responseID := uuid.NewString()
-	requestBody, _ := json.Marshal(req)
-	if err := h.deps.Store.CreateResponse(c.Request.Context(), repository.ResponseRecord{
-		ID:           responseID,
-		TenantID:     identity.TenantID,
-		UserID:       identity.UserID,
-		APIKeyID:     identity.APIKeyID,
-		ProviderName: selected.Name(),
-		Model:        req.Model,
-		Status:       "in_progress",
-		RequestBody:  requestBody,
-	}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error(), "type": "internal_error"}})
-		return
-	}
-
-	upstreamReq := &provider.ChatRequest{
-		Model:     selected.Model(),
-		Messages:  req.Messages,
-		Stream:    req.Stream,
-		MaxTokens: 0,
-	}
-
-	h.deps.Router.IncLoad(selected.Name())
-	h.deps.ProviderMgr.Stats.IncrementLoad(selected.Name())
-	defer func() {
-		h.deps.Router.DecLoad(selected.Name())
-		h.deps.ProviderMgr.Stats.DecrementLoad(selected.Name())
-	}()
 
 	if req.Stream {
-		h.handleResponsesStream(c, identity, selected, req.Model, responseID, upstreamReq, estimatedPromptTokens, start)
-		return
-	}
-
-	h.handleResponsesNormal(c, identity, selected, req.Model, responseID, upstreamReq, start)
-}
-
-func (h *Handler) handleResponsesNormal(c *gin.Context, identity *repository.AuthIdentity, p provider.Provider, requestedModel, responseID string, req *provider.ChatRequest, start time.Time) {
-	resp, err := p.Chat(c.Request.Context(), req)
-	latencyMs := time.Since(start).Milliseconds()
-	if err != nil {
-		h.deps.ProviderMgr.Stats.RecordRequest(p.Name(), false, 0, latencyMs)
-		_ = h.deps.Store.UpdateResponse(c.Request.Context(), repository.ResponseRecord{
-			ID:           responseID,
-			TenantID:     identity.TenantID,
-			ProviderName: p.Name(),
-			Model:        requestedModel,
-			Status:       "error",
-		})
-		_ = h.authSvc.RecordUsage(c.Request.Context(), identity, p.Name(), requestedModel, 0, 0, 0, 0, latencyMs, "error", "upstream_error")
-		c.JSON(http.StatusBadGateway, h.buildErrorResponse(err, p.Name()))
-		return
-	}
-
-	response := provider.ConvertToResponses(resp)
-	response.ID = responseID
-	response.Model = requestedModel
-
-	body, _ := json.Marshal(response)
-	if err := h.deps.Store.UpdateResponse(c.Request.Context(), repository.ResponseRecord{
-		ID:           responseID,
-		TenantID:     identity.TenantID,
-		ProviderName: p.Name(),
-		Model:        requestedModel,
-		Status:       "completed",
-		ResponseBody: body,
-	}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error(), "type": "internal_error"}})
-		return
-	}
-
-	if err := h.authSvc.RecordUsage(
-		c.Request.Context(),
-		identity,
-		p.Name(),
-		requestedModel,
-		resp.Usage.PromptTokens,
-		resp.Usage.CompletionTokens,
-		resp.Usage.TotalTokens,
-		p.Cost(resp.Usage.PromptTokens, resp.Usage.CompletionTokens),
-		latencyMs,
-		"success",
-		"",
-	); err != nil {
-		if err == auth.ErrQuotaExceeded {
-			c.JSON(http.StatusTooManyRequests, gin.H{"error": gin.H{"message": err.Error(), "type": "rate_limit_error"}})
+		stream, err := h.responses.CreateStream(c.Request.Context(), identity, &req, c.GetHeader("X-Session-ID"))
+		if err != nil {
+			h.renderServiceError(c, req.Model, err)
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error(), "type": "internal_error"}})
+		h.streamResponses(c, stream, req.Model)
 		return
 	}
 
-	h.deps.ProviderMgr.Stats.RecordRequest(p.Name(), true, resp.Usage.TotalTokens, latencyMs)
-	c.JSON(http.StatusOK, response)
+	result, err := h.responses.Create(c.Request.Context(), identity, &req, c.GetHeader("X-Session-ID"))
+	if err != nil {
+		h.renderServiceError(c, req.Model, err)
+		return
+	}
+
+	if result.CacheHit {
+		h.metrics.cacheHit.Inc()
+	} else if h.cfg.Cache.Enabled {
+		h.metrics.cacheMiss.Inc()
+	}
+	h.observeResponse(req.Model, result.ProviderName, result.Response.Usage, time.Since(start), result.CacheHit)
+	c.JSON(http.StatusOK, result.Response)
 }
 
-func (h *Handler) handleResponsesStream(c *gin.Context, identity *repository.AuthIdentity, p provider.Provider, requestedModel, responseID string, req *provider.ChatRequest, estimatedPromptTokens int, start time.Time) {
-	stream, errCh := p.ChatStream(c.Request.Context(), req)
-
+func (h *Handler) streamResponses(c *gin.Context, stream *responseSvc.Stream, requestedModel string) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
@@ -188,77 +90,26 @@ func (h *Handler) handleResponsesStream(c *gin.Context, identity *repository.Aut
 		return
 	}
 
-	var assistantContent string
 	for {
 		select {
-		case data, ok := <-stream:
+		case event, ok := <-stream.Events:
 			if !ok {
-				completionTokens := roughTokenCount(assistantContent)
-				response := &provider.ResponsesResponse{
-					ID:      responseID,
-					Object:  "response",
-					Created: time.Now().Unix(),
-					Model:   requestedModel,
-					Choices: []provider.ResponsesChoice{{
-						Index: 0,
-						Message: provider.ChatMessage{
-							Role:    "assistant",
-							Content: assistantContent,
-						},
-						FinishReason: "stop",
-					}},
-					Usage: provider.Usage{
-						PromptTokens:     estimatedPromptTokens,
-						CompletionTokens: completionTokens,
-						TotalTokens:      estimatedPromptTokens + completionTokens,
-					},
-				}
-				body, _ := json.Marshal(response)
-				latencyMs := time.Since(start).Milliseconds()
-				_ = h.deps.Store.UpdateResponse(c.Request.Context(), repository.ResponseRecord{
-					ID:           responseID,
-					TenantID:     identity.TenantID,
-					ProviderName: p.Name(),
-					Model:        requestedModel,
-					Status:       "completed",
-					ResponseBody: body,
-				})
-				_ = h.authSvc.RecordUsage(
-					c.Request.Context(),
-					identity,
-					p.Name(),
-					requestedModel,
-					estimatedPromptTokens,
-					completionTokens,
-					estimatedPromptTokens+completionTokens,
-					p.Cost(estimatedPromptTokens, completionTokens),
-					latencyMs,
-					"success",
-					"",
-				)
-				h.deps.ProviderMgr.Stats.RecordRequest(p.Name(), true, estimatedPromptTokens+completionTokens, latencyMs)
-				c.Writer.Write([]byte("data: [DONE]\n\n"))
+				writeSSEDone(c)
 				flusher.Flush()
 				return
 			}
-
-			assistantContent += extractDeltaContent(data)
-			c.Writer.Write([]byte("data: " + data + "\n\n"))
+			if err := writeSSE(c, event); err != nil {
+				return
+			}
 			flusher.Flush()
-
-		case err := <-errCh:
-			if err != nil {
-				latencyMs := time.Since(start).Milliseconds()
-				_ = h.deps.Store.UpdateResponse(c.Request.Context(), repository.ResponseRecord{
-					ID:           responseID,
-					TenantID:     identity.TenantID,
-					ProviderName: p.Name(),
-					Model:        requestedModel,
-					Status:       "error",
-				})
-				_ = h.authSvc.RecordUsage(c.Request.Context(), identity, p.Name(), requestedModel, 0, 0, 0, 0, latencyMs, "error", "upstream_error")
-				h.deps.ProviderMgr.Stats.RecordRequest(p.Name(), false, 0, latencyMs)
-				c.JSON(http.StatusBadGateway, h.buildErrorResponse(err, p.Name()))
+			if event.Type == "response.completed" && event.Response != nil {
+				h.observeResponse(requestedModel, stream.ProviderName, event.Response.Usage, time.Since(stream.StartedAt), false)
+			}
+		case err, ok := <-stream.Errors:
+			if ok && err != nil {
+				_ = writeSSE(c, gin.H{"type": "error", "message": err.Error()})
+				writeSSEDone(c)
+				flusher.Flush()
 				return
 			}
 		case <-c.Request.Context().Done():
@@ -267,42 +118,47 @@ func (h *Handler) handleResponsesStream(c *gin.Context, identity *repository.Aut
 	}
 }
 
-func (h *Handler) selectProvider(ctx context.Context, identity *repository.AuthIdentity, sessionID string) (provider.Provider, error) {
-	providers, err := h.allowedProviders(ctx, identity)
-	if err != nil {
-		return nil, err
-	}
-	return h.deps.Router.SelectFrom(providers, sessionID), nil
-}
+func (h *Handler) streamChatCompatibility(c *gin.Context, stream *responseSvc.Stream, model string) {
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
 
-func (h *Handler) allowedProviders(ctx context.Context, identity *repository.AuthIdentity) ([]provider.Provider, error) {
-	providerNames, err := h.deps.Store.ListTenantProviders(ctx, identity.TenantID)
-	if err != nil {
-		return nil, err
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": "streaming not supported", "type": "internal_error"}})
+		return
 	}
-	return h.deps.ProviderMgr.ListByNames(providerNames), nil
-}
 
-func extractDeltaContent(data string) string {
-	var payload struct {
-		Choices []struct {
-			Delta struct {
-				Content string `json:"content"`
-			} `json:"delta"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal([]byte(data), &payload); err != nil {
-		return ""
-	}
-	if len(payload.Choices) == 0 {
-		return ""
-	}
-	return payload.Choices[0].Delta.Content
-}
+	for {
+		select {
+		case event, ok := <-stream.Events:
+			if !ok {
+				writeSSEDone(c)
+				flusher.Flush()
+				return
+			}
 
-func roughTokenCount(content string) int {
-	if content == "" {
-		return 0
+			chunk := provider.ConvertEventToChatChunk(stream.ResponseID, model, event)
+			if chunk == nil {
+				continue
+			}
+			if err := writeSSE(c, chunk); err != nil {
+				return
+			}
+			flusher.Flush()
+			if event.Type == "response.completed" && event.Response != nil {
+				h.observeResponse(model, stream.ProviderName, event.Response.Usage, time.Since(stream.StartedAt), false)
+			}
+		case err, ok := <-stream.Errors:
+			if ok && err != nil {
+				_ = writeSSE(c, gin.H{"error": gin.H{"message": err.Error(), "type": "internal_error"}})
+				writeSSEDone(c)
+				flusher.Flush()
+				return
+			}
+		case <-c.Request.Context().Done():
+			return
+		}
 	}
-	return len(content) / 4
 }

@@ -12,13 +12,14 @@ import (
 	"github.com/gateyes/gateway/internal/config"
 	"github.com/gateyes/gateway/internal/db"
 	"github.com/gateyes/gateway/internal/handler"
+	"github.com/gateyes/gateway/internal/middleware"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/repository/sqlstore"
 	"github.com/gateyes/gateway/internal/service/cache"
 	"github.com/gateyes/gateway/internal/service/limiter"
 	"github.com/gateyes/gateway/internal/service/provider"
+	responseSvc "github.com/gateyes/gateway/internal/service/responses"
 	"github.com/gateyes/gateway/internal/service/router"
-	"github.com/gateyes/gateway/internal/service/streaming"
 )
 
 func main() {
@@ -88,21 +89,26 @@ func main() {
 	limiterSvc := limiter.NewLimiter(cfg.Limiter)
 	routerSvc := router.NewRouter(cfg.Router)
 	routerSvc.SetProviders(providerMgr.List())
-	streamingSvc := streaming.NewStreaming()
+	httpMiddleware := middleware.New(store, limiterSvc)
+	responsesService := responseSvc.New(&responseSvc.Dependencies{
+		Config:      cfg,
+		Store:       store,
+		Auth:        httpMiddleware.AuthService(),
+		ProviderMgr: providerMgr,
+		Router:      routerSvc,
+		Cache:       kvCache,
+	})
 
 	h := handler.NewHandler(&handler.Dependencies{
 		Config:      cfg,
 		Store:       store,
 		Metrics:     metrics,
 		ProviderMgr: providerMgr,
-		KVCache:     kvCache,
-		Limiter:     limiterSvc,
-		Router:      routerSvc,
-		Streaming:   streamingSvc,
+		ResponseSvc: responsesService,
 	})
 
 	adminHandler := handler.NewAdminHandler(store, providerMgr)
-	srv := handler.NewServer(cfg.Server, h, adminHandler)
+	srv := handler.NewServer(cfg.Server, h, adminHandler, httpMiddleware)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
