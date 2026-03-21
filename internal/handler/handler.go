@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/gateyes/gateway/internal/config"
 	"github.com/gateyes/gateway/internal/middleware"
@@ -142,7 +143,7 @@ func (h *Handler) Models(c *gin.Context) {
 }
 
 func (h *Handler) Metrics(c *gin.Context) {
-	http.DefaultServeMux.ServeHTTP(c.Writer, c.Request)
+	promhttp.Handler().ServeHTTP(c.Writer, c.Request)
 }
 
 func (h *Handler) Health(c *gin.Context) {
