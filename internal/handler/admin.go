@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -300,7 +301,9 @@ func (h *AdminHandler) GetUserUsage(c *gin.Context) {
 	// 获取使用趋势（默认7天）
 	days := 7
 	if d := c.Query("days"); d != "" {
-		// 可以后续扩展解析 days 参数
+		if parsed, err := strconv.Atoi(d); err == nil && parsed > 0 {
+			days = parsed
+		}
 	}
 
 	trend, err := h.store.GetUserUsageTrend(c.Request.Context(), user.TenantID, user.ID, days)

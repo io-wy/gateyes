@@ -175,8 +175,9 @@ func (s *Store) getDailyUsage(ctx context.Context, tenantID, userID string, days
 		days = 7
 	}
 
+	// 使用 ifnull 处理 SQLite 的 NULL 日期
 	query := `
-SELECT COALESCE(DATE(created_at), '') as date,
+SELECT ifnull(DATE(created_at), '') as date,
 	COUNT(1),
 	COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0),
 	COALESCE(SUM(CASE WHEN status = 'success' THEN 0 ELSE 1 END), 0),
