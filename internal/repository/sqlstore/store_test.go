@@ -233,8 +233,8 @@ func newTestStore(t *testing.T) *Store {
 		Driver:                 "sqlite",
 		DSN:                    filepath.Join(t.TempDir(), "sqlstore.db"),
 		AutoMigrate:            true,
-		MaxOpenConns:           1,
-		MaxIdleConns:           1,
+		MaxOpenConns:           4,
+		MaxIdleConns:           4,
 		ConnMaxLifetimeSeconds: 60,
 	})
 	if err != nil {

@@ -16,9 +16,9 @@ import (
 var ErrServerClosed = fmt.Errorf("server closed")
 
 type Server struct {
-	// addr   string
 	cfg    config.ServerConfig
 	engine *gin.Engine
+	srv    *http.Server
 }
 
 func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mw *middleware.Middleware) *Server {
@@ -77,16 +77,18 @@ func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mw *mi
 }
 
 func (s *Server) Start() error {
-	srv := &http.Server{
+	s.srv = &http.Server{
 		Addr:         s.cfg.ListenAddr,
 		Handler:      s.engine,
 		ReadTimeout:  time.Duration(s.cfg.ReadTimeout) * time.Second,
 		WriteTimeout: time.Duration(s.cfg.WriteTimeout) * time.Second,
 	}
-	return srv.ListenAndServe()
+	return s.srv.ListenAndServe()
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
-	srv := &http.Server{Addr: s.cfg.ListenAddr, Handler: s.engine}
-	return srv.Shutdown(ctx)
+	if s.srv == nil {
+		return fmt.Errorf("server not started")
+	}
+	return s.srv.Shutdown(ctx)
 }

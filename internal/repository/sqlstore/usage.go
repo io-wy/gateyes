@@ -183,7 +183,7 @@ SELECT DATE(created_at) as date,
 	COALESCE(SUM(total_tokens), 0),
 	COALESCE(AVG(latency_ms), 0)
 FROM usage_records
-WHERE tenant_id = ?`
+WHERE tenant_id = ? AND created_at IS NOT NULL`
 
 	args := []any{tenantID}
 

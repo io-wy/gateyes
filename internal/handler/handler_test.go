@@ -185,7 +185,9 @@ func TestResponsesEndpointStreamReturnsSSE(t *testing.T) {
 }
 
 type handlerTestEnv struct {
-	server *Server
+	server      *Server
+	store       *sqlstore.Store
+	providerMgr *provider.Manager
 }
 
 type handlerTestEnvConfig struct {
@@ -201,8 +203,8 @@ func newHandlerTestEnv(t *testing.T, cfg handlerTestEnvConfig) *handlerTestEnv {
 		Driver:                 "sqlite",
 		DSN:                    filepath.Join(t.TempDir(), "handler.db"),
 		AutoMigrate:            true,
-		MaxOpenConns:           1,
-		MaxIdleConns:           1,
+		MaxOpenConns:           4,
+		MaxIdleConns:           4,
 		ConnMaxLifetimeSeconds: 60,
 	})
 	if err != nil {
@@ -280,7 +282,10 @@ func newHandlerTestEnv(t *testing.T, cfg handlerTestEnvConfig) *handlerTestEnv {
 	}
 	routerSvc := router.NewRouter(cfgObj.Router)
 	routerSvc.SetProviders(providerMgr.List())
-	cacheSvc := cache.NewMemoryCache(cfgObj.Cache)
+	var cacheSvc *cache.Cache
+	if cfgObj.Cache.Enabled {
+		cacheSvc = cache.NewMemoryCache(cfgObj.Cache)
+	}
 	limiterSvc := limiter.NewLimiter(config.LimiterConfig{
 		GlobalQPS:  100,
 		GlobalTPM:  100000,
@@ -308,6 +313,8 @@ func newHandlerTestEnv(t *testing.T, cfg handlerTestEnvConfig) *handlerTestEnv {
 	adminHandler := NewAdminHandler(store, providerMgr)
 
 	return &handlerTestEnv{
-		server: NewServer(cfgObj.Server, h, adminHandler, mw),
+		server:      NewServer(cfgObj.Server, h, adminHandler, mw),
+		store:       store,
+		providerMgr: providerMgr,
 	}
 }
