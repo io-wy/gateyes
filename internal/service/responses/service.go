@@ -11,6 +11,7 @@ import (
 
 	"github.com/gateyes/gateway/internal/config"
 	"github.com/gateyes/gateway/internal/repository"
+	"github.com/gateyes/gateway/internal/service/alert"
 	"github.com/gateyes/gateway/internal/service/auth"
 	"github.com/gateyes/gateway/internal/service/cache"
 	"github.com/gateyes/gateway/internal/service/provider"
@@ -26,6 +27,7 @@ type Dependencies struct {
 	ProviderMgr *provider.Manager
 	Router      *router.Router
 	Cache       *cache.Cache
+	Alert       *alert.AlertService
 }
 
 type Service struct {
@@ -35,6 +37,7 @@ type Service struct {
 	providerMgr *provider.Manager
 	router      *router.Router
 	cache       *cache.Cache
+	alert       *alert.AlertService
 }
 
 type CreateResult struct {
@@ -73,6 +76,7 @@ func New(deps *Dependencies) *Service {
 		providerMgr: deps.ProviderMgr,
 		router:      deps.Router,
 		cache:       deps.Cache,
+		alert:       deps.Alert,
 	}
 }
 
@@ -354,6 +358,12 @@ func (s *Service) persistSuccess(ctx context.Context, identity *repository.AuthI
 	}
 
 	s.providerMgr.Stats.RecordRequest(exec.provider.Name(), true, resp.Usage.TotalTokens, latencyMs)
+
+	// 检查配额使用情况并发送预警
+	if s.alert != nil {
+		s.alert.CheckQuotaUsage(ctx, identity)
+	}
+
 	return nil
 }
 

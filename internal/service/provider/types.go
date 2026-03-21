@@ -64,10 +64,13 @@ type ResponseContent struct {
 }
 
 type ResponseEvent struct {
-	Type     string          `json:"type"`
-	Delta    string          `json:"delta,omitempty"`
-	Response *Response       `json:"response,omitempty"`
-	Output   *ResponseOutput `json:"output,omitempty"`
+	Type         string          `json:"type"`
+	Delta        string          `json:"delta,omitempty"`
+	Response     *Response       `json:"response,omitempty"`
+	Output       *ResponseOutput `json:"output,omitempty"`
+	ToolCalls    []ToolCall      `json:"tool_calls,omitempty"`
+	FinishReason string          `json:"finish_reason,omitempty"`
+	Usage        *Usage          `json:"usage,omitempty"`
 }
 
 type Usage struct {

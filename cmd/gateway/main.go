@@ -15,6 +15,7 @@ import (
 	"github.com/gateyes/gateway/internal/middleware"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/repository/sqlstore"
+	"github.com/gateyes/gateway/internal/service/alert"
 	"github.com/gateyes/gateway/internal/service/cache"
 	"github.com/gateyes/gateway/internal/service/limiter"
 	"github.com/gateyes/gateway/internal/service/provider"
@@ -89,6 +90,10 @@ func main() {
 	limiterSvc := limiter.NewLimiter(cfg.Limiter)
 	routerSvc := router.NewRouter(cfg.Router)
 	routerSvc.SetProviders(providerMgr.List())
+
+	// 初始化配额预警服务
+	alertSvc := alert.NewAlertService(cfg.Alert, store)
+
 	httpMiddleware := middleware.New(store, limiterSvc)
 	responsesService := responseSvc.New(&responseSvc.Dependencies{
 		Config:      cfg,
@@ -97,6 +102,7 @@ func main() {
 		ProviderMgr: providerMgr,
 		Router:      routerSvc,
 		Cache:       kvCache,
+		Alert:       alertSvc,
 	})
 
 	h := handler.NewHandler(&handler.Dependencies{

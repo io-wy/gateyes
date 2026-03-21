@@ -16,7 +16,8 @@ import (
 var ErrServerClosed = fmt.Errorf("server closed")
 
 type Server struct {
-	addr   string
+	// addr   string
+	cfg    config.ServerConfig
 	engine *gin.Engine
 }
 
@@ -59,6 +60,7 @@ func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mw *mi
 		admin.PUT("/users/:id", adminH.UpdateUser)
 		admin.DELETE("/users/:id", adminH.DeleteUser)
 		admin.POST("/users/:id/reset", adminH.ResetUserUsage)
+		admin.GET("/users/:id/usage", adminH.GetUserUsage)
 	}
 
 	tenants := admin.Group("/tenants")
@@ -71,20 +73,20 @@ func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mw *mi
 		tenants.POST("/:id/providers", adminH.ReplaceTenantProviders)
 	}
 
-	return &Server{addr: cfg.ListenAddr, engine: engine}
+	return &Server{cfg: cfg, engine: engine}
 }
 
 func (s *Server) Start() error {
 	srv := &http.Server{
-		Addr:         s.addr,
+		Addr:         s.cfg.ListenAddr,
 		Handler:      s.engine,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 300 * time.Second,
+		ReadTimeout:  time.Duration(s.cfg.ReadTimeout) * time.Second,
+		WriteTimeout: time.Duration(s.cfg.WriteTimeout) * time.Second,
 	}
 	return srv.ListenAndServe()
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
-	srv := &http.Server{Addr: s.addr, Handler: s.engine}
+	srv := &http.Server{Addr: s.cfg.ListenAddr, Handler: s.engine}
 	return srv.Shutdown(ctx)
 }

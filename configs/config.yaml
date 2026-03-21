@@ -1,5 +1,5 @@
 server:
-  listenAddr: ":8080"
+  listenAddr: ":8082"
   readTimeout: 30
   writeTimeout: 300
 
@@ -31,29 +31,18 @@ cache:
   ttl: 3600
 
 providers:
-  - name: openai-primary
+  - name: longcat-primary
     type: openai
-    baseURL: https://api.openai.com/v1
-    apiKey: ${OPENAI_API_KEY}
-    model: gpt-4o-mini
+    baseURL: https://api.longcat.chat/openai
+    endpoint: chat
+    apiKey: ak_26z4wO9fK7je7yJ34R6vP9Wu2Bx3b
+    model: gpt-5.4
     weight: 10
     priceInput: 0
     priceOutput: 0
     maxTokens: 4096
     timeout: 60
     enabled: true
-
-  - name: anthropic-primary
-    type: anthropic
-    baseURL: https://api.anthropic.com
-    apiKey: ${ANTHROPIC_API_KEY}
-    model: claude-3-5-sonnet-latest
-    weight: 10
-    priceInput: 0
-    priceOutput: 0
-    maxTokens: 4096
-    timeout: 60
-    enabled: false
 
 apiKeys:
   - key: test-key-001

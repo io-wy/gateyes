@@ -121,3 +121,102 @@ GROUP BY provider_name`
 
 	return result, nil
 }
+
+func (s *Store) GetUserUsageDetail(ctx context.Context, tenantID, userID string, startTime, endTime time.Time) ([]repository.UsageRecord, error) {
+	query := `
+SELECT id, tenant_id, user_id, api_key_id, provider_name, model,
+	prompt_tokens, completion_tokens, total_tokens, cost, latency_ms,
+	status, error_type, created_at
+FROM usage_records
+WHERE tenant_id = ? AND user_id = ?`
+	args := []any{tenantID, userID}
+
+	if !startTime.IsZero() {
+		query += ` AND created_at >= ?`
+		args = append(args, startTime)
+	}
+	if !endTime.IsZero() {
+		query += ` AND created_at <= ?`
+		args = append(args, endTime)
+	}
+	query += ` ORDER BY created_at DESC LIMIT 1000`
+
+	rows, err := s.db.Conn.QueryContext(ctx, s.db.Rebind(query), args...)
+	if err != nil {
+		return nil, fmt.Errorf("get user usage detail: %w", err)
+	}
+	defer rows.Close()
+
+	var records []repository.UsageRecord
+	for rows.Next() {
+		var r repository.UsageRecord
+		if err := rows.Scan(
+			&r.ID, &r.TenantID, &r.UserID, &r.APIKeyID, &r.ProviderName, &r.Model,
+			&r.PromptTokens, &r.CompletionTokens, &r.TotalTokens, &r.Cost, &r.LatencyMs,
+			&r.Status, &r.ErrorType, &r.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan usage record: %w", err)
+		}
+		records = append(records, r)
+	}
+	return records, rows.Err()
+}
+
+func (s *Store) GetUserUsageTrend(ctx context.Context, tenantID, userID string, days int) ([]repository.DailyUsage, error) {
+	return s.getDailyUsage(ctx, tenantID, userID, days)
+}
+
+func (s *Store) GetTenantUsageTrend(ctx context.Context, tenantID string, days int) ([]repository.DailyUsage, error) {
+	return s.getDailyUsage(ctx, tenantID, "", days)
+}
+
+func (s *Store) getDailyUsage(ctx context.Context, tenantID, userID string, days int) ([]repository.DailyUsage, error) {
+	if days <= 0 {
+		days = 7
+	}
+
+	query := `
+SELECT DATE(created_at) as date,
+	COUNT(1),
+	COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0),
+	COALESCE(SUM(CASE WHEN status = 'success' THEN 0 ELSE 1 END), 0),
+	COALESCE(SUM(total_tokens), 0),
+	COALESCE(AVG(latency_ms), 0)
+FROM usage_records
+WHERE tenant_id = ?`
+
+	args := []any{tenantID}
+
+	if userID != "" {
+		query += ` AND user_id = ?`
+		args = append(args, userID)
+	}
+
+	query += ` AND created_at >= ?`
+	args = append(args, time.Now().UTC().AddDate(0, 0, -days))
+
+	query += ` GROUP BY DATE(created_at) ORDER BY date ASC`
+
+	rows, err := s.db.Conn.QueryContext(ctx, s.db.Rebind(query), args...)
+	if err != nil {
+		return nil, fmt.Errorf("get daily usage: %w", err)
+	}
+	defer rows.Close()
+
+	var results []repository.DailyUsage
+	for rows.Next() {
+		var d repository.DailyUsage
+		if err := rows.Scan(
+			&d.Date,
+			&d.TotalRequests,
+			&d.SuccessRequests,
+			&d.FailedRequests,
+			&d.TotalTokens,
+			&d.AvgLatencyMs,
+		); err != nil {
+			return nil, fmt.Errorf("scan daily usage: %w", err)
+		}
+		results = append(results, d)
+	}
+	return results, rows.Err()
+}

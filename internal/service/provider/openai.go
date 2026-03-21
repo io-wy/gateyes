@@ -20,34 +20,6 @@ type openAIProvider struct {
 	client *http.Client
 }
 
-type openAIResponsePayload struct {
-	ID        string             `json:"id"`
-	Object    string             `json:"object"`
-	CreatedAt int64              `json:"created_at"`
-	Model     string             `json:"model"`
-	Status    string             `json:"status"`
-	Output    []openAIOutputItem `json:"output"`
-	Usage     struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
-		TotalTokens  int `json:"total_tokens"`
-	} `json:"usage"`
-}
-
-type openAIOutputItem struct {
-	ID        string `json:"id"`
-	Type      string `json:"type"`
-	Role      string `json:"role"`
-	Status    string `json:"status"`
-	CallID    string `json:"call_id"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-	Content   []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"content"`
-}
-
 func NewOpenAIProvider(cfg config.ProviderConfig) Provider {
 	return &openAIProvider{
 		cfg: cfg,
@@ -72,22 +44,39 @@ func (p *openAIProvider) CreateResponse(ctx context.Context, req *ResponseReques
 		return nil, err
 	}
 
-	resp, err := p.client.Do(httpReq)
+	httpResp, err := p.client.Do(httpReq)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer httpResp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		payload, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, string(payload))
+	if httpResp.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(httpResp.Body)
+		return nil, fmt.Errorf("upstream error: %d %s", httpResp.StatusCode, string(payload))
 	}
 
-	var raw openAIResponsePayload
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+	// 读取原始响应体
+	bodyBytes, err := io.ReadAll(httpResp.Body)
+	if err != nil {
 		return nil, err
 	}
-	return convertOpenAIResponse(raw, req.Model), nil
+
+	// 根据 endpoint 类型选择解析方式
+	switch p.cfg.Endpoint {
+	case "responses":
+		var raw openAIResponsePayload
+		if err := json.Unmarshal(bodyBytes, &raw); err != nil {
+			return nil, err
+		}
+		return convertOpenAIResponse(raw, req.Model), nil
+	default:
+		// chat completions 格式
+		var raw chatCompletionResponse
+		if err := json.Unmarshal(bodyBytes, &raw); err != nil {
+			return nil, err
+		}
+		return convertChatCompletionResponse(raw, req.Model), nil
+	}
 }
 
 func (p *openAIProvider) StreamResponse(ctx context.Context, req *ResponseRequest) (<-chan ResponseEvent, <-chan error) {
@@ -155,17 +144,52 @@ func (p *openAIProvider) StreamResponse(ctx context.Context, req *ResponseReques
 }
 
 func (p *openAIProvider) newRequest(ctx context.Context, req *ResponseRequest, stream bool) (*http.Request, error) {
-	payload := map[string]any{
-		"model":  req.Model,
-		"input":  buildOpenAIInput(req.InputMessages()),
-		"stream": stream,
+	// 根据 Endpoint 配置选择端点和请求格式
+	endpoint := p.cfg.Endpoint
+	if endpoint == "" {
+		endpoint = "chat"
 	}
-	if maxTokens := req.RequestedMaxTokens(); maxTokens > 0 {
-		payload["max_output_tokens"] = maxTokens
+
+	var path string
+	var payload map[string]any
+
+	switch endpoint {
+	case "responses":
+		path = "/responses"
+		payload = map[string]any{
+			"model":  req.Model,
+			"input":  buildOpenAIInput(req.InputMessages()),
+			"stream": stream,
+		}
+		if maxTokens := req.RequestedMaxTokens(); maxTokens > 0 {
+			payload["max_output_tokens"] = maxTokens
+		}
+	case "chat":
+		path = "/v1/chat/completions"
+		payload = map[string]any{
+			"model":    req.Model,
+			"messages": buildChatCompletionMessages(req.InputMessages()),
+			"stream":   stream,
+		}
+		if maxTokens := req.RequestedMaxTokens(); maxTokens > 0 {
+			payload["max_tokens"] = maxTokens
+		}
+	default:
+		// 完整路径，默认使用 chat 格式
+		path = endpoint
+		payload = map[string]any{
+			"model":    req.Model,
+			"messages": buildChatCompletionMessages(req.InputMessages()),
+			"stream":   stream,
+		}
+		if maxTokens := req.RequestedMaxTokens(); maxTokens > 0 {
+			payload["max_tokens"] = maxTokens
+		}
 	}
 
 	body, _ := json.Marshal(payload)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(p.cfg.BaseURL, "/")+"/responses", bytes.NewReader(body))
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(p.cfg.BaseURL, "/")+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -208,6 +232,23 @@ func buildOpenAIInput(messages []Message) []map[string]any {
 		}
 	}
 	return items
+}
+
+// buildChatCompletionMessages creates messages for Chat Completions API (simple format)
+func buildChatCompletionMessages(messages []Message) []map[string]any {
+	result := make([]map[string]any, 0, len(messages))
+	for _, msg := range messages {
+		role := msg.Role
+		if role == "" {
+			role = "user"
+		}
+		content := collectText(msg.Content)
+		result = append(result, map[string]any{
+			"role":    role,
+			"content": content,
+		})
+	}
+	return result
 }
 
 func buildOpenAIMessageContent(content any) []map[string]any {
@@ -282,15 +323,72 @@ func normalizeOpenAITextType(typeName string) string {
 	}
 }
 
-func parseOpenAIResponseEvent(data string, requestedModel string) (*ResponseEvent, error) {
-	var envelope struct {
+type openAIResponsePayload struct {
+	ID        string             `json:"id"`
+	Object    string             `json:"object"`
+	CreatedAt int64              `json:"created_at"`
+	Model     string             `json:"model"`
+	Status    string             `json:"status"`
+	Output    []openAIOutputItem `json:"output"`
+	Usage     struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+		TotalTokens  int `json:"total_tokens"`
+	} `json:"usage"`
+}
+
+// Chat Completions API response format
+type chatCompletionResponse struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	Model   string `json:"model"`
+	Choices []struct {
+		Index        int `json:"index"`
+		Message      struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
+	} `json:"choices"`
+	Usage struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage"`
+}
+
+type openAIOutputItem struct {
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	Role      string `json:"role"`
+	Status    string `json:"status"`
+	CallID    string `json:"call_id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+	Content   []struct {
 		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+}
+
+func parseOpenAIResponseEvent(data string, requestedModel string) (*ResponseEvent, error) {
+	// 首先尝试检测格式：检查是否包含 choices 字段（chat completions）
+	var check struct {
+		Type    string `json:"type"`
+		Choices []any  `json:"choices"`
 	}
-	if err := json.Unmarshal([]byte(data), &envelope); err != nil {
+	if err := json.Unmarshal([]byte(data), &check); err != nil {
 		return nil, err
 	}
 
-	switch envelope.Type {
+	// 如果有 choices 字段，说明是 chat completions 格式
+	if len(check.Choices) > 0 {
+		return parseChatCompletionEvent(data, requestedModel)
+	}
+
+	// 否则使用 responses API 格式解析
+	switch check.Type {
 	case "response.output_text.delta":
 		var payload struct {
 			Type  string `json:"type"`
@@ -353,8 +451,82 @@ func parseOpenAIResponseEvent(data string, requestedModel string) (*ResponseEven
 		}
 		return nil, errors.New(payload.Response.Error.Message)
 	default:
+		// Try chat completion format (for /v1/chat/completions endpoint)
+		return parseChatCompletionEvent(data, requestedModel)
+	}
+}
+
+func parseChatCompletionEvent(data string, requestedModel string) (*ResponseEvent, error) {
+	var chunk struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Created int64  `json:"created"`
+		Model   string `json:"model"`
+		Choices []struct {
+			Index        int `json:"index"`
+			Delta        struct {
+				Content   string `json:"content"`
+				Role      string `json:"role"`
+				ToolCalls []struct {
+					ID       string `json:"id"`
+					Type     string `json:"type"`
+					Function struct {
+						Name string `json:"name"`
+						Args string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+				FinishReason string `json:"finish_reason"`
+			} `json:"delta"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+
+	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+		return nil, err
+	}
+
+	if len(chunk.Choices) == 0 {
 		return nil, nil
 	}
+
+	delta := chunk.Choices[0].Delta
+	event := ResponseEvent{
+		Type: "chat.delta",
+		Delta: delta.Content,
+	}
+
+	if len(delta.ToolCalls) > 0 {
+		for _, tc := range delta.ToolCalls {
+			event.ToolCalls = append(event.ToolCalls, ToolCall{
+				ID: tc.ID,
+				Function: FunctionCall{
+					Name:      tc.Function.Name,
+					Arguments: tc.Function.Args,
+				},
+			})
+		}
+	}
+
+	if delta.FinishReason != "" {
+		event.FinishReason = delta.FinishReason
+	} else if chunk.Choices[0].FinishReason != "" {
+		event.FinishReason = chunk.Choices[0].FinishReason
+	}
+
+	if chunk.Usage.TotalTokens > 0 {
+		event.Usage = &Usage{
+			PromptTokens:     chunk.Usage.PromptTokens,
+			CompletionTokens: chunk.Usage.CompletionTokens,
+			TotalTokens:      chunk.Usage.TotalTokens,
+		}
+	}
+
+	return &event, nil
 }
 
 func convertOpenAIResponse(raw openAIResponsePayload, requestedModel string) *Response {
@@ -418,5 +590,35 @@ func convertOpenAIOutputItem(item openAIOutputItem) *ResponseOutput {
 		}
 	default:
 		return nil
+	}
+}
+
+func convertChatCompletionResponse(raw chatCompletionResponse, requestedModel string) *Response {
+	model := requestedModel
+	if model == "" {
+		model = raw.Model
+	}
+
+	var output []ResponseOutput
+	if len(raw.Choices) > 0 && raw.Choices[0].Message.Content != "" {
+		output = append(output, ResponseOutput{
+			Type: "message",
+			Content: []ResponseContent{
+				{Type: "output_text", Text: raw.Choices[0].Message.Content},
+			},
+		})
+	}
+
+	return &Response{
+		ID:      raw.ID,
+		Object:  "chat.completion",
+		Created: raw.Created,
+		Model:   model,
+		Output:  output,
+		Usage: Usage{
+			PromptTokens:     raw.Usage.PromptTokens,
+			CompletionTokens: raw.Usage.CompletionTokens,
+			TotalTokens:      raw.Usage.TotalTokens,
+		},
 	}
 }

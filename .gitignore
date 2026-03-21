@@ -11,3 +11,6 @@ nul
 bin/
 TESTING.md
 temp.md
+*.exe
+*.exe~
+gateyes.db

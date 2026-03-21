@@ -14,8 +14,9 @@ type Config struct {
 	Router    RouterConfig     `yaml:"router"`
 	Limiter   LimiterConfig    `yaml:"limiter"`
 	Cache     CacheConfig      `yaml:"cache"`
+	Alert     AlertConfig      `yaml:"alert"`
 	Providers []ProviderConfig `yaml:"providers"`
-	APIKeys   []APIKeyConfig   `yaml:"apiKeys"`
+	APIKeys   []APIKeyConfig  `yaml:"apiKeys"`
 	Admin     AdminConfig      `yaml:"admin"`
 }
 
@@ -61,6 +62,7 @@ type ProviderConfig struct {
 	Name        string  `yaml:"name"`
 	Type        string  `yaml:"type"`
 	BaseURL     string  `yaml:"baseURL"`
+	Endpoint    string  `yaml:"endpoint"` // "chat" or "responses", default "chat"
 	APIKey      string  `yaml:"apiKey"`
 	Model       string  `yaml:"model"`
 	Weight      int     `yaml:"weight"`
@@ -84,6 +86,13 @@ type AdminConfig struct {
 	DefaultTenant   string `yaml:"defaultTenant"`
 	BootstrapKey    string `yaml:"bootstrapKey"`
 	BootstrapSecret string `yaml:"bootstrapSecret"`
+}
+
+type AlertConfig struct {
+	Enabled        bool     `yaml:"enabled"`
+	QuotaThreshold float64  `yaml:"quotaThreshold"` // 0.8 = 80%
+	WebhookURL     string   `yaml:"webhookURL"`
+	WebhookSecret  string   `yaml:"webhookSecret"`
 }
 
 func replaceEnvVars(data []byte) []byte {

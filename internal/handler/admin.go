@@ -279,6 +279,55 @@ func (h *AdminHandler) ResetUserUsage(c *gin.Context) {
 	}})
 }
 
+func (h *AdminHandler) GetUserUsage(c *gin.Context) {
+	identity, _ := middleware.Identity(c)
+
+	tenantID := scopedTenant(identity)
+	if identity.Role == repository.RoleSuperAdmin {
+		tenantID = ""
+	}
+
+	user, err := h.store.GetUser(c.Request.Context(), tenantID, c.Param("id"))
+	if err != nil {
+		if err == repository.ErrNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 获取使用趋势（默认7天）
+	days := 7
+	if d := c.Query("days"); d != "" {
+		// 可以后续扩展解析 days 参数
+	}
+
+	trend, err := h.store.GetUserUsageTrend(c.Request.Context(), user.TenantID, user.ID, days)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 计算使用率
+	usagePercent := 0.0
+	if user.Quota > 0 {
+		usagePercent = float64(user.Used) / float64(user.Quota) * 100
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"user": gin.H{
+			"id":            user.ID,
+			"name":          user.Name,
+			"quota":         user.Quota,
+			"used":          user.Used,
+			"remaining":     remaining(user),
+			"usage_percent": usagePercent,
+		},
+		"trend": trend,
+	}})
+}
+
 func (h *AdminHandler) Dashboard(c *gin.Context) {
 	identity, _ := middleware.Identity(c)
 	tenantID, ok := h.scopeTenantID(c, identity)

@@ -46,6 +46,9 @@ type UsageStore interface {
 	CreateUsageRecord(ctx context.Context, record UsageRecord) error
 	GetUsageSummary(ctx context.Context, tenantID string) (*UsageStats, error)
 	GetProviderUsageSummary(ctx context.Context, tenantID string) (map[string]ProviderUsageStats, error)
+	GetUserUsageDetail(ctx context.Context, tenantID, userID string, startTime, endTime time.Time) ([]UsageRecord, error)
+	GetUserUsageTrend(ctx context.Context, tenantID, userID string, days int) ([]DailyUsage, error)
+	GetTenantUsageTrend(ctx context.Context, tenantID string, days int) ([]DailyUsage, error)
 }
 
 type TenantStore interface {
@@ -192,6 +195,15 @@ type ProviderUsageStats struct {
 	FailedRequests  int64
 	TotalTokens     int64
 	AvgLatencyMs    float64
+}
+
+type DailyUsage struct {
+	Date            string  `json:"date"`
+	TotalRequests   int64   `json:"total_requests"`
+	SuccessRequests int64   `json:"success_requests"`
+	FailedRequests  int64   `json:"failed_requests"`
+	TotalTokens     int64   `json:"total_tokens"`
+	AvgLatencyMs   float64 `json:"avg_latency_ms"`
 }
 
 type ResponseRecord struct {

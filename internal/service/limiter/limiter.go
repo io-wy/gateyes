@@ -53,9 +53,10 @@ func NewLimiter(cfg config.LimiterConfig) *Limiter {
 
 func NewTokenBucket(rate, burst int) *TB {
 	return &TB{
-		rate:   rate,
-		burst:  burst,
-		tokens: burst,
+		rate:     rate,
+		burst:    burst,
+		tokens:   burst,
+		lastFill: time.Now(),
 	}
 }
 
@@ -67,7 +68,8 @@ func (t *TokenBucket) TryConsume(n int) bool {
 
 	now := time.Now()
 	elapsed := now.Sub(t.lastFill)
-	t.tokens += int(elapsed.Seconds()) * t.rate
+	// 使用 float64 避免整数精度丢失
+	t.tokens += int(float64(elapsed.Nanoseconds()) / 1e9 * float64(t.rate))
 	if t.tokens > t.burst {
 		t.tokens = t.burst
 	}
