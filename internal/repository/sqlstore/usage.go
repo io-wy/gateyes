@@ -176,7 +176,7 @@ func (s *Store) getDailyUsage(ctx context.Context, tenantID, userID string, days
 	}
 
 	query := `
-SELECT DATE(created_at) as date,
+SELECT COALESCE(DATE(created_at), '') as date,
 	COUNT(1),
 	COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0),
 	COALESCE(SUM(CASE WHEN status = 'success' THEN 0 ELSE 1 END), 0),

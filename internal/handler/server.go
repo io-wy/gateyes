@@ -27,8 +27,6 @@ func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mw *mi
 	engine.Use(gin.Recovery())
 	engine.Use(gin.Logger())
 
-	engine.GET("/debug/pprof", gin.WrapH(http.DefaultServeMux))
-	engine.GET("/debug/pprof/*path", gin.WrapH(http.DefaultServeMux))
 	engine.GET("/health", h.Health)
 	engine.GET("/ready", h.Ready)
 	engine.GET("/metrics", h.Metrics)
