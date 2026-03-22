@@ -164,7 +164,7 @@ func (p *openAIProvider) newRequest(ctx context.Context, req *ResponseRequest, s
 		if maxTokens := req.RequestedMaxTokens(); maxTokens > 0 {
 			payload["max_output_tokens"] = maxTokens
 		}
-	case "chat":
+	case "chat": {
 		path = "/v1/chat/completions"
 		payload = map[string]any{
 			"model":    req.Model,
@@ -174,6 +174,10 @@ func (p *openAIProvider) newRequest(ctx context.Context, req *ResponseRequest, s
 		if maxTokens := req.RequestedMaxTokens(); maxTokens > 0 {
 			payload["max_tokens"] = maxTokens
 		}
+		if len(req.Tools) > 0 {
+			payload["tools"] = req.Tools
+		}
+	}
 	default:
 		// 完整路径，默认使用 chat 格式
 		path = endpoint
@@ -184,6 +188,9 @@ func (p *openAIProvider) newRequest(ctx context.Context, req *ResponseRequest, s
 		}
 		if maxTokens := req.RequestedMaxTokens(); maxTokens > 0 {
 			payload["max_tokens"] = maxTokens
+		}
+		if len(req.Tools) > 0 {
+			payload["tools"] = req.Tools
 		}
 	}
 
@@ -346,8 +353,9 @@ type chatCompletionResponse struct {
 	Choices []struct {
 		Index        int `json:"index"`
 		Message      struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
+			Role       string     `json:"role"`
+			Content    string     `json:"content"`
+			ToolCalls  []ToolCall `json:"tool_calls"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -600,13 +608,30 @@ func convertChatCompletionResponse(raw chatCompletionResponse, requestedModel st
 	}
 
 	var output []ResponseOutput
-	if len(raw.Choices) > 0 && raw.Choices[0].Message.Content != "" {
-		output = append(output, ResponseOutput{
-			Type: "message",
-			Content: []ResponseContent{
-				{Type: "output_text", Text: raw.Choices[0].Message.Content},
-			},
-		})
+	if len(raw.Choices) > 0 {
+		msg := raw.Choices[0].Message
+
+		// Handle tool_calls
+		if len(msg.ToolCalls) > 0 {
+			for _, tc := range msg.ToolCalls {
+				output = append(output, ResponseOutput{
+					Type:   "function_call",
+					CallID: tc.ID,
+					Name:   tc.Function.Name,
+					Args:   tc.Function.Arguments,
+				})
+			}
+		}
+
+		// Handle content
+		if msg.Content != "" {
+			output = append(output, ResponseOutput{
+				Type: "message",
+				Content: []ResponseContent{
+					{Type: "output_text", Text: msg.Content},
+				},
+			})
+		}
 	}
 
 	return &Response{

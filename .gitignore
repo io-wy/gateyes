@@ -14,3 +14,6 @@ temp.md
 *.exe
 *.exe~
 gateyes.db
+*.cover.out
+test/
+.gotools/

@@ -35,6 +35,7 @@ type ResponseRequest struct {
 	Stream          bool      `json:"stream,omitempty"`
 	MaxOutputTokens int       `json:"max_output_tokens,omitempty"`
 	MaxTokens       int       `json:"max_tokens,omitempty"`
+	Tools           []any     `json:"tools,omitempty"`
 }
 
 type Response struct {
@@ -84,6 +85,7 @@ type ChatCompletionRequest struct {
 	Messages  []Message `json:"messages"`
 	Stream    bool      `json:"stream,omitempty"`
 	MaxTokens int       `json:"max_tokens,omitempty"`
+	Tools     []any     `json:"tools,omitempty"`
 }
 
 type ChatCompletionResponse struct {
@@ -278,6 +280,7 @@ func ConvertChatRequest(req *ChatCompletionRequest) *ResponseRequest {
 		Messages:  messages,
 		Stream:    req.Stream,
 		MaxTokens: req.MaxTokens,
+		Tools:     req.Tools,
 	}
 }
 
@@ -317,6 +320,16 @@ func ConvertEventToChatChunk(responseID, model string, event ResponseEvent) *Cha
 	}
 
 	switch event.Type {
+	case "response.created":
+		// 流开始事件，返回一个初始 chunk
+		return chunk
+	case "chat.delta", "chat.completion.chunk":
+		// Chat completions 流式格式
+		chunk.Choices[0].Delta = ChatCompletionChunkDelta{Content: event.Delta}
+		chunk.Choices[0].FinishReason = event.FinishReason
+		if event.Usage != nil {
+			chunk.Usage = event.Usage
+		}
 	case "response.output_text.delta":
 		chunk.Choices[0].Delta = ChatCompletionChunkDelta{Content: event.Delta}
 	case "response.output_item.done":
@@ -340,7 +353,8 @@ func ConvertEventToChatChunk(responseID, model string, event ResponseEvent) *Cha
 			chunk.Usage = &usage
 		}
 	default:
-		return nil
+		// 对于未知事件类型，返回空 chunk 而非 nil
+		return chunk
 	}
 
 	return chunk

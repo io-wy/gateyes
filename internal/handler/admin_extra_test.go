@@ -189,8 +189,8 @@ func TestAdminUserLifecycleAndDashboardEndpoints(t *testing.T) {
 	}
 
 	rec = performJSONRequest(t, env, http.MethodGet, "/admin/users/"+userID+"/usage", token, "")
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("GET /admin/users/:id/usage status = %d, want %d: %s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /admin/users/:id/usage status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	rec = performJSONRequest(t, env, http.MethodPost, "/admin/users/"+userID+"/reset", token, "")
 	if rec.Code != http.StatusOK {
@@ -237,8 +237,8 @@ func TestSuperAdminTenantRoutesAndPublicEndpoints(t *testing.T) {
 		t.Fatalf("GET /ready status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	rec = performJSONRequest(t, env, http.MethodGet, "/metrics", "", "")
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("GET /metrics status = %d, want %d: %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /metrics status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	rec = performJSONRequest(t, env, http.MethodGet, "/v1/models", token, "")
 	if rec.Code != http.StatusOK {

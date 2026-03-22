@@ -175,12 +175,13 @@ func (s *Service) prepare(ctx context.Context, identity *repository.AuthIdentity
 	}
 
 	upstreamReq := &provider.ResponseRequest{
-		Model:           selected.Model(),
+		Model:           req.Model, // 透传请求中的模型名
 		Input:           req.InputMessages(),
 		Messages:        req.InputMessages(),
 		Stream:          req.Stream,
 		MaxOutputTokens: req.MaxOutputTokens,
 		MaxTokens:       req.MaxTokens,
+		Tools:           req.Tools,
 	}
 
 	return &execution{
@@ -299,7 +300,7 @@ func (s *Service) runStream(ctx context.Context, identity *repository.AuthIdenti
 			}
 
 			switch event.Type {
-			case "response.output_text.delta":
+			case "response.output_text.delta", "chat.delta":
 				assistantText += event.Delta
 				out <- event
 			case "response.completed":

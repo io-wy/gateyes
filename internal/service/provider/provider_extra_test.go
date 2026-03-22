@@ -192,8 +192,9 @@ func TestChatCompatibilityHelpers(t *testing.T) {
 	if chunk == nil || chunk.Choices[0].FinishReason != "tool_calls" || chunk.Usage == nil {
 		t.Fatalf("ConvertEventToChatChunk(completed) = %+v, want finish reason and usage", chunk)
 	}
-	if got := ConvertEventToChatChunk("resp-1", "gpt-test", ResponseEvent{Type: "ignored"}); got != nil {
-		t.Fatalf("ConvertEventToChatChunk(ignored) = %+v, want nil", got)
+	// 未知事件类型现在返回空 chunk 而非 nil
+	if got := ConvertEventToChatChunk("resp-1", "gpt-test", ResponseEvent{Type: "ignored"}); got == nil {
+		t.Fatalf("ConvertEventToChatChunk(ignored) = nil, want empty chunk")
 	}
 	if RoughTokenCount("") != 0 || RoughTokenCount("12345678") != 2 {
 		t.Fatalf("RoughTokenCount() returned unexpected result")
@@ -333,14 +334,16 @@ func TestOpenAIProviderHelpersAndParsers(t *testing.T) {
 		Choices: []struct {
 			Index        int `json:"index"`
 			Message      struct {
-				Role    string `json:"role"`
-				Content string `json:"content"`
+				Role       string     `json:"role"`
+				Content    string     `json:"content"`
+				ToolCalls  []ToolCall `json:"tool_calls"`
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		}{
 			{Message: struct {
-				Role    string `json:"role"`
-				Content string `json:"content"`
+				Role       string     `json:"role"`
+				Content    string     `json:"content"`
+				ToolCalls  []ToolCall `json:"tool_calls"`
 			}{Role: "assistant", Content: "hello"}},
 		},
 	}

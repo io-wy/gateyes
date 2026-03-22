@@ -36,7 +36,7 @@ providers:
     baseURL: https://api.longcat.chat/openai
     endpoint: chat
     apiKey: ak_26z4wO9fK7je7yJ34R6vP9Wu2Bx3b
-    model: gpt-5.4
+    model: LongCat-Flash-Thinking
     weight: 10
     priceInput: 0
     priceOutput: 0
