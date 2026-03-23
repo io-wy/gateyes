@@ -43,6 +43,7 @@ func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mw *mi
 	{
 		llm.POST("/responses", h.Responses)
 		llm.POST("/chat/completions", h.Chat)
+		llm.POST("/messages", h.AnthropicMessages)
 	}
 
 	admin := engine.Group("/admin")

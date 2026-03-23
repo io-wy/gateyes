@@ -116,6 +116,48 @@ func (h *Handler) Responses(c *gin.Context) {
 	h.handleResponsesCreate(c)
 }
 
+func (h *Handler) AnthropicMessages(c *gin.Context) {
+	start := time.Now()
+
+	var req provider.AnthropicMessagesRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.metrics.errors.WithLabelValues(req.Model, "invalid_request").Inc()
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": err.Error(), "type": "invalid_request_error"}})
+		return
+	}
+
+	identity, ok := middleware.Identity(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"message": "invalid API key", "type": "invalid_request_error"}})
+		return
+	}
+
+	responseReq := provider.ConvertAnthropicRequest(&req)
+	if req.Stream {
+		stream, err := h.responses.CreateStream(c.Request.Context(), identity, responseReq, c.GetHeader("X-Session-ID"))
+		if err != nil {
+			h.renderServiceError(c, req.Model, err)
+			return
+		}
+		h.streamAnthropicMessages(c, stream, req.Model)
+		return
+	}
+
+	result, err := h.responses.Create(c.Request.Context(), identity, responseReq, c.GetHeader("X-Session-ID"))
+	if err != nil {
+		h.renderServiceError(c, req.Model, err)
+		return
+	}
+
+	if result.CacheHit {
+		h.metrics.cacheHit.Inc()
+	} else if h.cfg.Cache.Enabled {
+		h.metrics.cacheMiss.Inc()
+	}
+	h.observeResponse(req.Model, result.ProviderName, result.Response.Usage, time.Since(start), result.CacheHit)
+	c.JSON(http.StatusOK, provider.ConvertResponseToAnthropic(result.Response))
+}
+
 func (h *Handler) Models(c *gin.Context) {
 	identity, ok := middleware.Identity(c)
 	if !ok {

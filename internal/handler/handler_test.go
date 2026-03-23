@@ -287,10 +287,11 @@ func newHandlerTestEnv(t *testing.T, cfg handlerTestEnvConfig) *handlerTestEnv {
 		cacheSvc = cache.NewMemoryCache(cfgObj.Cache)
 	}
 	limiterSvc := limiter.NewLimiter(config.LimiterConfig{
-		GlobalQPS:  100,
-		GlobalTPM:  100000,
-		Burst:      100,
-		QueueSize:  128,
+		GlobalQPS:          100,
+		GlobalTPM:          100000,
+		GlobalTokenBurst:   100,
+		PerUserRequestBurst: 100,
+		QueueSize:          128,
 	})
 	t.Cleanup(limiterSvc.Stop)
 	mw := middleware.New(store, limiterSvc)

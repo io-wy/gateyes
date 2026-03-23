@@ -57,7 +57,9 @@ func (m *GuardMiddleware) GuardLLMRequest() gin.HandlerFunc {
 		}
 
 		// 限流检查
-		if m.limiter != nil && !m.limiter.Allow(c.Request.Context(), identity.APIKey, meta.EstimatedTokens) {
+		// P0 fix: 传入 identity.QPS，让用户配置的 QPS 生效
+		// P3 fix: 使用 EstimateAdmissionTokens 替代 EstimatePromptTokens，将 output token 也纳入限流
+		if m.limiter != nil && !m.limiter.Allow(c.Request.Context(), identity.APIKey, identity.QPS, meta.EstimatedTokens) {
 			c.JSON(http.StatusTooManyRequests, gin.H{"error": gin.H{"message": "rate limit exceeded", "type": "rate_limit_error"}})
 			c.Abort()
 			return
@@ -83,6 +85,6 @@ func extractRequestMeta(c *gin.Context) (*RequestMeta, error) {
 
 	return &RequestMeta{
 		Model:            req.Model,
-		EstimatedTokens:  req.EstimatePromptTokens(),
+		EstimatedTokens:  req.EstimateAdmissionTokens(),
 	}, nil
 }

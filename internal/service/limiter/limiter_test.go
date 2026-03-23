@@ -49,28 +49,30 @@ func TestTokenBucket_Refill(t *testing.T) {
 
 func TestLimiter_GlobalQPS(t *testing.T) {
 	cfg := config.LimiterConfig{
-		GlobalQPS: 100,
-		GlobalTPM: 1000000,
-		Burst:     50,
-		QueueSize: 1000,
+		GlobalQPS:          100,
+		GlobalTPM:          1000000,
+		GlobalTokenBurst:   50,
+		PerUserRequestBurst: 50,
+		QueueSize:          1000,
 	}
 	l := NewLimiter(cfg)
 	defer l.Stop()
 
 	ctx := context.Background()
 
-	// 验证可以消费
-	if !l.Allow(ctx, "user1", 1) {
+	// 验证可以消费: userQPS=0 使用全局默认，admissionTokens=1
+	if !l.Allow(ctx, "user1", 0, 1) {
 		t.Error("should allow within limit")
 	}
 }
 
 func TestLimiter_PerUserQPS(t *testing.T) {
 	cfg := config.LimiterConfig{
-		GlobalQPS: 10000, // 很高，测试 per-user
-		GlobalTPM: 1000000,
-		Burst:     1000,
-		QueueSize: 1000,
+		GlobalQPS:          10000, // 很高，测试 per-user
+		GlobalTPM:          1000000,
+		GlobalTokenBurst:   1000,
+		PerUserRequestBurst: 1000,
+		QueueSize:          1000,
 	}
 	l := NewLimiter(cfg)
 	defer l.Stop()
@@ -78,10 +80,11 @@ func TestLimiter_PerUserQPS(t *testing.T) {
 	ctx := context.Background()
 
 	// 同一用户连续请求
-	results := make(chan bool, 100)
+	results := make(chan bool, 50)
 	for i := 0; i < 50; i++ {
 		go func() {
-			results <- l.Allow(ctx, "user1", 1)
+			// userQPS=10 表示限制该用户每秒 10 请求
+			results <- l.Allow(ctx, "user1", 10, 1)
 		}()
 	}
 
@@ -97,14 +100,16 @@ func TestLimiter_PerUserQPS(t *testing.T) {
 	if successCount == 0 {
 		t.Error("should have some successful requests")
 	}
+	t.Logf("per-user QPS test: success=%d, total=50", successCount)
 }
 
 func TestLimiter_DifferentUsers(t *testing.T) {
 	cfg := config.LimiterConfig{
-		GlobalQPS: 10000,
-		GlobalTPM: 1000000,
-		Burst:     1000,
-		QueueSize: 1000,
+		GlobalQPS:          10000,
+		GlobalTPM:          1000000,
+		GlobalTokenBurst:   1000,
+		PerUserRequestBurst: 1000,
+		QueueSize:          1000,
 	}
 	l := NewLimiter(cfg)
 	defer l.Stop()
@@ -112,8 +117,8 @@ func TestLimiter_DifferentUsers(t *testing.T) {
 	ctx := context.Background()
 
 	// 不同用户应该各自有独立的限流
-	user1Allowed := l.Allow(ctx, "user1", 1)
-	user2Allowed := l.Allow(ctx, "user2", 1)
+	user1Allowed := l.Allow(ctx, "user1", 0, 1)
+	user2Allowed := l.Allow(ctx, "user2", 0, 1)
 
 	if !user1Allowed {
 		t.Error("user1 should be allowed")
@@ -125,10 +130,11 @@ func TestLimiter_DifferentUsers(t *testing.T) {
 
 func TestLimiter_QueueSize(t *testing.T) {
 	cfg := config.LimiterConfig{
-		GlobalQPS: 1,    // 很低的全局 QPS
-		GlobalTPM: 1000,
-		Burst:     1,
-		QueueSize: 5, // 小的队列
+		GlobalQPS:          1,    // 很低的全局 QPS
+		GlobalTPM:          1000,
+		GlobalTokenBurst:   1,
+		PerUserRequestBurst: 1,
+		QueueSize:          5, // 小的队列
 	}
 	l := NewLimiter(cfg)
 	defer l.Stop()
@@ -137,7 +143,7 @@ func TestLimiter_QueueSize(t *testing.T) {
 
 	// 快速发送多个请求，测试队列
 	for i := 0; i < 10; i++ {
-		l.Allow(ctx, "user1", 1)
+		l.Allow(ctx, "user1", 0, 1)
 	}
 
 	// 验证队列大小
@@ -149,10 +155,11 @@ func TestLimiter_QueueSize(t *testing.T) {
 
 func TestLimiter_Concurrent(t *testing.T) {
 	cfg := config.LimiterConfig{
-		GlobalQPS: 10000,
-		GlobalTPM: 1000000,
-		Burst:     1000,
-		QueueSize: 1000,
+		GlobalQPS:          10000,
+		GlobalTPM:          1000000,
+		GlobalTokenBurst:   1000,
+		PerUserRequestBurst: 1000,
+		QueueSize:          1000,
 	}
 	l := NewLimiter(cfg)
 	defer l.Stop()
@@ -165,7 +172,7 @@ func TestLimiter_Concurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			l.Allow(ctx, "user1", 1)
+			l.Allow(ctx, "user1", 0, 1)
 		}()
 	}
 
@@ -176,10 +183,11 @@ func TestLimiter_Concurrent(t *testing.T) {
 
 func TestLimiter_Cancel(t *testing.T) {
 	cfg := config.LimiterConfig{
-		GlobalQPS: 10000,
-		GlobalTPM: 1000000,
-		Burst:     1000,
-		QueueSize: 1000,
+		GlobalQPS:          10000,
+		GlobalTPM:          1000000,
+		GlobalTokenBurst:   1000,
+		PerUserRequestBurst: 1000,
+		QueueSize:          1000,
 	}
 	l := NewLimiter(cfg)
 	defer l.Stop()
@@ -189,7 +197,37 @@ func TestLimiter_Cancel(t *testing.T) {
 	cancel() // 立即取消
 
 	// 应该返回 false
-	if l.Allow(ctx, "user1", 1) {
+	if l.Allow(ctx, "user1", 0, 1) {
 		t.Error("should not allow when context is cancelled")
+	}
+}
+
+func TestLimiter_UserQPSConfig(t *testing.T) {
+	cfg := config.LimiterConfig{
+		GlobalQPS:          5,    // 全局默认只有 5 QPS
+		GlobalTPM:          1000000,
+		GlobalTokenBurst:   1000,
+		PerUserRequestBurst: 10,
+		QueueSize:          1000,
+	}
+	l := NewLimiter(cfg)
+	defer l.Stop()
+
+	ctx := context.Background()
+
+	// 用户配置了 100 QPS，应该使用用户配置而非全局默认
+	// 快速发送 20 个请求，用户 QPS=100 应该有更多通过
+	successCount := 0
+	for i := 0; i < 20; i++ {
+		if l.Allow(ctx, "user1", 100, 1) { // userQPS=100
+			successCount++
+		}
+	}
+
+	// 使用全局默认 5 QPS 的话，20 个请求只能通过约 5-10 个（受 burst 影响）
+	// 使用用户配置 100 QPS 的话，应该能通过更多
+	t.Logf("userQPS config test: userQPS=100, success=%d/20", successCount)
+	if successCount < 10 {
+		t.Error("user configured QPS should allow more requests than global default")
 	}
 }

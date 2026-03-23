@@ -1,5 +1,5 @@
 server:
-  listenAddr: ":8082"
+  listenAddr: ":8083"
   readTimeout: 30
   writeTimeout: 300
 
@@ -22,7 +22,8 @@ router:
 limiter:
   globalQPS: 1000
   globalTPM: 1000000
-  burst: 100
+  globalTokenBurst: 100000
+  perUserRequestBurst: 100
   queueSize: 1000
 
 cache:

@@ -36,6 +36,7 @@ type ResponseRequest struct {
 	MaxOutputTokens int       `json:"max_output_tokens,omitempty"`
 	MaxTokens       int       `json:"max_tokens,omitempty"`
 	Tools           []any     `json:"tools,omitempty"`
+	Extra           map[string]any `json:"-"` // Extra parameters like system, thinking, cache_control
 }
 
 type Response struct {
@@ -129,6 +130,92 @@ type ChatCompletionChunkToolCall struct {
 	ID       string       `json:"id,omitempty"`
 	Type     string       `json:"type,omitempty"`
 	Function FunctionCall `json:"function,omitempty"`
+}
+
+// Anthropic Messages API types
+
+type AnthropicMessagesRequest struct {
+	Model       string                   `json:"model"`
+	Messages    []AnthropicMessage      `json:"messages"`
+	System      any                     `json:"system,omitempty"` // string or []AnthropicSystemBlock
+	MaxTokens   int                     `json:"max_tokens,omitempty"`
+	Stream      bool                    `json:"stream,omitempty"`
+	Tools       []AnthropicTool         `json:"tools,omitempty"`
+	StopSequences []string              `json:"stop_sequences,omitempty"`
+	Temperature float64                 `json:"temperature,omitempty"`
+	TopK        int                     `json:"top_k,omitempty"`
+	TopP        float64                 `json:"top_p,omitempty"`
+	Thinking    *AnthropicThinking      `json:"thinking,omitempty"`
+	CacheControl *AnthropicCacheControl `json:"cache_control,omitempty"`
+}
+
+type AnthropicSystemBlock struct {
+	Type         string `json:"type"`
+	Text         string `json:"text,omitempty"`
+	CacheControl *AnthropicCacheControl `json:"cache_control,omitempty"`
+}
+
+type AnthropicThinking struct {
+	Type        string `json:"type"`
+	BudgetTokens int   `json:"budget_tokens,omitempty"`
+}
+
+type AnthropicCacheControl struct {
+	Type string `json:"type"`
+	TTL  string `json:"ttl,omitempty"`
+}
+
+type AnthropicMessage struct {
+	Role    string                  `json:"role"`
+	Content []AnthropicContentBlock `json:"content"`
+}
+
+type AnthropicContentBlock struct {
+	Type    string          `json:"type"`
+	Text    string          `json:"text,omitempty"`
+	ID      string          `json:"id,omitempty"`
+	Name    string          `json:"name,omitempty"`
+	Input   json.RawMessage `json:"input,omitempty"`
+	Source  *AnthropicSource `json:"source,omitempty"`
+}
+
+type AnthropicSource struct {
+	Type   string `json:"type"`
+	MediaType string `json:"media_type,omitempty"`
+	Data   string `json:"data,omitempty"`
+}
+
+type AnthropicTool struct {
+	Name        string      `json:"name"`
+	Description string      `json:"description"`
+	InputSchema any         `json:"input_schema"`
+}
+
+type AnthropicMessagesResponse struct {
+	ID          string                    `json:"id"`
+	Type        string                    `json:"type"`
+	Role        string                    `json:"role"`
+	Content     []AnthropicContentBlock  `json:"content"`
+	Model       string                    `json:"model"`
+	StopReason  string                    `json:"stop_reason"`
+	StopSequence string                   `json:"stop_sequence,omitempty"`
+	Usage       AnthropicUsage           `json:"usage"`
+}
+
+type AnthropicUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+}
+
+// Anthropic streaming types
+
+type AnthropicEvent struct {
+	Type   string `json:"type"`
+	Index  int    `json:"index,omitempty"`
+	Delta  string `json:"delta,omitempty"`
+	Content []AnthropicContentBlock `json:"content,omitempty"`
+	Block  *AnthropicContentBlock  `json:"block,omitempty"`
+	Message *AnthropicMessagesResponse `json:"message,omitempty"`
 }
 
 type Provider interface {
@@ -360,11 +447,274 @@ func ConvertEventToChatChunk(responseID, model string, event ResponseEvent) *Cha
 	return chunk
 }
 
+// === Anthropic Messages API conversion ===
+
+func ConvertAnthropicRequest(req *AnthropicMessagesRequest) *ResponseRequest {
+	if req == nil {
+		return nil
+	}
+
+	messages := convertAnthropicMessages(req.Messages)
+	// Convert Anthropic tools to OpenAI format
+	var tools []any
+	for _, tool := range req.Tools {
+		tools = append(tools, map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        tool.Name,
+				"description": tool.Description,
+				"parameters":  tool.InputSchema,
+			},
+		})
+	}
+
+	// Handle system field (can be string or array)
+	systemText := convertAnthropicSystem(req.System)
+
+	return &ResponseRequest{
+		Model:     req.Model,
+		Input:     messages,
+		Messages:  messages,
+		Stream:    req.Stream,
+		MaxTokens: req.MaxTokens,
+		Tools:     tools,
+		Extra: map[string]any{
+			"system": systemText,
+			"thinking": req.Thinking,
+			"cache_control": req.CacheControl,
+		},
+	}
+}
+
+func convertAnthropicSystem(system any) string {
+	switch s := system.(type) {
+	case string:
+		return s
+	case []any:
+		// Array of system blocks
+		var parts []string
+		for _, item := range s {
+			if block, ok := item.(map[string]any); ok {
+				if text, ok := block["text"].(string); ok {
+					parts = append(parts, text)
+				}
+			}
+		}
+		return strings.Join(parts, "\n\n")
+	default:
+		return ""
+	}
+}
+
+func convertAnthropicMessages(msgs []AnthropicMessage) []Message {
+	result := make([]Message, 0, len(msgs))
+	for _, msg := range msgs {
+		result = append(result, convertAnthropicMessage(msg))
+	}
+	return result
+}
+
+func convertAnthropicMessage(msg AnthropicMessage) Message {
+	content := convertAnthropicContent(msg.Content)
+	if len(content) == 1 {
+		// Simple text content
+		if text, ok := content[0].(string); ok {
+			return Message{Role: msg.Role, Content: text}
+		}
+	}
+	return Message{Role: msg.Role, Content: content}
+}
+
+func convertAnthropicContent(blocks []AnthropicContentBlock) []any {
+	if len(blocks) == 0 {
+		return nil
+	}
+	result := make([]any, 0, len(blocks))
+	for _, block := range blocks {
+		switch block.Type {
+		case "text":
+			result = append(result, map[string]any{
+				"type": "output_text",
+				"text": block.Text,
+			})
+		case "tool_use":
+			inputMap := make(map[string]any)
+			if len(block.Input) > 0 {
+				_ = json.Unmarshal(block.Input, &inputMap)
+			}
+			result = append(result, map[string]any{
+				"type": "function_call",
+				"id":   block.ID,
+				"name": block.Name,
+				"arguments": func() string {
+					b, _ := json.Marshal(inputMap)
+					return string(b)
+				}(),
+			})
+		case "image":
+			// Handle base64 images
+			if block.Source != nil && block.Source.Data != "" {
+				result = append(result, map[string]any{
+					"type": "image",
+					"source": map[string]any{
+						"type":      "base64",
+						"media_type": block.Source.MediaType,
+						"data":      block.Source.Data,
+					},
+				})
+			}
+		}
+	}
+	return result
+}
+
+func ConvertResponseToAnthropic(resp *Response) *AnthropicMessagesResponse {
+	if resp == nil {
+		return nil
+	}
+
+	stopReason := "end_turn"
+	if len(resp.OutputToolCalls()) > 0 {
+		stopReason = "tool_use"
+	}
+
+	return &AnthropicMessagesResponse{
+		ID:         resp.ID,
+		Type:       "message",
+		Role:       "assistant",
+		Content:    convertResponseToAnthropicContent(resp.Output),
+		Model:      resp.Model,
+		StopReason: stopReason,
+		Usage: AnthropicUsage{
+			InputTokens:  resp.Usage.PromptTokens,
+			OutputTokens: resp.Usage.CompletionTokens,
+		},
+	}
+}
+
+func convertResponseToAnthropicContent(outputs []ResponseOutput) []AnthropicContentBlock {
+	blocks := make([]AnthropicContentBlock, 0)
+	for _, output := range outputs {
+		switch output.Type {
+		case "message":
+			for _, content := range output.Content {
+				if content.Text != "" {
+					blocks = append(blocks, AnthropicContentBlock{
+						Type: "text",
+						Text: content.Text,
+					})
+				}
+			}
+		case "function_call":
+			inputMap := make(map[string]any)
+			if len(output.Args) > 0 {
+				_ = json.Unmarshal([]byte(output.Args), &inputMap)
+			}
+			inputBytes, _ := json.Marshal(inputMap)
+			blocks = append(blocks, AnthropicContentBlock{
+				Type: "tool_use",
+				ID:   firstNonEmpty(output.ID, output.CallID),
+				Name: output.Name,
+				Input: inputBytes,
+			})
+		}
+	}
+	return blocks
+}
+
+// ConvertEventToAnthropicEvent converts internal event to Anthropic streaming format
+func ConvertEventToAnthropicEvent(responseID, model string, event ResponseEvent) *AnthropicEvent {
+	switch event.Type {
+	case "response.created":
+		// Initial message start
+		return &AnthropicEvent{
+			Type: "message_start",
+			Message: &AnthropicMessagesResponse{
+				ID:      responseID,
+				Type:    "message",
+				Model:   model,
+				Content: []AnthropicContentBlock{},
+				Usage: AnthropicUsage{},
+			},
+		}
+	case "response.output_text.delta", "chat.delta", "chat.completion.chunk":
+		// Text delta
+		if event.Delta == "" {
+			return nil
+		}
+		return &AnthropicEvent{
+			Type:  "content_block_delta",
+			Index: 0,
+			Delta: event.Delta,
+		}
+	case "response.output_item.done":
+		if event.Output == nil {
+			return nil
+		}
+		if event.Output.Type == "function_call" {
+			inputMap := make(map[string]any)
+			if len(event.Output.Args) > 0 {
+				_ = json.Unmarshal([]byte(event.Output.Args), &inputMap)
+			}
+			return &AnthropicEvent{
+				Type: "content_block_stop",
+				Index: 0,
+			}
+		}
+		return &AnthropicEvent{
+			Type: "content_block_stop",
+		}
+	case "response.completed":
+		stopReason := "end_turn"
+		if event.Response != nil && len(event.Response.OutputToolCalls()) > 0 {
+			stopReason = "tool_use"
+		}
+		var usage AnthropicUsage
+		if event.Response != nil {
+			usage = AnthropicUsage{
+				InputTokens:  event.Response.Usage.PromptTokens,
+				OutputTokens: event.Response.Usage.CompletionTokens,
+			}
+		}
+		return &AnthropicEvent{
+			Type: "message_delta",
+			Delta: stopReason,
+			Message: &AnthropicMessagesResponse{
+				StopReason: stopReason,
+				Usage:      usage,
+			},
+		}
+	}
+	return nil
+}
+
 func RoughTokenCount(content string) int {
 	if content == "" {
 		return 0
 	}
 	return len(content) / 4
+}
+
+// DefaultMaxOutputTokens 是未指定 max_output_tokens 时的保守估计值
+const DefaultMaxOutputTokens = 4096
+
+// EstimateAdmissionTokens 估算准入 token 数，用于限流
+// 计算逻辑：prompt estimation + output budget
+// P3 fix: 之前只算 prompt，不算 max_tokens，导致长输出请求白嫖 limiter
+func (r *ResponseRequest) EstimateAdmissionTokens() int {
+	promptTokens := r.EstimatePromptTokens()
+
+	// output budget: 优先用用户指定的 max_tokens/max_output_tokens
+	maxTokens := r.MaxOutputTokens
+	if maxTokens <= 0 {
+		maxTokens = r.MaxTokens
+	}
+	// 没传则用保守默认值
+	if maxTokens <= 0 {
+		maxTokens = DefaultMaxOutputTokens
+	}
+
+	return promptTokens + maxTokens
 }
 
 func normalizeMessages(input any) []Message {

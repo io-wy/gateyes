@@ -35,11 +35,28 @@ func (r *Router) Select(model, sessionID string) provider.Provider {
 }
 
 func (r *Router) SelectFrom(candidates []provider.Provider, sessionID string) provider.Provider {
+	return r.selectFromWithModel(candidates, sessionID, "")
+}
+
+func (r *Router) SelectFromWithModel(candidates []provider.Provider, sessionID string, model string) provider.Provider {
+	return r.selectFromWithModel(candidates, sessionID, model)
+}
+
+func (r *Router) selectFromWithModel(candidates []provider.Provider, sessionID string, model string) provider.Provider {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if len(candidates) == 0 {
 		return nil
+	}
+
+	// 如果指定了模型，优先选择支持该模型的 provider
+	if model != "" {
+		for _, p := range candidates {
+			if p.Model() == model {
+				return p
+			}
+		}
 	}
 
 	switch r.cfg.Strategy {

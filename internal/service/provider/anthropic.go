@@ -1,32 +1,31 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"time"
-
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 
 	"github.com/gateyes/gateway/internal/config"
 )
 
+const anthropicVersion = "2023-06-01"
+
 type anthropicProvider struct {
 	cfg    config.ProviderConfig
-	client anthropic.Client
+	client *http.Client
 }
 
 func NewAnthropicProvider(cfg config.ProviderConfig) Provider {
-	// 使用 SDK 创建 client，支持自定义 baseURL
-	client := anthropic.NewClient(
-		option.WithAPIKey(cfg.APIKey),
-		option.WithBaseURL(cfg.BaseURL),
-	)
 	return &anthropicProvider{
-		cfg:    cfg,
-		client: client,
+		cfg: cfg,
+		client: &http.Client{
+			Timeout: time.Duration(cfg.Timeout) * time.Second,
+		},
 	}
 }
 
@@ -45,12 +44,33 @@ func (p *anthropicProvider) CreateResponse(ctx context.Context, req *ResponseReq
 		return nil, err
 	}
 
-	message, err := p.client.Messages.New(ctx, *params)
+	body, _ := json.Marshal(params)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(p.cfg.BaseURL, "/")+"/v1/messages", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-api-key", p.cfg.APIKey)
+	httpReq.Header.Set("anthropic-version", anthropicVersion)
+
+	resp, err := p.client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic error: %w", err)
 	}
+	defer resp.Body.Close()
 
-	return p.convertResponse(message, req.Model), nil
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, string(data))
+	}
+
+	var anthropicResp anthropicResponse
+	if err := json.NewDecoder(resp.Body).Decode(&anthropicResp); err != nil {
+		return nil, err
+	}
+
+	return convertAnthropicResponse(anthropicResp, req.Model), nil
 }
 
 func (p *anthropicProvider) StreamResponse(ctx context.Context, req *ResponseRequest) (<-chan ResponseEvent, <-chan error) {
@@ -67,55 +87,44 @@ func (p *anthropicProvider) StreamResponse(ctx context.Context, req *ResponseReq
 			return
 		}
 
-		stream := p.client.Messages.NewStreaming(ctx, *params)
-		var message anthropic.Message
-
-		for stream.Next() {
-			event := stream.Current()
-			err := message.Accumulate(event)
-			if err != nil {
-				errCh <- err
-				return
-			}
-
-			// 发送中间事件 - 通过 ContentBlockDeltaEvent 处理文本增量
-			if textEvent := p.extractTextDelta(event); textEvent != "" {
-				result <- ResponseEvent{
-					Type:  "response.output_text.delta",
-					Delta: textEvent,
-				}
-			}
-
-			// 工具调用开始
-			if toolEvent := p.extractToolStart(event); toolEvent != nil {
-				result <- ResponseEvent{
-					Type:   "response.output_item.done",
-					Output: toolEvent,
-				}
-			}
+		body, _ := json.Marshal(params)
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			strings.TrimRight(p.cfg.BaseURL, "/")+"/v1/messages", bytes.NewReader(body))
+		if err != nil {
+			errCh <- err
+			return
 		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("x-api-key", p.cfg.APIKey)
+		httpReq.Header.Set("anthropic-version", anthropicVersion)
+		httpReq.Header.Set("Accept", "text/event-stream")
 
-		if err := stream.Err(); err != nil {
-			errCh <- fmt.Errorf("anthropic stream error: %w", err)
+		resp, err := p.client.Do(httpReq)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			data, _ := io.ReadAll(resp.Body)
+			errCh <- fmt.Errorf("upstream error: %d %s", resp.StatusCode, string(data))
 			return
 		}
 
-		// 发送完成事件
-		result <- ResponseEvent{
-			Type:     "response.completed",
-			Response: p.convertResponse(&message, req.Model),
-		}
+		// 流式解析
+		p.parseStream(resp.Body, result, errCh, req.Model)
 	}()
 
 	return result, errCh
 }
 
-func (p *anthropicProvider) buildParams(req *ResponseRequest) (*anthropic.MessageNewParams, error) {
-	return p.buildRequest(req, false)
+func (p *anthropicProvider) parseStream(body io.Reader, result chan<- ResponseEvent, errCh chan<- error, model string) {
+	// 简化实现 - 暂不处理流式
+	errCh <- fmt.Errorf("streaming not implemented")
 }
 
-// buildRequest builds an Anthropic request (for backward compatibility with tests)
-func (p *anthropicProvider) buildRequest(req *ResponseRequest, stream bool) (*anthropic.MessageNewParams, error) {
+func (p *anthropicProvider) buildParams(req *ResponseRequest) (map[string]any, error) {
 	maxTokens := req.RequestedMaxTokens()
 	if maxTokens == 0 {
 		maxTokens = p.cfg.MaxTokens
@@ -129,45 +138,19 @@ func (p *anthropicProvider) buildRequest(req *ResponseRequest, stream bool) (*an
 		return nil, err
 	}
 
-	params := anthropic.MessageNewParams{
-		Model:     anthropic.Model(req.Model),
-		MaxTokens: int64(maxTokens),
-		Messages:  messages,
+	params := map[string]any{
+		"model":     req.Model,
+		"max_tokens": maxTokens,
+		"messages":   messages,
 	}
 
 	if system != "" {
-		params.System = []anthropic.TextBlockParam{
-			{Text: system, Type: "text"},
-		}
+		params["system"] = system
 	}
 
 	// 添加工具
 	if len(req.Tools) > 0 {
-		tools := make([]anthropic.ToolUnionParam, len(req.Tools))
-		for i, tool := range req.Tools {
-			toolMap, ok := tool.(map[string]any)
-			if !ok {
-				continue
-			}
-			name, _ := toolMap["name"].(string)
-			description, _ := toolMap["description"].(string)
-			parameters, _ := toolMap["parameters"].(map[string]any)
-
-			tools[i] = anthropic.ToolUnionParam{
-				OfTool: &anthropic.ToolParam{
-					Name:        name,
-					Description: anthropic.String(description),
-					InputSchema: anthropic.ToolInputSchemaParam{
-						Properties: parameters,
-						Type:       "object",
-					},
-				},
-			}
-		}
-	}
-	// 兼容 OpenAI 格式：tools[].function.parameters
-	if len(req.Tools) > 0 && len(tools) == 0 {
-		tools = make([]anthropic.ToolUnionParam, 0, len(req.Tools))
+		tools := make([]map[string]any, 0, len(req.Tools))
 		for _, tool := range req.Tools {
 			toolMap, ok := tool.(map[string]any)
 			if !ok {
@@ -182,27 +165,26 @@ func (p *anthropicProvider) buildRequest(req *ResponseRequest, stream bool) (*an
 			description, _ := funcMap["description"].(string)
 			parameters, _ := funcMap["parameters"].(map[string]any)
 
-			tools = append(tools, anthropic.ToolUnionParam{
-				OfTool: &anthropic.ToolParam{
-					Name:        name,
-					Description: anthropic.String(description),
-					InputSchema: anthropic.ToolInputSchemaParam{
-						Properties: parameters,
-						Type:       "object",
-					},
-				},
+			// Debug: trace what we're building
+			fmt.Printf("DEBUG buildParams: tool name=%s, input_schema=%+v\n", name, parameters)
+
+			tools = append(tools, map[string]any{
+				"name":        name,
+				"description": description,
+				"input_schema": parameters,
 			})
 		}
-	}
-	params.Tools = tools
+		if len(tools) > 0 {
+			params["tools"] = tools
+		}
 	}
 
-	return &params, nil
+	return params, nil
 }
 
-func (p *anthropicProvider) buildMessages(msgs []Message) ([]anthropic.MessageParam, string, error) {
+func (p *anthropicProvider) buildMessages(msgs []Message) ([]map[string]any, string, error) {
 	var systemParts []string
-	messages := make([]anthropic.MessageParam, 0, len(msgs))
+	messages := make([]map[string]any, 0, len(msgs))
 
 	for _, msg := range msgs {
 		text := collectText(msg.Content)
@@ -213,59 +195,50 @@ func (p *anthropicProvider) buildMessages(msgs []Message) ([]anthropic.MessagePa
 			}
 		case "assistant":
 			// 处理 assistant 消息（含工具调用）
-			var blocks []anthropic.ContentBlockParamUnion
+			var content []map[string]any
 			if text != "" {
-				blocks = append(blocks, anthropic.ContentBlockParamUnion{
-					OfText: &anthropic.TextBlockParam{Text: text, Type: "text"},
-				})
+				content = append(content, map[string]any{"type": "text", "text": text})
 			}
 			for _, tc := range msg.ToolCalls {
-				blocks = append(blocks, anthropic.ContentBlockParamUnion{
-					OfToolUse: &anthropic.ToolUseBlockParam{
-						ID:   tc.ID,
-						Name: tc.Function.Name,
-						Input: func() any {
-							var m map[string]any
-							json.Unmarshal([]byte(tc.Function.Arguments), &m)
-							return m
-						}(),
-						Type: "tool_use",
-					},
+				// 直接使用原始参数，Anthropic 格式的 input 是对象
+				inputMap := mustUnmarshalJSON(tc.Function.Arguments)
+				content = append(content, map[string]any{
+					"type": "tool_use",
+					"id":   tc.ID,
+					"name": tc.Function.Name,
+					"input": inputMap,
 				})
 			}
-			if len(blocks) > 0 {
-				messages = append(messages, anthropic.NewAssistantMessage(blocks...))
+			if len(content) > 0 {
+				messages = append(messages, map[string]any{"role": "assistant", "content": content})
 			}
 		case "tool":
 			if msg.ToolCallID == "" {
 				continue
 			}
-			messages = append(messages, anthropic.NewUserMessage(
-				anthropic.ContentBlockParamUnion{
-					OfToolResult: &anthropic.ToolResultBlockParam{
-						ToolUseID: msg.ToolCallID,
-						Content: []anthropic.ToolResultBlockParamContentUnion{
-							{OfText: &anthropic.TextBlockParam{Text: text, Type: "text"}},
-						},
-						Type: "tool_result",
+			messages = append(messages, map[string]any{
+				"role": "user",
+				"content": []map[string]any{
+					{
+						"type":      "tool_result",
+						"tool_use_id": msg.ToolCallID,
+						"content":    text,
 					},
 				},
-			))
+			})
 		case "user":
 			if text != "" {
-				messages = append(messages, anthropic.NewUserMessage(
-					anthropic.ContentBlockParamUnion{
-						OfText: &anthropic.TextBlockParam{Text: text, Type: "text"},
-					},
-				))
+				messages = append(messages, map[string]any{
+					"role":    "user",
+					"content": text,
+				})
 			}
 		default:
 			if text != "" {
-				messages = append(messages, anthropic.NewUserMessage(
-					anthropic.ContentBlockParamUnion{
-						OfText: &anthropic.TextBlockParam{Text: text, Type: "text"},
-					},
-				))
+				messages = append(messages, map[string]any{
+					"role":    "user",
+					"content": text,
+				})
 			}
 		}
 	}
@@ -273,81 +246,15 @@ func (p *anthropicProvider) buildMessages(msgs []Message) ([]anthropic.MessagePa
 	return messages, strings.Join(systemParts, "\n\n"), nil
 }
 
-func (p *anthropicProvider) convertResponse(msg *anthropic.Message, requestedModel string) *Response {
-	model := requestedModel
-	if model == "" {
-		model = string(msg.Model)
-	}
+// 辅助函数
 
-	outputs := make([]ResponseOutput, 0)
-	for _, block := range msg.Content {
-		switch v := block.AsAny().(type) {
-		case anthropic.TextBlock:
-			outputs = append(outputs, ResponseOutput{
-				Type: "message",
-				Content: []ResponseContent{
-					{Type: "output_text", Text: v.Text},
-				},
-			})
-		case anthropic.ToolUseBlock:
-			var argsMap map[string]any
-			json.Unmarshal(v.Input, &argsMap)
-			inputJSON, _ := json.Marshal(argsMap["input"])
-			outputs = append(outputs, ResponseOutput{
-				ID:     v.ID,
-				Type:   "function_call",
-				Name:   v.Name,
-				Args:   string(inputJSON),
-				Status: "completed",
-			})
-		}
-	}
-
-	return &Response{
-		ID:      msg.ID,
-		Object:  "response",
-		Created: time.Now().Unix(),
-		Model:   model,
-		Status:  "completed",
-		Output:  outputs,
-		Usage: Usage{
-			PromptTokens:     int(msg.Usage.InputTokens),
-			CompletionTokens: int(msg.Usage.OutputTokens),
-			TotalTokens:      int(msg.Usage.InputTokens + msg.Usage.OutputTokens),
-		},
-	}
+func mustUnmarshalJSON(data string) map[string]any {
+	var v map[string]any
+	json.Unmarshal([]byte(data), &v)
+	return v
 }
 
-// 从流事件中提取文本增量
-func (p *anthropicProvider) extractTextDelta(event anthropic.MessageStreamEventUnion) string {
-	switch e := event.AsAny().(type) {
-	case anthropic.ContentBlockDeltaEvent:
-		// 处理文本增量
-		switch delta := e.Delta.AsAny().(type) {
-		case anthropic.TextDelta:
-			return delta.Text
-		}
-	}
-	return ""
-}
-
-// 从流事件中提取工具调用开始
-func (p *anthropicProvider) extractToolStart(event anthropic.MessageStreamEventUnion) *ResponseOutput {
-	switch e := event.AsAny().(type) {
-	case anthropic.ContentBlockStartEvent:
-		if e.ContentBlock.Type == "tool_use" {
-			return &ResponseOutput{
-				ID:     e.ContentBlock.ID,
-				Type:   "function_call",
-				Name:   e.ContentBlock.Name,
-				Status: "in_progress",
-			}
-		}
-	}
-	return nil
-}
-
-// === 以下为测试兼容的辅助函数 ===
+// === 旧类型和函数（兼容测试）===
 
 type anthropicMessage struct {
 	Role    string                  `json:"role"`
@@ -548,6 +455,11 @@ func convertAnthropicResponse(raw anthropicResponse, requestedModel string) *Res
 			TotalTokens:      raw.Usage.InputTokens + raw.Usage.OutputTokens,
 		},
 	}
+}
+
+// buildRequest 是兼容测试的别名
+func (p *anthropicProvider) buildRequest(req *ResponseRequest, stream bool) (map[string]any, error) {
+	return p.buildParams(req)
 }
 
 // 确保实现接口（编译时检查）

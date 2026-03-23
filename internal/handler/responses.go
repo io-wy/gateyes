@@ -162,3 +162,48 @@ func (h *Handler) streamChatCompatibility(c *gin.Context, stream *responseSvc.St
 		}
 	}
 }
+
+func (h *Handler) streamAnthropicMessages(c *gin.Context, stream *responseSvc.Stream, model string) {
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": "streaming not supported", "type": "internal_error"}})
+		return
+	}
+
+	for {
+		select {
+		case event, ok := <-stream.Events:
+			if !ok {
+				writeSSEDone(c)
+				flusher.Flush()
+				return
+			}
+
+			anthropicEvent := provider.ConvertEventToAnthropicEvent(stream.ResponseID, model, event)
+			if anthropicEvent == nil {
+				continue
+			}
+			if err := writeSSE(c, anthropicEvent); err != nil {
+				return
+			}
+			flusher.Flush()
+			if event.Type == "response.completed" && event.Response != nil {
+				h.observeResponse(model, stream.ProviderName, event.Response.Usage, time.Since(stream.StartedAt), false)
+			}
+		case err, ok := <-stream.Errors:
+			if ok && err != nil {
+				_ = writeSSE(c, gin.H{"error": gin.H{"message": err.Error(), "type": "internal_error"}})
+				writeSSEDone(c)
+				flusher.Flush()
+				return
+			}
+		case <-c.Request.Context().Done():
+			return
+		}
+	}
+}

@@ -151,7 +151,7 @@ func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIde
 }
 
 func (s *Service) prepare(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*execution, error) {
-	selected, err := s.selectProvider(ctx, identity, sessionID)
+	selected, err := s.selectProvider(ctx, identity, sessionID, req.Model)
 	if err != nil {
 		return nil, err
 	}
@@ -442,12 +442,12 @@ func (s *Service) normalizeResponse(exec *execution, resp *provider.Response) *p
 	return resp
 }
 
-func (s *Service) selectProvider(ctx context.Context, identity *repository.AuthIdentity, sessionID string) (provider.Provider, error) {
+func (s *Service) selectProvider(ctx context.Context, identity *repository.AuthIdentity, sessionID string, model string) (provider.Provider, error) {
 	providerNames, err := s.store.ListTenantProviders(ctx, identity.TenantID)
 	if err != nil {
 		return nil, err
 	}
-	return s.router.SelectFrom(s.providerMgr.ListByNames(providerNames), sessionID), nil
+	return s.router.SelectFromWithModel(s.providerMgr.ListByNames(providerNames), sessionID, model), nil
 }
 
 func WrapError(err error) ginError {

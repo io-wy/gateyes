@@ -46,10 +46,11 @@ type RouterConfig struct {
 }
 
 type LimiterConfig struct {
-	GlobalQPS int `yaml:"globalQPS"`
-	GlobalTPM int `yaml:"globalTPM"`
-	Burst     int `yaml:"burst"`
-	QueueSize int `yaml:"queueSize"`
+	GlobalQPS          int `yaml:"globalQPS"`          // 全局默认 QPS
+	GlobalTPM          int `yaml:"globalTPM"`          // 全局每分钟 token 上限
+	GlobalTokenBurst   int `yaml:"globalTokenBurst"`  // 全局 token 桶突发容量
+	PerUserRequestBurst int `yaml:"perUserRequestBurst"` // 每用户请求突发容量
+	QueueSize          int `yaml:"queueSize"`         // 队列大小
 }
 
 type CacheConfig struct {
@@ -146,10 +147,11 @@ func DefaultConfig() *Config {
 			StickySession: false,
 		},
 		Limiter: LimiterConfig{
-			GlobalQPS: 1000,
-			GlobalTPM: 1000000,
-			Burst:     100,
-			QueueSize: 1000,
+			GlobalQPS:          1000,
+			GlobalTPM:          1000000,
+			GlobalTokenBurst:   100000,
+			PerUserRequestBurst: 100,
+			QueueSize:          1000,
 		},
 		Cache: CacheConfig{
 			Enabled: true,
