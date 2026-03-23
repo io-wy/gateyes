@@ -61,8 +61,10 @@ type ResponseOutput struct {
 }
 
 type ResponseContent struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type      string `json:"type"`
+	Text      string `json:"text,omitempty"`
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"`
 }
 
 type ResponseEvent struct {
@@ -170,13 +172,42 @@ type AnthropicMessage struct {
 	Content []AnthropicContentBlock `json:"content"`
 }
 
+func (m *AnthropicMessage) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	m.Role = raw.Role
+	if len(raw.Content) == 0 {
+		return nil
+	}
+	// content can be a string or an array
+	if raw.Content[0] == '"' {
+		var s string
+		if err := json.Unmarshal(raw.Content, &s); err != nil {
+			return err
+		}
+		m.Content = []AnthropicContentBlock{{Type: "text", Text: s}}
+	} else {
+		if err := json.Unmarshal(raw.Content, &m.Content); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 type AnthropicContentBlock struct {
-	Type    string          `json:"type"`
-	Text    string          `json:"text,omitempty"`
-	ID      string          `json:"id,omitempty"`
-	Name    string          `json:"name,omitempty"`
-	Input   json.RawMessage `json:"input,omitempty"`
-	Source  *AnthropicSource `json:"source,omitempty"`
+	Type      string           `json:"type"`
+	Text      string           `json:"text,omitempty"`
+	ID        string           `json:"id,omitempty"`
+	Name      string           `json:"name,omitempty"`
+	Input     json.RawMessage  `json:"input,omitempty"`
+	Source    *AnthropicSource `json:"source,omitempty"`
+	Thinking  string           `json:"thinking,omitempty"`
+	Signature string           `json:"signature,omitempty"`
 }
 
 type AnthropicSource struct {
@@ -210,11 +241,11 @@ type AnthropicUsage struct {
 // Anthropic streaming types
 
 type AnthropicEvent struct {
-	Type   string `json:"type"`
-	Index  int    `json:"index,omitempty"`
-	Delta  string `json:"delta,omitempty"`
+	Type    string                  `json:"type"`
+	Index   int                     `json:"index,omitempty"`
+	Delta   any                     `json:"delta,omitempty"`
 	Content []AnthropicContentBlock `json:"content,omitempty"`
-	Block  *AnthropicContentBlock  `json:"block,omitempty"`
+	Block   *AnthropicContentBlock `json:"block,omitempty"`
 	Message *AnthropicMessagesResponse `json:"message,omitempty"`
 }
 
@@ -598,11 +629,20 @@ func convertResponseToAnthropicContent(outputs []ResponseOutput) []AnthropicCont
 		switch output.Type {
 		case "message":
 			for _, content := range output.Content {
-				if content.Text != "" {
+				switch content.Type {
+				case "thinking":
 					blocks = append(blocks, AnthropicContentBlock{
-						Type: "text",
-						Text: content.Text,
+						Type:      "thinking",
+						Thinking:  content.Thinking,
+						Signature: content.Signature,
 					})
+				case "output_text":
+					if content.Text != "" {
+						blocks = append(blocks, AnthropicContentBlock{
+							Type: "text",
+							Text: content.Text,
+						})
+					}
 				}
 			}
 		case "function_call":
@@ -645,7 +685,10 @@ func ConvertEventToAnthropicEvent(responseID, model string, event ResponseEvent)
 		return &AnthropicEvent{
 			Type:  "content_block_delta",
 			Index: 0,
-			Delta: event.Delta,
+			Delta: map[string]any{
+				"type": "text_delta",
+				"text": event.Delta,
+			},
 		}
 	case "response.output_item.done":
 		if event.Output == nil {

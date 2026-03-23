@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -120,8 +121,196 @@ func (p *anthropicProvider) StreamResponse(ctx context.Context, req *ResponseReq
 }
 
 func (p *anthropicProvider) parseStream(body io.Reader, result chan<- ResponseEvent, errCh chan<- error, model string) {
-	// 简化实现 - 暂不处理流式
-	errCh <- fmt.Errorf("streaming not implemented")
+	reader := bufio.NewReader(body)
+	responseID := "stream-" + uuid()
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				// Send completion event if not already sent
+				result <- ResponseEvent{
+					Type: "response.completed",
+					Response: &Response{
+						ID:      responseID,
+						Model:   model,
+						Usage:   Usage{},
+					},
+				}
+				break
+			}
+			errCh <- err
+			return
+		}
+
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.HasPrefix(line, "data:") {
+			continue
+		}
+
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "[DONE]" {
+			break
+		}
+
+		// Check for error event
+		if strings.Contains(data, "\"type\":\"error\"") || strings.Contains(data, "\"error\":") {
+			var errResp struct {
+				Type  string `json:"type"`
+				Error struct {
+					Type    string `json:"type"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if json.Unmarshal([]byte(data), &errResp) == nil && errResp.Error.Message != "" {
+				errCh <- fmt.Errorf("upstream error: %s", errResp.Error.Message)
+				return
+			}
+		}
+
+		event := parseAnthropicStreamEvent(data, model, responseID)
+		if event != nil {
+			result <- *event
+		}
+	}
+}
+
+// uuid generates a simple UUID-like string
+func uuid() string {
+	return fmt.Sprintf("%x", time.Now().UnixNano())
+}
+
+func parseAnthropicStreamEvent(data string, model string, responseID string) *ResponseEvent {
+	// Parse Anthropic SSE event format
+	// Event types: message_start, content_block_start, content_block_delta, content_block_stop, message_delta, message_stop, ping
+
+	var event struct {
+		Type string `json:"type"`
+	}
+
+	if err := json.Unmarshal([]byte(data), &event); err != nil {
+		return nil
+	}
+
+	switch event.Type {
+	case "message_start":
+		var payload struct {
+			Type    string `json:"type"`
+			Message struct {
+				ID      string `json:"id"`
+				Content []AnthropicContentBlock `json:"content"`
+				Usage   struct {
+					InputTokens  int `json:"input_tokens"`
+					OutputTokens int `json:"output_tokens"`
+				} `json:"usage"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			return nil
+		}
+		return &ResponseEvent{
+			Type: "response.created",
+			Response: &Response{
+				ID:      payload.Message.ID,
+				Model:   model,
+				Output:  convertAnthropicOutputs("assistant", payload.Message.Content),
+				Usage:   Usage{PromptTokens: payload.Message.Usage.InputTokens},
+			},
+		}
+
+	case "content_block_start":
+		// MiniMax may send this
+		return &ResponseEvent{
+			Type: "response.created",
+			Response: &Response{
+				ID:      responseID,
+				Model:   model,
+				Output:  []ResponseOutput{},
+			},
+		}
+
+	case "content_block_delta":
+		var payload struct {
+			Type  string `json:"type"`
+			Index int    `json:"index"`
+			Delta any    `json:"delta"`
+		}
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			return nil
+		}
+
+		// Handle different delta formats
+		if deltaMap, ok := payload.Delta.(map[string]any); ok {
+			if deltaType, _ := deltaMap["type"].(string); deltaType == "text_delta" {
+				if text, _ := deltaMap["text"].(string); text != "" {
+					return &ResponseEvent{
+						Type:  "response.output_text.delta",
+						Delta: text,
+					}
+				}
+			}
+			// Fallback: try to get text directly
+			if text, _ := deltaMap["text"].(string); text != "" {
+				return &ResponseEvent{
+					Type:  "response.output_text.delta",
+					Delta: text,
+				}
+			}
+		}
+
+	case "content_block_stop":
+		return &ResponseEvent{
+			Type: "response.output_item.done",
+		}
+
+	case "message_delta":
+		var payload struct {
+			Type       string `json:"type"`
+			Delta      any    `json:"delta"`
+			StopReason string `json:"stop_reason"`
+			Usage      struct {
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			// Try minimal parsing
+			return &ResponseEvent{
+				Type: "response.completed",
+				Response: &Response{
+					ID:      responseID,
+					Model:   model,
+					Usage:   Usage{},
+				},
+			}
+		}
+		return &ResponseEvent{
+			Type: "response.completed",
+			Response: &Response{
+				ID:      responseID,
+				Model:   model,
+				Usage: Usage{
+					CompletionTokens: payload.Usage.OutputTokens,
+				},
+			},
+		}
+
+	case "message_stop":
+		// End of stream - send completion
+		return &ResponseEvent{
+			Type: "response.completed",
+			Response: &Response{
+				ID:      responseID,
+				Model:   model,
+				Usage:   Usage{},
+			},
+		}
+
+	case "ping":
+		// Ignore ping events
+		return nil
+	}
+
+	return nil
 }
 
 func (p *anthropicProvider) buildParams(req *ResponseRequest) (map[string]any, error) {
@@ -142,6 +331,7 @@ func (p *anthropicProvider) buildParams(req *ResponseRequest) (map[string]any, e
 		"model":     req.Model,
 		"max_tokens": maxTokens,
 		"messages":   messages,
+		"stream":     req.Stream,
 	}
 
 	if system != "" {
@@ -164,9 +354,6 @@ func (p *anthropicProvider) buildParams(req *ResponseRequest) (map[string]any, e
 			name, _ := funcMap["name"].(string)
 			description, _ := funcMap["description"].(string)
 			parameters, _ := funcMap["parameters"].(map[string]any)
-
-			// Debug: trace what we're building
-			fmt.Printf("DEBUG buildParams: tool name=%s, input_schema=%+v\n", name, parameters)
 
 			tools = append(tools, map[string]any{
 				"name":        name,
@@ -360,17 +547,25 @@ func buildAnthropicStreamResponse(id, model string, outputs []ResponseOutput, pr
 }
 
 // convertAnthropicOutputs converts Anthropic content blocks to our Output format
-func convertAnthropicOutputs(role string, blocks []struct {
-	Type  string          `json:"type"`
-	Text  string          `json:"text"`
-	ID    string          `json:"id"`
-	Name  string          `json:"name"`
-	Input json.RawMessage `json:"input"`
-}) []ResponseOutput {
+func convertAnthropicOutputs(role string, blocks []AnthropicContentBlock) []ResponseOutput {
 	outputs := make([]ResponseOutput, 0, len(blocks))
 	messageOutputIndex := -1
 	for _, block := range blocks {
 		switch block.Type {
+		case "thinking":
+			if messageOutputIndex < 0 {
+				outputs = append(outputs, ResponseOutput{
+					Type:   "message",
+					Role:   role,
+					Status: "completed",
+				})
+				messageOutputIndex = len(outputs) - 1
+			}
+			outputs[messageOutputIndex].Content = append(outputs[messageOutputIndex].Content, ResponseContent{
+				Type:      "thinking",
+				Thinking:  block.Thinking,
+				Signature: block.Signature,
+			})
 		case "text":
 			if messageOutputIndex < 0 {
 				outputs = append(outputs, ResponseOutput{
@@ -442,13 +637,26 @@ func convertAnthropicResponse(raw anthropicResponse, requestedModel string) *Res
 		model = raw.Model
 	}
 
+	// Convert old response format to new format
+	oldContent := raw.Content
+	newContent := make([]AnthropicContentBlock, len(oldContent))
+	for i, c := range oldContent {
+		newContent[i] = AnthropicContentBlock{
+			Type:  c.Type,
+			Text:  c.Text,
+			ID:    c.ID,
+			Name:  c.Name,
+			Input: c.Input,
+		}
+	}
+
 	return &Response{
 		ID:      raw.ID,
 		Object:  "response",
 		Created: time.Now().Unix(),
 		Model:   model,
 		Status:  "completed",
-		Output:  convertAnthropicOutputs(raw.Role, raw.Content),
+		Output:  convertAnthropicOutputs(raw.Role, newContent),
 		Usage: Usage{
 			PromptTokens:     raw.Usage.InputTokens,
 			CompletionTokens: raw.Usage.OutputTokens,
