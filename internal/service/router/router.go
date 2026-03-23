@@ -87,6 +87,16 @@ func (r *Router) DecLoad(name string) {
 	}
 }
 
+func (r *Router) Strategy() string {
+	return r.cfg.Strategy
+}
+
+func (r *Router) Load(name string) int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.loads[name]
+}
+
 func (r *Router) roundRobinLocked(candidates []provider.Provider) provider.Provider {
 	selected := candidates[r.index%len(candidates)]
 	r.index = (r.index + 1) % len(candidates)

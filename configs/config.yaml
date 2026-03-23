@@ -31,6 +31,17 @@ cache:
   maxSize: 10000
   ttl: 3600
 
+retry:
+  maxRetries: 2
+  initialDelayMs: 100
+  maxDelayMs: 5000
+  backoffFactor: 2.0
+
+circuitBreaker:
+  failureThreshold: 5
+  recoveryTimeout: 60
+  halfOpenMaxRequests: 1
+
 providers:
   - name: longcat-primary
     type: openai

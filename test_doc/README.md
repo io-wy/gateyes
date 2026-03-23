@@ -317,3 +317,69 @@ client = anthropic.Anthropic(
 | Anthropic Messages 流式 | ✅ |
 | Tool Calling | ✅ |
 | Multi-turn 对话 | ✅ |
+
+---
+
+## 压测文档
+
+### 1. k6 压测脚本
+
+位置: `test_doc/load_test.js`
+
+### 运行压测
+
+```bash
+cd test_doc
+k6 run load_test.js
+```
+
+### 自定义参数
+
+```bash
+# 自定义 Gateway 地址和模型
+k6 run load_test.js -e BASE_URL=http://localhost:8083 -e MODEL=MiniMax-M2.5
+
+# 自定义 API Key
+k6 run load_test.js -e API_KEY=your-key:your-secret
+```
+
+### 压测场景
+
+| 场景 | VUs | 持续时间 | 描述 |
+|------|-----|----------|------|
+| baseline | 5 | 30s | 基准测试 |
+| rampup | 5→30 | 60s | 逐步增长测试 |
+
+### 压测结果指标
+
+- **RPS**: 每秒请求数
+- **Latency p95**: 95% 请求响应时间
+- **Error Rate**: 错误率
+- **Rate Limited**: 上游限流次数
+
+### 压测结果示例
+
+```
+========== K6 Load Test Summary ==========
+
+Latency:
+  avg: 5.18 ms
+  p95: 14.61 ms
+  p99: 20.82 ms
+  max: 46.8 ms
+
+Requests: 8850
+RPS: 147.08
+
+Failures: 86.02%
+API Errors: 7613
+Rate Limited (429): 3717
+
+===========================================
+```
+
+### 注意事项
+
+1. **上游限流**: 测试中如果上游 API (如 MiniMax) 限流，会导致 429 错误，这是正常现象
+2. **增加 Provider**: 可以通过配置多个 provider 来分散负载，降低限流影响
+3. **压测阈值**: 默认 p95 延迟 < 1000ms，错误率 < 10%

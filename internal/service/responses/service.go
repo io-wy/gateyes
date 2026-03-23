@@ -5,6 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"math/rand"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,7 +22,11 @@ import (
 	"github.com/gateyes/gateway/internal/service/router"
 )
 
-var ErrNoProvider = errors.New("no provider available")
+var (
+	ErrNoProvider   = errors.New("no provider available")
+	ErrUnauthorized = errors.New("unauthorized")
+	ErrForbidden    = errors.New("forbidden")
+)
 
 type Dependencies struct {
 	Config      *config.Config
@@ -31,13 +39,14 @@ type Dependencies struct {
 }
 
 type Service struct {
-	cfg         *config.Config
-	store       repository.Store
-	auth        *auth.Auth
-	providerMgr *provider.Manager
-	router      *router.Router
-	cache       *cache.Cache
-	alert       *alert.AlertService
+	cfg            *config.Config
+	store          repository.Store
+	auth           *auth.Auth
+	providerMgr    *provider.Manager
+	router         *router.Router
+	cache          *cache.Cache
+	alert          *alert.AlertService
+	circuitBreaker *CircuitBreaker
 }
 
 type CreateResult struct {
@@ -70,84 +79,404 @@ type execution struct {
 
 func New(deps *Dependencies) *Service {
 	return &Service{
-		cfg:         deps.Config,
-		store:       deps.Store,
-		auth:        deps.Auth,
-		providerMgr: deps.ProviderMgr,
-		router:      deps.Router,
-		cache:       deps.Cache,
-		alert:       deps.Alert,
+		cfg:            deps.Config,
+		store:          deps.Store,
+		auth:           deps.Auth,
+		providerMgr:    deps.ProviderMgr,
+		router:         deps.Router,
+		cache:          deps.Cache,
+		alert:          deps.Alert,
+		circuitBreaker: NewCircuitBreaker(deps.Config.CircuitBreaker),
 	}
 }
 
 func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*CreateResult, error) {
 	req.Normalize()
 
-	exec, err := s.prepare(ctx, identity, req, sessionID)
-	if err != nil {
-		return nil, err
-	}
-
 	if s.cfg.Cache.Enabled && s.cache != nil && !req.Stream {
 		if cached, ok := s.cache.Get(req.CacheKey()); ok {
-			return s.useCachedResponse(ctx, identity, exec, cached)
+			return s.useCachedResponseWithRequest(ctx, identity, req, cached)
 		}
 	}
 
-	s.router.IncLoad(exec.provider.Name())
-	s.providerMgr.Stats.IncrementLoad(exec.provider.Name())
-	defer func() {
-		s.router.DecLoad(exec.provider.Name())
-		s.providerMgr.Stats.DecrementLoad(exec.provider.Name())
-	}()
+	candidates := s.getCandidateProviders(ctx, identity, sessionID, req.Model)
+	if len(candidates) == 0 {
+		return nil, ErrNoProvider
+	}
 
-	resp, err := exec.provider.CreateResponse(ctx, exec.upstreamRequest)
-	latencyMs := time.Since(exec.startedAt).Milliseconds()
-	if err != nil {
-		s.providerMgr.Stats.RecordRequest(exec.provider.Name(), false, 0, latencyMs)
-		_ = s.markError(ctx, identity, exec, latencyMs)
+	// 先创建一条 in_progress 记录，使用第一个候选 provider
+	firstProvider := candidates[0]
+	responseID := uuid.NewString()
+	requestBody, _ := json.Marshal(req)
+	if err := s.store.CreateResponse(ctx, repository.ResponseRecord{
+		ID:           responseID,
+		TenantID:     identity.TenantID,
+		UserID:       identity.UserID,
+		APIKeyID:     identity.APIKeyID,
+		ProviderName: firstProvider.Name(),
+		Model:        req.Model,
+		Status:       "in_progress",
+		RequestBody:  requestBody,
+	}); err != nil {
 		return nil, err
 	}
 
-	resp = s.normalizeResponse(exec, resp)
-	if err := s.persistSuccess(ctx, identity, exec, resp, latencyMs); err != nil {
-		return nil, err
+	var lastErr error
+	for _, p := range candidates {
+		tenantID := identity.TenantID
+		providerName := p.Name()
+
+		if s.circuitBreaker != nil && !s.circuitBreaker.IsAvailable(tenantID, providerName) {
+			continue
+		}
+
+		// 更新 response 记录的 provider 名称
+		_ = s.store.UpdateResponse(ctx, repository.ResponseRecord{
+			ID:           responseID,
+			TenantID:     tenantID,
+			ProviderName: providerName,
+			Model:        req.Model,
+			Status:       "in_progress",
+		})
+
+		exec := &execution{
+			provider:              p,
+			requestedModel:        req.Model,
+			upstreamRequest:       buildUpstreamRequest(req),
+			responseID:            responseID,
+			tenantID:              tenantID,
+			requestBody:           requestBody,
+			startedAt:             time.Now(),
+			estimatedPromptTokens: req.EstimatePromptTokens(),
+		}
+
+		s.router.IncLoad(providerName)
+		s.providerMgr.Stats.IncrementLoad(providerName)
+
+		resp, err := s.callWithRetry(ctx, identity, exec)
+		latencyMs := time.Since(exec.startedAt).Milliseconds()
+
+		if err != nil {
+			s.router.DecLoad(providerName)
+			s.providerMgr.Stats.DecrementLoad(providerName)
+			if s.circuitBreaker != nil {
+				s.circuitBreaker.RecordFailure(tenantID, providerName)
+			}
+			s.providerMgr.Stats.RecordRequest(providerName, false, 0, latencyMs)
+			_ = s.markErrorWithProvider(ctx, identity, exec, latencyMs, providerName)
+			lastErr = err
+			continue
+		}
+
+		s.router.DecLoad(providerName)
+		s.providerMgr.Stats.DecrementLoad(providerName)
+		if s.circuitBreaker != nil {
+			s.circuitBreaker.RecordSuccess(tenantID, providerName)
+		}
+
+		resp = s.normalizeResponse(exec, resp)
+		if err := s.persistSuccess(ctx, identity, exec, resp, latencyMs); err != nil {
+			return nil, err
+		}
+
+		if s.cfg.Cache.Enabled && s.cache != nil {
+			body, _ := json.Marshal(resp)
+			s.cache.Set(req.CacheKey(), string(body))
+		}
+
+		return &CreateResult{
+			Response:         resp,
+			ProviderName:     providerName,
+			LatencyMs:        latencyMs,
+			PromptTokens:     resp.Usage.PromptTokens,
+			CompletionTokens: resp.Usage.CompletionTokens,
+		}, nil
 	}
 
-	if s.cfg.Cache.Enabled && s.cache != nil {
-		body, _ := json.Marshal(resp)
-		s.cache.Set(req.CacheKey(), string(body))
-	}
+	return nil, lastErr
+}
 
-	return &CreateResult{
-		Response:         resp,
-		ProviderName:     exec.provider.Name(),
-		LatencyMs:        latencyMs,
-		PromptTokens:     resp.Usage.PromptTokens,
-		CompletionTokens: resp.Usage.CompletionTokens,
-	}, nil
+func buildUpstreamRequest(req *provider.ResponseRequest) *provider.ResponseRequest {
+	return &provider.ResponseRequest{
+		Model:           req.Model,
+		Input:           req.InputMessages(),
+		Messages:        req.InputMessages(),
+		Stream:          req.Stream,
+		MaxOutputTokens: req.MaxOutputTokens,
+		MaxTokens:       req.MaxTokens,
+		Tools:           req.Tools,
+	}
 }
 
 func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*Stream, error) {
 	req.Normalize()
 
-	exec, err := s.prepare(ctx, identity, req, sessionID)
-	if err != nil {
-		return nil, err
+	candidates := s.getCandidateProviders(ctx, identity, sessionID, req.Model)
+	if len(candidates) == 0 {
+		return nil, ErrNoProvider
 	}
 
 	events := make(chan provider.ResponseEvent)
 	errCh := make(chan error, 1)
 
-	go s.runStream(ctx, identity, exec, events, errCh)
+	// 先创建 response 记录，使用第一个成功响应的 provider
+	responseID := uuid.NewString()
+	requestBody, _ := json.Marshal(req)
+	if err := s.store.CreateResponse(ctx, repository.ResponseRecord{
+		ID:           responseID,
+		TenantID:     identity.TenantID,
+		UserID:       identity.UserID,
+		APIKeyID:     identity.APIKeyID,
+		ProviderName: "", // 先不填，等确定 provider 后更新
+		Model:        req.Model,
+		Status:       "in_progress",
+		RequestBody:  requestBody,
+	}); err != nil {
+		return nil, err
+	}
+
+	go s.runStreamWithFallback(ctx, identity, req, sessionID, candidates, responseID, events, errCh)
 
 	return &Stream{
-		ResponseID:   exec.responseID,
-		ProviderName: exec.provider.Name(),
-		StartedAt:    exec.startedAt,
+		ResponseID:   responseID,
+		ProviderName: "", // 异步确定
+		StartedAt:    time.Now(),
 		Events:       events,
 		Errors:       errCh,
 	}, nil
+}
+
+func (s *Service) runStreamWithFallback(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string, candidates []provider.Provider, responseID string, out chan<- provider.ResponseEvent, errCh chan<- error) {
+	defer close(out)
+	defer close(errCh)
+
+	tenantID := identity.TenantID
+	retryCfg := s.cfg.Retry
+	startedAt := time.Now()
+	firstResponseSent := false
+
+	for _, p := range candidates {
+		providerName := p.Name()
+
+		// 检查 circuit breaker
+		if s.circuitBreaker != nil && !s.circuitBreaker.IsAvailable(tenantID, providerName) {
+			continue
+		}
+
+		s.router.IncLoad(providerName)
+		s.providerMgr.Stats.IncrementLoad(providerName)
+
+		// 更新 response 记录的 provider
+		_ = s.store.UpdateResponse(ctx, repository.ResponseRecord{
+			ID:           responseID,
+			TenantID:     tenantID,
+			ProviderName: providerName,
+			Model:        req.Model,
+			Status:       "in_progress",
+		})
+
+		// 只在第一次真正开始流式响应时发送 response.created
+		if !firstResponseSent {
+			out <- provider.ResponseEvent{
+				Type: "response.created",
+				Response: &provider.Response{
+					ID:      responseID,
+					Object:  "response",
+					Created: startedAt.Unix(),
+					Model:   req.Model,
+					Status:  "in_progress",
+				},
+			}
+			firstResponseSent = true
+		}
+
+		upstreamReq := &provider.ResponseRequest{
+			Model:           req.Model,
+			Input:           req.InputMessages(),
+			Messages:        req.InputMessages(),
+			Stream:          true,
+			MaxOutputTokens: req.MaxOutputTokens,
+			MaxTokens:       req.MaxTokens,
+			Tools:           req.Tools,
+		}
+
+		stream, upstreamErrCh := p.StreamResponse(ctx, upstreamReq)
+		var finalResponse *provider.Response
+		var assistantText string
+		providerSucceeded := false
+
+		for {
+			select {
+			case event, ok := <-stream:
+				if !ok {
+					if finalResponse == nil {
+						finalResponse = provider.NewTextResponse(responseID, req.Model, assistantText, provider.Usage{
+							PromptTokens:     req.EstimatePromptTokens(),
+							CompletionTokens: provider.RoughTokenCount(assistantText),
+							TotalTokens:      req.EstimatePromptTokens() + provider.RoughTokenCount(assistantText),
+						})
+					}
+					latencyMs := time.Since(startedAt).Milliseconds()
+					s.finalizeStream(ctx, identity, responseID, providerName, req.Model, finalResponse, latencyMs, out)
+					s.router.DecLoad(providerName)
+					s.providerMgr.Stats.DecrementLoad(providerName)
+					if s.circuitBreaker != nil {
+						s.circuitBreaker.RecordSuccess(tenantID, providerName)
+					}
+					return
+				}
+
+				switch event.Type {
+				case "response.output_text.delta", "chat.delta":
+					assistantText += event.Delta
+					out <- event
+				case "response.completed":
+					finalResponse = event.Response
+				}
+			case err := <-upstreamErrCh:
+				if err == nil {
+					continue
+				}
+				latencyMs := time.Since(startedAt).Milliseconds()
+				s.handleStreamError(ctx, identity, responseID, providerName, req.Model, latencyMs, err)
+				s.router.DecLoad(providerName)
+				s.providerMgr.Stats.DecrementLoad(providerName)
+				if s.circuitBreaker != nil {
+					s.circuitBreaker.RecordFailure(tenantID, providerName)
+				}
+
+				// 尝试重试当前 provider
+				if s.isStreamRetryable(err) && !providerSucceeded {
+					for i := 0; i < retryCfg.MaxRetries; i++ {
+						delay := float64(retryCfg.InitialDelayMs) * math.Pow(retryCfg.BackoffFactor, float64(i))
+						delay = math.Min(delay, float64(retryCfg.MaxDelayMs))
+						select {
+						case <-ctx.Done():
+							errCh <- ctx.Err()
+							return
+						case <-time.After(time.Duration(delay) * time.Millisecond):
+						}
+
+						// 重试
+						stream, upstreamErrCh = p.StreamResponse(ctx, upstreamReq)
+						assistantText = ""
+						providerSucceeded = false
+						goto retryLoop
+					}
+				}
+
+				// 当前 provider 失败，标记并继续下一个（不立即发送错误）
+				providerSucceeded = false
+				goto nextProvider
+			case <-ctx.Done():
+				s.router.DecLoad(providerName)
+				s.providerMgr.Stats.DecrementLoad(providerName)
+				errCh <- ctx.Err()
+				return
+			}
+			continue
+
+		retryLoop:
+			for {
+				select {
+				case event, ok := <-stream:
+					if !ok {
+						if finalResponse == nil {
+							finalResponse = provider.NewTextResponse(responseID, req.Model, assistantText, provider.Usage{
+								PromptTokens:     req.EstimatePromptTokens(),
+								CompletionTokens: provider.RoughTokenCount(assistantText),
+								TotalTokens:      req.EstimatePromptTokens() + provider.RoughTokenCount(assistantText),
+							})
+						}
+						latencyMs := time.Since(startedAt).Milliseconds()
+						s.finalizeStream(ctx, identity, responseID, providerName, req.Model, finalResponse, latencyMs, out)
+						s.router.DecLoad(providerName)
+						s.providerMgr.Stats.DecrementLoad(providerName)
+						if s.circuitBreaker != nil {
+							s.circuitBreaker.RecordSuccess(tenantID, providerName)
+						}
+						return
+					}
+
+					switch event.Type {
+					case "response.output_text.delta", "chat.delta":
+						assistantText += event.Delta
+						out <- event
+					case "response.completed":
+						finalResponse = event.Response
+					}
+				case err := <-upstreamErrCh:
+					if err == nil {
+						continue
+					}
+					latencyMs := time.Since(startedAt).Milliseconds()
+					s.handleStreamError(ctx, identity, responseID, providerName, req.Model, latencyMs, err)
+					s.router.DecLoad(providerName)
+					s.providerMgr.Stats.DecrementLoad(providerName)
+					if s.circuitBreaker != nil {
+						s.circuitBreaker.RecordFailure(tenantID, providerName)
+					}
+					// 重试也失败了，尝试下一个 provider
+					providerSucceeded = false
+					goto nextProvider
+				case <-ctx.Done():
+					s.router.DecLoad(providerName)
+					s.providerMgr.Stats.DecrementLoad(providerName)
+					errCh <- ctx.Err()
+					return
+				}
+			}
+
+		nextProvider:
+			s.router.DecLoad(providerName)
+			s.providerMgr.Stats.DecrementLoad(providerName)
+			continue
+		}
+	}
+
+	// 所有 provider 都失败，最后发送错误
+	errCh <- ErrNoProvider
+}
+
+func (s *Service) isStreamRetryable(err error) bool {
+	return isRetryable(err)
+}
+
+func (s *Service) finalizeStream(ctx context.Context, identity *repository.AuthIdentity, responseID, providerName, model string, resp *provider.Response, latencyMs int64, out chan<- provider.ResponseEvent) {
+	if resp == nil {
+		resp = provider.NewTextResponse(responseID, model, "", provider.Usage{})
+	}
+	resp.ID = responseID
+	resp.Model = model
+	resp.Created = time.Now().Unix()
+	resp.Status = "completed"
+
+	body, _ := json.Marshal(resp)
+	_ = s.store.UpdateResponse(ctx, repository.ResponseRecord{
+		ID:           responseID,
+		TenantID:     identity.TenantID,
+		ProviderName: providerName,
+		Model:        model,
+		Status:       "completed",
+		ResponseBody: body,
+	})
+
+	_ = s.auth.RecordUsage(ctx, identity, providerName, model, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens, 0, latencyMs, "success", "")
+
+	s.providerMgr.Stats.RecordRequest(providerName, true, resp.Usage.TotalTokens, latencyMs)
+
+	out <- provider.ResponseEvent{Type: "response.completed", Response: resp}
+}
+
+func (s *Service) handleStreamError(ctx context.Context, identity *repository.AuthIdentity, responseID, providerName, model string, latencyMs int64, streamErr error) {
+	_ = s.store.UpdateResponse(ctx, repository.ResponseRecord{
+		ID:           responseID,
+		TenantID:     identity.TenantID,
+		ProviderName: providerName,
+		Model:        model,
+		Status:       "error",
+	})
+	_ = s.auth.RecordUsage(ctx, identity, providerName, model, 0, 0, 0, 0, latencyMs, "error", "upstream_error")
 }
 
 func (s *Service) prepare(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*execution, error) {
@@ -158,7 +487,10 @@ func (s *Service) prepare(ctx context.Context, identity *repository.AuthIdentity
 	if selected == nil {
 		return nil, ErrNoProvider
 	}
+	return s.prepareWithProvider(ctx, identity, req, sessionID, selected)
+}
 
+func (s *Service) prepareWithProvider(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string, selected provider.Provider) (*execution, error) {
 	responseID := uuid.NewString()
 	requestBody, _ := json.Marshal(req)
 	if err := s.store.CreateResponse(ctx, repository.ResponseRecord{
@@ -228,6 +560,70 @@ func (s *Service) useCachedResponse(ctx context.Context, identity *repository.Au
 		identity,
 		"cache",
 		exec.requestedModel,
+		resp.Usage.PromptTokens,
+		resp.Usage.CompletionTokens,
+		resp.Usage.TotalTokens,
+		0,
+		0,
+		"success",
+		"",
+	); err != nil {
+		if errors.Is(err, auth.ErrQuotaExceeded) {
+			_ = s.recordQuotaExceeded(ctx, identity, exec, &resp, 0, "cache", 0)
+		}
+		return nil, err
+	}
+
+	return &CreateResult{
+		Response:         &resp,
+		ProviderName:     "cache",
+		LatencyMs:        0,
+		CacheHit:         true,
+		PromptTokens:     resp.Usage.PromptTokens,
+		CompletionTokens: resp.Usage.CompletionTokens,
+	}, nil
+}
+
+func (s *Service) useCachedResponseWithRequest(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, cached string) (*CreateResult, error) {
+	var resp provider.Response
+	if err := json.Unmarshal([]byte(cached), &resp); err != nil {
+		return nil, err
+	}
+
+	responseID := uuid.NewString()
+	resp.ID = responseID
+	resp.Model = req.Model
+	resp.Created = time.Now().Unix()
+	resp.Status = "completed"
+
+	exec := &execution{
+		requestedModel:        req.Model,
+		responseID:            responseID,
+		tenantID:              identity.TenantID,
+		estimatedPromptTokens: req.EstimatePromptTokens(),
+	}
+
+	if err := s.ensureQuotaAvailable(ctx, identity, exec, &resp, 0, "cache", 0); err != nil {
+		return nil, err
+	}
+
+	body, _ := json.Marshal(resp)
+	if err := s.store.UpdateResponse(ctx, repository.ResponseRecord{
+		ID:           responseID,
+		TenantID:     identity.TenantID,
+		ProviderName: "cache",
+		Model:        req.Model,
+		Status:       "completed",
+		ResponseBody: body,
+	}); err != nil {
+		return nil, err
+	}
+
+	if err := s.auth.RecordUsage(
+		ctx,
+		identity,
+		"cache",
+		req.Model,
 		resp.Usage.PromptTokens,
 		resp.Usage.CompletionTokens,
 		resp.Usage.TotalTokens,
@@ -411,6 +807,17 @@ func (s *Service) markError(ctx context.Context, identity *repository.AuthIdenti
 	return s.auth.RecordUsage(ctx, identity, exec.provider.Name(), exec.requestedModel, 0, 0, 0, 0, latencyMs, "error", "upstream_error")
 }
 
+func (s *Service) markErrorWithProvider(ctx context.Context, identity *repository.AuthIdentity, exec *execution, latencyMs int64, providerName string) error {
+	_ = s.store.UpdateResponse(ctx, repository.ResponseRecord{
+		ID:           exec.responseID,
+		TenantID:     identity.TenantID,
+		ProviderName: providerName,
+		Model:        exec.requestedModel,
+		Status:       "error",
+	})
+	return s.auth.RecordUsage(ctx, identity, providerName, exec.requestedModel, 0, 0, 0, 0, latencyMs, "error", "upstream_error")
+}
+
 func (s *Service) normalizeResponse(exec *execution, resp *provider.Response) *provider.Response {
 	if resp == nil {
 		resp = provider.NewTextResponse(exec.responseID, exec.requestedModel, "", provider.Usage{})
@@ -448,6 +855,137 @@ func (s *Service) selectProvider(ctx context.Context, identity *repository.AuthI
 		return nil, err
 	}
 	return s.router.SelectFromWithModel(s.providerMgr.ListByNames(providerNames), sessionID, model), nil
+}
+
+func isRetryable(err error) bool {
+	if err == nil {
+		return true
+	}
+
+	// 检查 sentinel errors
+	if errors.Is(err, ErrUnauthorized) || errors.Is(err, ErrForbidden) {
+		return false
+	}
+
+	// 检查 UpstreamError（provider 返回的结构化错误）
+	var upstreamErr *provider.UpstreamError
+	if errors.As(err, &upstreamErr) {
+		return upstreamErr.IsRetryable()
+	}
+
+	// 回退到字符串匹配（旧版 provider 错误）
+	errMsg := err.Error()
+
+	// 不重试客户端错误（4xx 除了 429）
+	if strings.Contains(errMsg, "401") || strings.Contains(errMsg, "403") || strings.Contains(errMsg, "400") ||
+		strings.Contains(errMsg, "422") || strings.Contains(errMsg, "404") {
+		return false
+	}
+
+	// 429 可以重试
+	// 5xx 服务端错误应该重试
+	return true
+}
+
+func (s *Service) callWithRetry(ctx context.Context, identity *repository.AuthIdentity, exec *execution) (*provider.Response, error) {
+	retryCfg := s.cfg.Retry
+	var lastErr error
+
+	for i := 0; i <= retryCfg.MaxRetries; i++ {
+		resp, err := exec.provider.CreateResponse(ctx, exec.upstreamRequest)
+
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+
+		if !isRetryable(err) {
+			return nil, err
+		}
+
+		if i < retryCfg.MaxRetries {
+			delay := float64(retryCfg.InitialDelayMs) * math.Pow(retryCfg.BackoffFactor, float64(i))
+			delay = math.Min(delay, float64(retryCfg.MaxDelayMs))
+			// 使用 select 响应 ctx 取消
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(delay) * time.Millisecond):
+			}
+		}
+	}
+
+	if lastErr != nil {
+		return nil, fmt.Errorf("all retries exhausted: %w", lastErr)
+	}
+	return nil, fmt.Errorf("all retries exhausted")
+}
+
+func (s *Service) getCandidateProviders(ctx context.Context, identity *repository.AuthIdentity, sessionID string, model string) []provider.Provider {
+	providerNames, err := s.store.ListTenantProviders(ctx, identity.TenantID)
+	if err != nil {
+		return nil
+	}
+	candidates := s.providerMgr.ListByNames(providerNames)
+	if len(candidates) == 0 {
+		return nil
+	}
+	// 使用 router 策略排序候选 providers
+	if s.router != nil {
+		return s.sortCandidatesByStrategy(candidates, sessionID, model)
+	}
+	return candidates
+}
+
+func (s *Service) sortCandidatesByStrategy(candidates []provider.Provider, sessionID string, model string) []provider.Provider {
+	if len(candidates) <= 1 {
+		return candidates
+	}
+
+	// 复制一份避免修改原列表
+	result := make([]provider.Provider, len(candidates))
+	copy(result, candidates)
+
+	// 使用 router 的策略来排序
+	// 先按 router 策略选出主 provider，然后按优先级排序
+	switch s.router.Strategy() {
+	case "round_robin":
+		// round_robin 已经通过 index 维护，直接按原始顺序
+		return result
+	case "least_load":
+		// 按负载升序排序
+		sort.Slice(result, func(i, j int) bool {
+			loadI := s.router.Load(result[i].Name())
+			loadJ := s.router.Load(result[j].Name())
+			return loadI < loadJ
+		})
+	case "cost_based":
+		// 按成本升序排序
+		sort.Slice(result, func(i, j int) bool {
+			return result[i].UnitCost() < result[j].UnitCost()
+		})
+	case "sticky":
+		// 按 session 哈希排序
+		if sessionID != "" {
+			hash := 0
+			for _, ch := range sessionID {
+				hash = hash*31 + int(ch)
+			}
+			// 让同一个 session 映射到固定的顺序
+			sort.Slice(result, func(i, j int) bool {
+				return (hash+i)%len(result) < (hash+j)%len(result)
+			})
+		}
+	case "random":
+		// 随机打乱
+		rand.Shuffle(len(result), func(i, j int) {
+			result[i], result[j] = result[j], result[i]
+		})
+	default:
+		// 默认 round_robin，保持原顺序
+	}
+
+	return result
 }
 
 func WrapError(err error) ginError {

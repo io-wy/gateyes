@@ -8,16 +8,18 @@ import (
 )
 
 type Config struct {
-	Server    ServerConfig     `yaml:"server"`
-	Database  DatabaseConfig   `yaml:"database"`
-	Metrics   MetricsConfig    `yaml:"metrics"`
-	Router    RouterConfig     `yaml:"router"`
-	Limiter   LimiterConfig    `yaml:"limiter"`
-	Cache     CacheConfig      `yaml:"cache"`
-	Alert     AlertConfig      `yaml:"alert"`
-	Providers []ProviderConfig `yaml:"providers"`
-	APIKeys   []APIKeyConfig  `yaml:"apiKeys"`
-	Admin     AdminConfig      `yaml:"admin"`
+	Server        ServerConfig           `yaml:"server"`
+	Database      DatabaseConfig         `yaml:"database"`
+	Metrics       MetricsConfig          `yaml:"metrics"`
+	Router        RouterConfig           `yaml:"router"`
+	Limiter       LimiterConfig          `yaml:"limiter"`
+	Cache         CacheConfig            `yaml:"cache"`
+	Alert         AlertConfig            `yaml:"alert"`
+	Retry         RetryConfig            `yaml:"retry"`
+	CircuitBreaker CircuitBreakerConfig  `yaml:"circuitBreaker"`
+	Providers     []ProviderConfig       `yaml:"providers"`
+	APIKeys       []APIKeyConfig         `yaml:"apiKeys"`
+	Admin         AdminConfig            `yaml:"admin"`
 }
 
 type ServerConfig struct {
@@ -96,6 +98,19 @@ type AlertConfig struct {
 	WebhookSecret  string   `yaml:"webhookSecret"`
 }
 
+type RetryConfig struct {
+	MaxRetries     int     `yaml:"maxRetries"`      // 最大重试次数
+	InitialDelayMs int     `yaml:"initialDelayMs"`  // 初始退避延迟 ms
+	MaxDelayMs     int     `yaml:"maxDelayMs"`      // 最大退避延迟 ms
+	BackoffFactor  float64 `yaml:"backoffFactor"`   // 退避系数
+}
+
+type CircuitBreakerConfig struct {
+	FailureThreshold   int `yaml:"failureThreshold"`   // 连续失败 N 次后熔断
+	RecoveryTimeout    int `yaml:"recoveryTimeout"`    // 熔断后恢复尝试间隔秒
+	HalfOpenMaxRequests int `yaml:"halfOpenMaxRequests"` // half-open 状态下最大并发探测请求数
+}
+
 func replaceEnvVars(data []byte) []byte {
 	re := regexp.MustCompile(`\$\{([^}]+)\}`)
 	return re.ReplaceAllFunc(data, func(match []byte) []byte {
@@ -157,6 +172,17 @@ func DefaultConfig() *Config {
 			Enabled: true,
 			MaxSize: 10000,
 			TTL:     3600,
+		},
+		Retry: RetryConfig{
+			MaxRetries:     2,
+			InitialDelayMs: 100,
+			MaxDelayMs:     5000,
+			BackoffFactor:  2.0,
+		},
+		CircuitBreaker: CircuitBreakerConfig{
+			FailureThreshold:   5,
+			RecoveryTimeout:    60,
+			HalfOpenMaxRequests: 1,
 		},
 		Admin: AdminConfig{
 			AdminKey:        "admin-secret-key",

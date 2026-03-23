@@ -8,6 +8,26 @@ import (
 	"time"
 )
 
+// UpstreamError represents an error from the upstream provider
+type UpstreamError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *UpstreamError) Error() string {
+	return fmt.Sprintf("upstream error: %d %s", e.StatusCode, e.Message)
+}
+
+func (e *UpstreamError) IsRetryable() bool {
+	// 4xx 客户端错误中，只有 429 可以重试
+	// 401/403/400/422/404 不应该重试
+	if e.StatusCode >= 400 && e.StatusCode < 500 {
+		return e.StatusCode == 429 // Rate limit
+	}
+	// 5xx 服务端错误可以重试
+	return e.StatusCode >= 500
+}
+
 type Message struct {
 	Role       string     `json:"role,omitempty"`
 	Content    any        `json:"content,omitempty"`

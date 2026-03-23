@@ -63,7 +63,7 @@ func (p *anthropicProvider) CreateResponse(ctx context.Context, req *ResponseReq
 
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("upstream error: %d %s", resp.StatusCode, string(data))
+		return nil, &UpstreamError{StatusCode: resp.StatusCode, Message: string(data)}
 	}
 
 	var anthropicResp anthropicResponse
@@ -109,7 +109,7 @@ func (p *anthropicProvider) StreamResponse(ctx context.Context, req *ResponseReq
 
 		if resp.StatusCode != http.StatusOK {
 			data, _ := io.ReadAll(resp.Body)
-			errCh <- fmt.Errorf("upstream error: %d %s", resp.StatusCode, string(data))
+			errCh <- &UpstreamError{StatusCode: resp.StatusCode, Message: string(data)}
 			return
 		}
 
@@ -163,7 +163,8 @@ func (p *anthropicProvider) parseStream(body io.Reader, result chan<- ResponseEv
 				} `json:"error"`
 			}
 			if json.Unmarshal([]byte(data), &errResp) == nil && errResp.Error.Message != "" {
-				errCh <- fmt.Errorf("upstream error: %s", errResp.Error.Message)
+				// stream 错误事件无法确定状态码，视为不可重试
+				errCh <- &UpstreamError{StatusCode: 0, Message: errResp.Error.Message}
 				return
 			}
 		}

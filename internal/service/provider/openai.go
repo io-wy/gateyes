@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -52,7 +51,7 @@ func (p *openAIProvider) CreateResponse(ctx context.Context, req *ResponseReques
 
 	if httpResp.StatusCode != http.StatusOK {
 		payload, _ := io.ReadAll(httpResp.Body)
-		return nil, fmt.Errorf("upstream error: %d %s", httpResp.StatusCode, string(payload))
+		return nil, &UpstreamError{StatusCode: httpResp.StatusCode, Message: string(payload)}
 	}
 
 	// 读取原始响应体
@@ -103,7 +102,7 @@ func (p *openAIProvider) StreamResponse(ctx context.Context, req *ResponseReques
 
 		if resp.StatusCode != http.StatusOK {
 			payload, _ := io.ReadAll(resp.Body)
-			errCh <- fmt.Errorf("upstream error: %d %s", resp.StatusCode, string(payload))
+			errCh <- &UpstreamError{StatusCode: resp.StatusCode, Message: string(payload)}
 			return
 		}
 
