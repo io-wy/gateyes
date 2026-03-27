@@ -49,7 +49,8 @@ func TestOpenAIProviderCreateAndStream(t *testing.T) {
 			})
 		case "/v1/chat/completions":
 			w.Header().Set("Content-Type", "text/event-stream")
-			_, _ = fmt.Fprint(w, "data: {\"id\":\"chat-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"provider-model\",\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n")
+			// 使用正确的 SSE 格式（空行分隔 frame）
+			_, _ = fmt.Fprint(w, "data: {\"id\":\"chat-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"provider-model\",\"choices\":[{\"delta\":{\"content\":\"hello\"},\"index\":0,\"finish_reason\":null}]}\n\n")
 			_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 		default:
 			http.NotFound(w, r)

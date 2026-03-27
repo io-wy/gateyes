@@ -30,7 +30,7 @@ func seedAdminToken(t *testing.T, env *handlerTestEnv, role string, key string, 
 		Name:       key,
 		Email:      key + "@example.com",
 		Role:       role,
-		Quota:      1000,
+		Quota:      100000,
 		QPS:        100,
 	}); err != nil {
 		t.Fatalf("EnsureBootstrapKey(%s) error: %v", key, err)

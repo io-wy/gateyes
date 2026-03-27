@@ -17,6 +17,15 @@ type CacheItem struct {
 	HitCount   int64     // 命中次数统计
 }
 
+// EvictReason 淘汰原因
+type EvictReason string
+
+const (
+	EvictReasonTTL   EvictReason = "ttl"   // 过期淘汰
+	EvictReasonLRU   EvictReason = "lru"   // LRU 淘汰
+	EvictReasonSize  EvictReason = "size" // 空间不足
+)
+
 // Cache LRU 缓存
 type Cache struct {
 	items      map[string]*CacheItem
@@ -25,9 +34,11 @@ type Cache struct {
 	ttl        time.Duration
 
 	// 统计
-	hitCount    int64
-	missCount   int64
-	evictCount  int64
+	hitCount       int64
+	missCount      int64
+	evictCount     int64
+	evictedByTTL   int64
+	evictedByLRU   int64
 
 	// LRU 访问顺序
 	accessOrder []string
@@ -35,12 +46,14 @@ type Cache struct {
 
 // CacheStats 缓存统计
 type CacheStats struct {
-	MaxSize    int     `json:"max_size"`
-	CurrentSize int    `json:"current_size"`
-	HitCount   int64   `json:"hit_count"`
-	MissCount  int64   `json:"miss_count"`
-	HitRate    float64 `json:"hit_rate"`
-	EvictCount int64   `json:"evict_count"`
+	MaxSize      int     `json:"max_size"`
+	CurrentSize  int     `json:"current_size"`
+	HitCount     int64   `json:"hit_count"`
+	MissCount    int64   `json:"miss_count"`
+	HitRate      float64 `json:"hit_rate"`
+	EvictCount   int64   `json:"evict_count"`
+	EvictedByTTL int64   `json:"evicted_by_ttl"`
+	EvictedByLRU int64   `json:"evicted_by_lru"`
 }
 
 func NewMemoryCache(cfg config.CacheConfig) *Cache {
@@ -122,6 +135,7 @@ func (c *Cache) evictOldest() {
 	delete(c.items, oldestKey)
 	c.accessOrder = c.accessOrder[1:]
 	c.evictCount++
+	c.evictedByLRU++
 }
 
 // cleanupLoop 定期清理过期项
@@ -151,6 +165,8 @@ func (c *Cache) cleanupExpired() {
 	for _, key := range keysToDelete {
 		delete(c.items, key)
 		c.removeFromOrder(key)
+		c.evictCount++
+		c.evictedByTTL++
 	}
 }
 
@@ -194,11 +210,13 @@ func (c *Cache) Stats() CacheStats {
 	}
 
 	return CacheStats{
-		MaxSize:    c.maxSize,
-		CurrentSize: len(c.items),
-		HitCount:   c.hitCount,
-		MissCount:  c.missCount,
-		HitRate:    hitRate,
-		EvictCount: c.evictCount,
+		MaxSize:      c.maxSize,
+		CurrentSize:  len(c.items),
+		HitCount:     c.hitCount,
+		MissCount:    c.missCount,
+		HitRate:      hitRate,
+		EvictCount:   c.evictCount,
+		EvictedByTTL: c.evictedByTTL,
+		EvictedByLRU: c.evictedByLRU,
 	}
 }

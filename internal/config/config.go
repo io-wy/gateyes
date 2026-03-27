@@ -56,9 +56,22 @@ type LimiterConfig struct {
 }
 
 type CacheConfig struct {
-	Enabled bool `yaml:"enabled"`
-	MaxSize int  `yaml:"maxSize"`
-	TTL     int  `yaml:"ttl"`
+	Enabled        bool              `yaml:"enabled"`
+	MaxSize        int               `yaml:"maxSize"`
+	TTL            int               `yaml:"ttl"`
+	Semantic       SemanticCacheConfig `yaml:"semantic"`
+	VerifyOnHit    bool              `yaml:"verifyOnHit"` // 缓存命中时是否验证
+	VerifyModel    string            `yaml:"verifyModel"` // 验证用的模型
+}
+
+type SemanticCacheConfig struct {
+	Enabled          bool    `yaml:"enabled"`
+	Threshold        float64 `yaml:"threshold"` // 相似度阈值 0.0-1.0，默认 0.85
+	EmbeddingModel   string  `yaml:"embeddingModel"`
+	RedisAddr        string  `yaml:"redisAddr"`
+	RedisPassword   string  `yaml:"redisPassword"`
+	RedisDB         int     `yaml:"redisDB"`
+	Namespace       string  `yaml:"namespace"` // 缓存命名空间
 }
 
 type ProviderConfig struct {

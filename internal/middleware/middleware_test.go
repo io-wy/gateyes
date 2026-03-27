@@ -80,11 +80,11 @@ func TestGuardLLMRequestRejectsRateLimitExceeded(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	limiterCfg := &config.LimiterConfig{
-		GlobalQPS:          100, // 确保全局默认 > 0
-		GlobalTPM:          600,
-		GlobalTokenBurst:   1,
+		GlobalQPS:           100, // 确保全局默认 > 0
+		GlobalTPM:           600000,
+		GlobalTokenBurst:    10000,
 		PerUserRequestBurst: 1,
-		QueueSize:          8,
+		QueueSize:           8,
 	}
 	mw := newTestMiddleware(t, repository.RoleTenantUser, -1, nil, limiterCfg)
 	engine := guardedEngine(mw)

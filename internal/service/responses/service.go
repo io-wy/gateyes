@@ -18,6 +18,7 @@ import (
 	"github.com/gateyes/gateway/internal/service/alert"
 	"github.com/gateyes/gateway/internal/service/auth"
 	"github.com/gateyes/gateway/internal/service/cache"
+	"github.com/gateyes/gateway/internal/service/cache/semantic"
 	"github.com/gateyes/gateway/internal/service/provider"
 	"github.com/gateyes/gateway/internal/service/router"
 )
@@ -29,13 +30,14 @@ var (
 )
 
 type Dependencies struct {
-	Config      *config.Config
-	Store       repository.Store
-	Auth        *auth.Auth
-	ProviderMgr *provider.Manager
-	Router      *router.Router
-	Cache       *cache.Cache
-	Alert       *alert.AlertService
+	Config        *config.Config
+	Store         repository.Store
+	Auth          *auth.Auth
+	ProviderMgr   *provider.Manager
+	Router        *router.Router
+	Cache         *cache.Cache
+	SemanticCache semantic.Cache
+	Alert         *alert.AlertService
 }
 
 type Service struct {
@@ -45,6 +47,7 @@ type Service struct {
 	providerMgr    *provider.Manager
 	router         *router.Router
 	cache          *cache.Cache
+	semanticCache  semantic.Cache
 	alert          *alert.AlertService
 	circuitBreaker *CircuitBreaker
 }
@@ -56,6 +59,8 @@ type CreateResult struct {
 	CacheHit         bool
 	PromptTokens     int
 	CompletionTokens int
+	Retries          int // 本次请求的重试次数
+	Fallback         int // 本次请求的 fallback 次数
 }
 
 type Stream struct {
@@ -78,24 +83,74 @@ type execution struct {
 }
 
 func New(deps *Dependencies) *Service {
-	return &Service{
+	svc := &Service{
 		cfg:            deps.Config,
 		store:          deps.Store,
 		auth:           deps.Auth,
 		providerMgr:    deps.ProviderMgr,
 		router:         deps.Router,
 		cache:          deps.Cache,
+		semanticCache:  deps.SemanticCache,
 		alert:          deps.Alert,
 		circuitBreaker: NewCircuitBreaker(deps.Config.CircuitBreaker),
 	}
+
+	// 自动初始化语义缓存
+	if svc.cfg.Cache.Semantic.Enabled && svc.cfg.Cache.Semantic.RedisAddr != "" {
+		emb, err := semantic.EmbedderFromConfig(semantic.Config{
+			Enabled:        true,
+			EmbeddingModel: svc.cfg.Cache.Semantic.EmbeddingModel,
+			APIKey:         svc.cfg.Cache.Semantic.RedisPassword, // API key 复用 redis password 字段
+		})
+		if err != nil {
+			// 日志记录错误但不中断启动
+			fmt.Printf("Failed to create embedder: %v\n", err)
+		} else if emb != nil {
+			semanticCache, err := semantic.NewRedisCache(semantic.Config{
+				Enabled:       true,
+				Threshold:     svc.cfg.Cache.Semantic.Threshold,
+				TTL:           time.Duration(svc.cfg.Cache.TTL) * time.Second,
+				Namespace:     svc.cfg.Cache.Semantic.Namespace,
+				RedisAddr:     svc.cfg.Cache.Semantic.RedisAddr,
+				RedisPassword: svc.cfg.Cache.Semantic.RedisPassword,
+				RedisDB:       svc.cfg.Cache.Semantic.RedisDB,
+			}, emb)
+			if err != nil {
+				fmt.Printf("Failed to create semantic cache: %v\n", err)
+			} else {
+				svc.semanticCache = semanticCache
+			}
+		}
+	}
+
+	return svc
 }
 
 func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*CreateResult, error) {
 	req.Normalize()
 
+	// 1. 精确缓存查找
 	if s.cfg.Cache.Enabled && s.cache != nil && !req.Stream {
 		if cached, ok := s.cache.Get(req.CacheKey()); ok {
-			return s.useCachedResponseWithRequest(ctx, identity, req, cached)
+			// 先验证缓存响应有效性
+			if s.isValidCacheResponseBytes([]byte(cached)) {
+				return s.useCachedResponseWithRequest(ctx, identity, req, cached)
+			}
+			// 缓存无效，跳过并继续走 LLM
+		}
+	}
+
+	// 2. 语义缓存查找
+	if s.cfg.Cache.Semantic.Enabled && s.semanticCache != nil && !req.Stream {
+		// 构建规范化后的 prompt 用于语义匹配
+		prompt := req.NormalizeCacheKey()
+		result, err := s.semanticCache.Get(prompt)
+		if err == nil && result.IsHit {
+			// 先验证缓存响应有效性
+			if s.isValidCacheResponseString(result.Response) {
+				return s.useCachedResponseWithRequest(ctx, identity, req, result.Response)
+			}
+			// 缓存无效，跳过并继续走 LLM
 		}
 	}
 
@@ -122,22 +177,29 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 	}
 
 	var lastErr error
+	var totalRetries int
+	fallbackCount := 0
+
 	for _, p := range candidates {
 		tenantID := identity.TenantID
 		providerName := p.Name()
 
+		// 跳过熔断中的 provider 时计数
 		if s.circuitBreaker != nil && !s.circuitBreaker.IsAvailable(tenantID, providerName) {
 			continue
 		}
 
-		// 更新 response 记录的 provider 名称
-		_ = s.store.UpdateResponse(ctx, repository.ResponseRecord{
-			ID:           responseID,
-			TenantID:     tenantID,
-			ProviderName: providerName,
-			Model:        req.Model,
-			Status:       "in_progress",
-		})
+		// 如果这不是第一个候选 provider，说明发生了 fallback
+		if fallbackCount > 0 {
+			// 更新 response 记录的 provider 名称
+			_ = s.store.UpdateResponse(ctx, repository.ResponseRecord{
+				ID:           responseID,
+				TenantID:     tenantID,
+				ProviderName: providerName,
+				Model:        req.Model,
+				Status:       "in_progress",
+			})
+		}
 
 		exec := &execution{
 			provider:              p,
@@ -153,7 +215,8 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 		s.router.IncLoad(providerName)
 		s.providerMgr.Stats.IncrementLoad(providerName)
 
-		resp, err := s.callWithRetry(ctx, identity, exec)
+		resp, retries, err := s.callWithRetry(ctx, identity, exec)
+		totalRetries += retries
 		latencyMs := time.Since(exec.startedAt).Milliseconds()
 
 		if err != nil {
@@ -165,6 +228,7 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 			s.providerMgr.Stats.RecordRequest(providerName, false, 0, latencyMs)
 			_ = s.markErrorWithProvider(ctx, identity, exec, latencyMs, providerName)
 			lastErr = err
+			fallbackCount++
 			continue
 		}
 
@@ -184,16 +248,92 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 			s.cache.Set(req.CacheKey(), string(body))
 		}
 
+		// 写入语义缓存
+		if s.cfg.Cache.Semantic.Enabled && s.semanticCache != nil {
+			prompt := req.NormalizeCacheKey()
+			body, _ := json.Marshal(resp)
+			_ = s.semanticCache.Set(prompt, string(body))
+		}
+
 		return &CreateResult{
 			Response:         resp,
 			ProviderName:     providerName,
 			LatencyMs:        latencyMs,
 			PromptTokens:     resp.Usage.PromptTokens,
 			CompletionTokens: resp.Usage.CompletionTokens,
+			Retries:          totalRetries,
+			Fallback:         fallbackCount,
 		}, nil
 	}
 
 	return nil, lastErr
+}
+
+// isValidCacheResponse 验证缓存的 response 是否有效
+func (s *Service) isValidCacheResponse(resp *provider.Response) bool {
+	if resp == nil {
+		return false
+	}
+
+	// 检查 ID
+	if resp.ID == "" {
+		return false
+	}
+
+	// 检查 output 不为空
+	if len(resp.Output) == 0 {
+		return false
+	}
+
+	// 检查有有效内容：文本内容 或 tool calls
+	hasValidContent := false
+	for _, output := range resp.Output {
+		// 检查 text content
+		for _, content := range output.Content {
+			if content.Text != "" {
+				hasValidContent = true
+				break
+			}
+		}
+		// 检查 function_call / tool_call
+		if output.Type == "function_call" || output.Type == "tool_use" {
+			hasValidContent = true
+			break
+		}
+		// 检查 output 有 args (function call 的参数)
+		if output.Args != "" {
+			hasValidContent = true
+			break
+		}
+	}
+
+	if !hasValidContent {
+		return false
+	}
+
+	// 检查 usage 有效（允许 0 tokens）
+	if resp.Usage.TotalTokens < 0 {
+		return false
+	}
+
+	return true
+}
+
+// isValidCacheResponseBytes 验证缓存的 response bytes 是否有效
+func (s *Service) isValidCacheResponseBytes(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	var resp provider.Response
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return false
+	}
+	return s.isValidCacheResponse(&resp)
+}
+
+// isValidCacheResponseString 验证缓存的 response string 是否有效
+func (s *Service) isValidCacheResponseString(data string) bool {
+	return s.isValidCacheResponseBytes([]byte(data))
 }
 
 func buildUpstreamRequest(req *provider.ResponseRequest) *provider.ResponseRequest {
@@ -254,6 +394,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 	retryCfg := s.cfg.Retry
 	startedAt := time.Now()
 	firstResponseSent := false
+	hasSentContent := false // 标记是否已经发送了内容给客户端
 
 	for _, p := range candidates {
 		providerName := p.Name()
@@ -303,7 +444,6 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 		stream, upstreamErrCh := p.StreamResponse(ctx, upstreamReq)
 		var finalResponse *provider.Response
 		var assistantText string
-		providerSucceeded := false
 
 		for {
 			select {
@@ -328,7 +468,11 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 
 				switch event.Type {
 				case "response.output_text.delta", "chat.delta":
+					// 一旦发送了内容给客户端，就不能再进行 fallback
+					hasSentContent = true
 					assistantText += event.Delta
+					out <- event
+				case "response.output_item.done":
 					out <- event
 				case "response.completed":
 					finalResponse = event.Response
@@ -345,8 +489,8 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 					s.circuitBreaker.RecordFailure(tenantID, providerName)
 				}
 
-				// 尝试重试当前 provider
-				if s.isStreamRetryable(err) && !providerSucceeded {
+				// 只有在还没有发送内容给客户端时，才能进行重试
+				if s.isStreamRetryable(err) && !hasSentContent {
 					for i := 0; i < retryCfg.MaxRetries; i++ {
 						delay := float64(retryCfg.InitialDelayMs) * math.Pow(retryCfg.BackoffFactor, float64(i))
 						delay = math.Min(delay, float64(retryCfg.MaxDelayMs))
@@ -360,14 +504,19 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 						// 重试
 						stream, upstreamErrCh = p.StreamResponse(ctx, upstreamReq)
 						assistantText = ""
-						providerSucceeded = false
 						goto retryLoop
 					}
 				}
 
-				// 当前 provider 失败，标记并继续下一个（不立即发送错误）
-				providerSucceeded = false
-				goto nextProvider
+				// 只有在还没有发送内容给客户端时，才能 fallback 到下一个 provider
+				if !hasSentContent {
+					// 当前 provider 失败，尝试下一个
+					goto nextProvider
+				}
+
+				// 已经发送了内容给客户端，不能 fallback，直接返回错误
+				errCh <- err
+				return
 			case <-ctx.Done():
 				s.router.DecLoad(providerName)
 				s.providerMgr.Stats.DecrementLoad(providerName)
@@ -400,7 +549,11 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 
 					switch event.Type {
 					case "response.output_text.delta", "chat.delta":
+						// 一旦发送了内容给客户端，就不能再进行 fallback
+						hasSentContent = true
 						assistantText += event.Delta
+						out <- event
+					case "response.output_item.done":
 						out <- event
 					case "response.completed":
 						finalResponse = event.Response
@@ -416,9 +569,15 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 					if s.circuitBreaker != nil {
 						s.circuitBreaker.RecordFailure(tenantID, providerName)
 					}
-					// 重试也失败了，尝试下一个 provider
-					providerSucceeded = false
-					goto nextProvider
+
+					// 只有在还没有发送内容给客户端时，才能继续 fallback
+					if !hasSentContent && s.isStreamRetryable(err) {
+						goto nextProvider
+					}
+
+					// 已经发送了内容给客户端，不能 fallback，直接返回错误
+					errCh <- err
+					return
 				case <-ctx.Done():
 					s.router.DecLoad(providerName)
 					s.providerMgr.Stats.DecrementLoad(providerName)
@@ -581,6 +740,8 @@ func (s *Service) useCachedResponse(ctx context.Context, identity *repository.Au
 		CacheHit:         true,
 		PromptTokens:     resp.Usage.PromptTokens,
 		CompletionTokens: resp.Usage.CompletionTokens,
+		Retries:          0,
+		Fallback:         0,
 	}, nil
 }
 
@@ -588,6 +749,12 @@ func (s *Service) useCachedResponseWithRequest(ctx context.Context, identity *re
 	var resp provider.Response
 	if err := json.Unmarshal([]byte(cached), &resp); err != nil {
 		return nil, err
+	}
+
+	// 缓存验证：检查 response 有效性
+	if !s.isValidCacheResponse(&resp) {
+		// 缓存数据无效，返回错误让请求继续走 LLM
+		return nil, fmt.Errorf("invalid cached response")
 	}
 
 	responseID := uuid.NewString()
@@ -608,15 +775,22 @@ func (s *Service) useCachedResponseWithRequest(ctx context.Context, identity *re
 	}
 
 	body, _ := json.Marshal(resp)
-	if err := s.store.UpdateResponse(ctx, repository.ResponseRecord{
+
+	// 先创建 response 记录（缓存命中）
+	requestBody, _ := json.Marshal(req)
+	if err := s.store.CreateResponse(ctx, repository.ResponseRecord{
 		ID:           responseID,
 		TenantID:     identity.TenantID,
+		UserID:       identity.UserID,
+		APIKeyID:     identity.APIKeyID,
 		ProviderName: "cache",
 		Model:        req.Model,
 		Status:       "completed",
+		RequestBody:  requestBody,
 		ResponseBody: body,
 	}); err != nil {
-		return nil, err
+		// 落库失败，返回错误而不是静默继续
+		return nil, fmt.Errorf("failed to create cache response record: %w", err)
 	}
 
 	if err := s.auth.RecordUsage(
@@ -645,6 +819,8 @@ func (s *Service) useCachedResponseWithRequest(ctx context.Context, identity *re
 		CacheHit:         true,
 		PromptTokens:     resp.Usage.PromptTokens,
 		CompletionTokens: resp.Usage.CompletionTokens,
+		Retries:          0,
+		Fallback:         0,
 	}, nil
 }
 
@@ -698,6 +874,8 @@ func (s *Service) runStream(ctx context.Context, identity *repository.AuthIdenti
 			switch event.Type {
 			case "response.output_text.delta", "chat.delta":
 				assistantText += event.Delta
+				out <- event
+			case "response.output_item.done":
 				out <- event
 			case "response.completed":
 				finalResponse = event.Response
@@ -887,38 +1065,40 @@ func isRetryable(err error) bool {
 	return true
 }
 
-func (s *Service) callWithRetry(ctx context.Context, identity *repository.AuthIdentity, exec *execution) (*provider.Response, error) {
+func (s *Service) callWithRetry(ctx context.Context, identity *repository.AuthIdentity, exec *execution) (*provider.Response, int, error) {
 	retryCfg := s.cfg.Retry
 	var lastErr error
+	retryCount := 0
 
 	for i := 0; i <= retryCfg.MaxRetries; i++ {
 		resp, err := exec.provider.CreateResponse(ctx, exec.upstreamRequest)
 
 		if err == nil {
-			return resp, nil
+			return resp, retryCount, nil
 		}
 		lastErr = err
 
 		if !isRetryable(err) {
-			return nil, err
+			return nil, retryCount, err
 		}
 
 		if i < retryCfg.MaxRetries {
+			retryCount++
 			delay := float64(retryCfg.InitialDelayMs) * math.Pow(retryCfg.BackoffFactor, float64(i))
 			delay = math.Min(delay, float64(retryCfg.MaxDelayMs))
 			// 使用 select 响应 ctx 取消
 			select {
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return nil, retryCount, ctx.Err()
 			case <-time.After(time.Duration(delay) * time.Millisecond):
 			}
 		}
 	}
 
 	if lastErr != nil {
-		return nil, fmt.Errorf("all retries exhausted: %w", lastErr)
+		return nil, retryCount, fmt.Errorf("all retries exhausted: %w", lastErr)
 	}
-	return nil, fmt.Errorf("all retries exhausted")
+	return nil, retryCount, fmt.Errorf("all retries exhausted")
 }
 
 func (s *Service) getCandidateProviders(ctx context.Context, identity *repository.AuthIdentity, sessionID string, model string) []provider.Provider {
@@ -1009,4 +1189,12 @@ type ginError struct {
 
 func (e ginError) Error() string {
 	return fmt.Sprintf("%d %s", e.Status, e.Message)
+}
+
+// GetCircuitBreakerStates returns all circuit breaker states for metrics collection
+func (s *Service) GetCircuitBreakerStates() map[string]int {
+	if s.circuitBreaker == nil {
+		return nil
+	}
+	return s.circuitBreaker.GetAllStates()
 }

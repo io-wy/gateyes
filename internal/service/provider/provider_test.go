@@ -204,14 +204,15 @@ func TestAnthropicBuildRequestAndConvertResponseSupportToolUse(t *testing.T) {
 		t.Fatalf("buildRequest error: %v", err)
 	}
 	// 检查基本字段
-	if string(payload.Model) != "claude-test" {
-		t.Fatalf("unexpected model: %q", payload.Model)
+	if payload["model"] != "claude-test" {
+		t.Fatalf("unexpected model: %q", payload["model"])
 	}
-	if len(payload.Messages) != 3 {
-		t.Fatalf("expected 3 messages, got %d", len(payload.Messages))
+	messages, ok := payload["messages"].([]map[string]any)
+	if !ok || len(messages) != 3 {
+		t.Fatalf("expected 3 messages, got %#v", payload["messages"])
 	}
-	if len(payload.System) != 1 || payload.System[0].Text != "sys" {
-		t.Fatalf("unexpected system prompt: %+v", payload.System)
+	if systemParam, _ := payload["system"].(string); systemParam != "sys" {
+		t.Fatalf("unexpected system prompt: %#v", payload["system"])
 	}
 
 	raw := anthropicResponse{

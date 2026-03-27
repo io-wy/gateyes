@@ -237,7 +237,7 @@ func newHandlerTestEnv(t *testing.T, cfg handlerTestEnvConfig) *handlerTestEnv {
 		Name:       "test-user",
 		Email:      "test@example.com",
 		Role:       repository.RoleTenantUser,
-		Quota:      1000,
+		Quota:      100000,
 		QPS:        100,
 		Models:     nil,
 	}); err != nil {
@@ -287,11 +287,11 @@ func newHandlerTestEnv(t *testing.T, cfg handlerTestEnvConfig) *handlerTestEnv {
 		cacheSvc = cache.NewMemoryCache(cfgObj.Cache)
 	}
 	limiterSvc := limiter.NewLimiter(config.LimiterConfig{
-		GlobalQPS:          100,
-		GlobalTPM:          100000,
-		GlobalTokenBurst:   100,
+		GlobalQPS:           100,
+		GlobalTPM:           100000,
+		GlobalTokenBurst:    100000,
 		PerUserRequestBurst: 100,
-		QueueSize:          128,
+		QueueSize:           128,
 	})
 	t.Cleanup(limiterSvc.Stop)
 	mw := middleware.New(store, limiterSvc)

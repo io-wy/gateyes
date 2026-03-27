@@ -2,6 +2,8 @@ package provider
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -25,6 +27,19 @@ func (e *UpstreamError) IsRetryable() bool {
 		return e.StatusCode == 429 // Rate limit
 	}
 	// 5xx 服务端错误可以重试
+	return e.StatusCode >= 500
+}
+
+func (e *UpstreamError) IsTimeout() bool {
+	return e.StatusCode == 0 && strings.Contains(strings.ToLower(e.Message), "timeout")
+}
+
+func (e *UpstreamError) IsRateLimited() bool {
+	return e.StatusCode == 429
+}
+
+func (e *UpstreamError) IsUpstream() bool {
+	// 5xx errors are upstream errors
 	return e.StatusCode >= 500
 }
 
@@ -303,17 +318,208 @@ func (r *ResponseRequest) Normalize() {
 	}
 }
 
-func (r *ResponseRequest) CacheKey() string {
+//分层CacheKey 将请求拆分为多个层级分别计算 hash
+// 用于分层缓存：system + agent + history + current
+type LayeredCacheKey struct {
+	SystemHash   string // system prompt hash
+	AgentHash    string // agent 指令 hash
+	HistoryHash string // 历史消息 hash (不含最后一条)
+	CurrentHash string // 当前用户输入 hash
+	FullKey     string // 完整 key (向后兼容)
+}
+
+// GetLayeredCacheKey 生成分层缓存 key
+// 1. System: 第一条 role=system 的消息
+// 2. Agent: Extra["agent_instructions"] 或特定格式的 system 消息
+// 3. History: 除了最后一条 user 消息之外的所有消息
+// 4. Current: 最后一条 user 消息
+func (r *ResponseRequest) GetLayeredCacheKey() LayeredCacheKey {
+	var systemMsg, agentMsg string
+	var historyMsgs []Message
+	var currentMsg string
+
+	for i, msg := range r.Messages {
+		content := normalizeMessageContent(msg.Content)
+
+		switch msg.Role {
+		case "system":
+			// 检查是否是 agent 指令 (通过 Extra 或特定格式)
+			if i == 0 && r.Extra != nil {
+				if agent, ok := r.Extra["agent_instructions"].(string); ok && agent != "" {
+					agentMsg = content
+					continue
+				}
+			}
+			// 普通 system prompt
+			if systemMsg == "" {
+				systemMsg = content
+			}
+
+		case "user":
+			// 最后一条 user 消息是当前输入
+			if i == len(r.Messages)-1 || (i+1 < len(r.Messages) && r.Messages[i+1].Role != "tool") {
+				currentMsg = content
+			} else {
+				// 其他的 user 消息算历史
+				historyMsgs = append(historyMsgs, msg)
+			}
+
+		case "assistant", "tool":
+			// 除了最后一条，都算历史
+			if i < len(r.Messages)-1 {
+				historyMsgs = append(historyMsgs, msg)
+			}
+		}
+	}
+
+	// 分别计算 hash
+	systemHash := hashContent(systemMsg)
+	agentHash := hashContent(agentMsg)
+	historyHash := hashHistory(historyMsgs)
+	currentHash := hashContent(currentMsg)
+
+	// 组合完整 key
+	var b strings.Builder
+	b.WriteString(r.Model)
+	b.WriteString("||")
+	b.WriteString(systemHash)
+	b.WriteString("||")
+	b.WriteString(agentHash)
+	b.WriteString("||")
+	b.WriteString(historyHash)
+	b.WriteString("||")
+	b.WriteString(currentHash)
+
+	return LayeredCacheKey{
+		SystemHash:   systemHash,
+		AgentHash:    agentHash,
+		HistoryHash: historyHash,
+		CurrentHash: currentHash,
+		FullKey:     b.String(),
+	}
+}
+
+// hashContent 计算内容的 hash
+func hashContent(content string) string {
+	if content == "" {
+		return "empty"
+	}
+	h := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(h[:8]) // 只取前8字节，缩短 key
+}
+
+// hashHistory 计算历史消息的 hash
+func hashHistory(messages []Message) string {
+	if len(messages) == 0 {
+		return "empty"
+	}
+	var b strings.Builder
+	for _, msg := range messages {
+		b.WriteString(msg.Role)
+		b.WriteString(":")
+		b.WriteString(normalizeMessageContent(msg.Content))
+		b.WriteString("|")
+	}
+	if b.Len() == 0 {
+		return "empty"
+	}
+	h := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(h[:8])
+}
+
+// NormalizeCacheKey 生成规范化的缓存 key
+// 保留原始消息顺序，只做稳定序列化：
+// 1. 保留消息顺序（不重排）
+// 2. 去除消息内容的首尾空白（稳定化）
+// 3. 包含 tool calls 和 tool call ID
+func (r *ResponseRequest) NormalizeCacheKey() string {
+	// 直接使用原始消息顺序，不排序
+	// 构建规范化 key
 	var b strings.Builder
 	b.WriteString(r.Model)
 	b.WriteString("\n")
-	for _, message := range r.InputMessages() {
+	for _, message := range r.Messages {
 		b.WriteString(message.Role)
 		b.WriteString(":")
-		b.WriteString(message.Signature())
+
+		// 规范化内容：去除首尾空白
+		b.WriteString(normalizeMessageContent(message.Content))
+
+		// 包含 tool call ID（用于区分 tool result 消息）
+		if message.ToolCallID != "" {
+			b.WriteString("|tool_call_id:")
+			b.WriteString(message.ToolCallID)
+		}
+
+		// 包含 tool calls（用于区分带 function call 的消息）
+		if len(message.ToolCalls) > 0 {
+			b.WriteString(formatToolCallsForCacheKey(message.ToolCalls))
+		}
+
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// normalizeMessageContent 规范化消息内容（用于缓存 key）
+// 处理多种 content 类型，确保复杂内容也能生成稳定的 key
+func normalizeMessageContent(content any) string {
+	if content == nil {
+		return ""
+	}
+
+	switch v := content.(type) {
+	case string:
+		// 纯文本，去除首尾空白
+		return strings.TrimSpace(v)
+
+	case []any:
+		// 数组内容块，逐项处理
+		var b strings.Builder
+		for _, item := range v {
+			b.WriteString(normalizeMessageContent(item))
+		}
+		return b.String()
+
+	case map[string]any:
+		// 内容块序列化为稳定 JSON
+		// 只提取关键字段，避免随机性
+		data, err := json.Marshal(v)
+		if err != nil {
+			return ""
+		}
+		return string(data)
+
+	default:
+		// 其他类型，尝试转 JSON
+		data, err := json.Marshal(v)
+		if err != nil {
+			return ""
+		}
+		return string(data)
+	}
+}
+
+// formatToolCallsForCacheKey 格式化 tool calls 为缓存 key 字符串
+func formatToolCallsForCacheKey(calls []ToolCall) string {
+	if len(calls) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, call := range calls {
+		b.WriteString("tool:")
+		b.WriteString(call.ID)
+		b.WriteString(":")
+		b.WriteString(call.Function.Name)
+		b.WriteString(":")
+		b.WriteString(call.Function.Arguments)
+	}
+	return b.String()
+}
+
+func (r *ResponseRequest) CacheKey() string {
+	// 使用规范化版本生成 cache key
+	return r.NormalizeCacheKey()
 }
 
 func (r *ResponseRequest) EstimatePromptTokens() int {

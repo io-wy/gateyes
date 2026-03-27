@@ -15,6 +15,7 @@
 - 程序入口：`cmd/gateway/main.go`
 - HTTP 入口与路由分组：`internal/handler/server.go`
 - 中间件：`internal/middleware`
+- 协议兼容层：`internal/protocol/apicompat`
 - 主业务编排：`internal/service/responses`
 - 核心服务：`internal/service/auth`、`internal/service/cache`、`internal/service/limiter`、`internal/service/router`
 - 持久化：`internal/repository`、`internal/repository/sqlstore`
@@ -27,17 +28,17 @@
 2. `mw.Auth()` 解析 `Authorization` 并完成数据库鉴权。
 3. 对 LLM 写请求，`mw.GuardLLMRequest()` 继续执行：
    - 读取请求体并提取 `model`
-   - 估算 prompt token
+   - 估算 admission tokens（`prompt + output budget`）
    - 检查模型白名单
    - 检查 quota
    - 执行限流
 4. `handler` 负责：
    - 绑定 JSON
-   - 在 Chat Completions 和 Responses 之间做兼容转换
+   - 调用 `internal/protocol/apicompat` 做 OpenAI / Anthropic 兼容转换
    - 返回 JSON 或 SSE
 5. `responses.Service` 负责：
    - 查询 tenant 可用 provider
-   - 选择 provider
+   - 排序 candidate providers 并执行 retry / fallback
    - 写入 `responses` 表中的 `in_progress` 记录
    - 命中缓存则直接返回缓存结果
    - 未命中则调用上游 provider
@@ -47,6 +48,7 @@
 和本文五个机制最相关的入口文件：
 
 - `internal/handler/server.go`
+- `internal/protocol/apicompat`
 - `internal/middleware/middleware.go`
 - `internal/service/responses/service.go`
 
@@ -59,6 +61,14 @@
 ```text
 Authorization: Bearer <api_key>:<api_secret>
 ```
+
+另外 `mw.Auth()` 也支持：
+
+```text
+X-Api-Key: <api_key>:<api_secret>
+```
+
+这主要是为了兼容 Anthropic SDK 风格请求。
 
 对应逻辑在：
 
@@ -123,10 +133,10 @@ Authorization header
 
 当前 quota 有两次参与：
 
-1. 预检查：`mw.GuardLLMRequest()` 中调用 `auth.HasQuota(identity, estimatedPromptTokens)`
+1. 预检查：`mw.GuardLLMRequest()` 中调用 `auth.HasQuota(identity, estimatedAdmissionTokens)`
 2. 实际记账：响应成功后 `auth.RecordUsage(...)` 调用 `store.ConsumeQuota(...)`
 
-预检查用的是“估算 prompt token”，真正入账用的是响应里的 `total_tokens`。
+预检查用的是 admission tokens，真正入账用的是响应里的 `total_tokens`。
 
 ### 使用记录写入
 
@@ -161,6 +171,7 @@ HTTP 路由分组在 `internal/handler/server.go`，当前分三层：
    - 额外走 `mw.GuardLLMRequest()`
    - 覆盖 `POST /v1/responses`
    - 覆盖 `POST /v1/chat/completions`
+   - 覆盖 `POST /v1/messages`
 3. `/admin/*`
    - 统一走 `mw.Auth()`
    - 再走 `mw.RequireRoles(tenant_admin, super_admin)`
@@ -231,10 +242,10 @@ Admin Handler 里的两个辅助逻辑很关键：
 当前调用方式：
 
 ```text
-limiter.Allow(ctx, identity.APIKey, estimatedPromptTokens)
+limiter.Allow(ctx, identity.APIKey, identity.QPS, estimatedAdmissionTokens)
 ```
 
-也就是说，当前限流维度基于 `APIKey`，而不是 `UserID` 或 `TenantID`。
+也就是说，当前限流维度仍然基于 `APIKey`，但每个 key 的请求速率会优先使用用户自己的 `identity.QPS`。
 
 ### 配置项
 
@@ -242,31 +253,30 @@ limiter.Allow(ctx, identity.APIKey, estimatedPromptTokens)
 
 - `globalQPS`
 - `globalTPM`
-- `burst`
+- `globalTokenBurst`
+- `perUserRequestBurst`
 - `queueSize`
 
 默认示例位于 `configs/config.yaml`。
 
 ### 请求元数据提取
 
-限流前，中间件会先读取请求体并估算 token：
+限流前，中间件会先读取请求体并估算 admission tokens：
 
 1. 读取整个 body
 2. 反序列化为 `provider.ResponseRequest`
 3. 调用 `Normalize()`
-4. 调用 `EstimatePromptTokens()`
+4. 调用 `EstimateAdmissionTokens()`
 
-`EstimatePromptTokens()` 的算法非常简单：
+`EstimateAdmissionTokens()` 当前算法是：
 
 ```text
-for each input message:
-    total += RoughTokenCount(message.Signature())
-
-if total == 0:
-    return 1
+prompt_tokens = EstimatePromptTokens()
+output_budget = max(max_output_tokens, max_tokens, 4096)
+return prompt_tokens + output_budget
 ```
 
-`RoughTokenCount(content)` 当前实现是：
+其中 `EstimatePromptTokens()` 仍然使用粗估算法：
 
 ```text
 len(content) / 4
@@ -310,10 +320,10 @@ else:
 
 ### 两层限流逻辑
 
-当前 `check(key, tokens)` 的执行顺序：
+当前 `check(key, userQPS, tokens)` 的执行顺序：
 
 1. 先检查全局桶：`globalToken.TryConsume(tokens)`
-2. 再检查当前 `apiKey` 的桶：`userTB.TryConsume(1)`
+2. 再检查当前 `apiKey` 的请求桶：`userTB.TryConsume(1)`
 
 含义如下：
 
@@ -322,8 +332,9 @@ else:
 
 注意两个配置名的实际语义：
 
-- `globalTPM` 真正在当前实现里对应“全局 prompt-token 速率”
-- `globalQPS` 实际被用作“每个 APIKey 的请求速率”
+- `globalTPM` 真正在当前实现里对应“全局 token 速率”
+- `globalQPS` 是用户未配置 `QPS` 时的默认请求速率
+- `perUserRequestBurst` 是每个 APIKey 请求桶的突发容量
 
 ### 队列行为
 
@@ -345,7 +356,6 @@ else:
 
 当前限流实现有几个重要边界：
 
-- 没有使用 `identity.QPS` 或用户表中的 `qps`
 - 没有按 tenant 做聚合限流
 - 没有按真实 completion token 限流
 - 没有按 provider 区分限流
@@ -361,19 +371,20 @@ else:
 
 1. 先从数据库读取 tenant 可用 provider 名单
 2. 再通过 `ProviderMgr.ListByNames()` 得到候选列表
-3. 再交给 `Router.SelectFrom(...)`
+3. 主业务层在 `responses.Service.sortCandidatesByStrategy(...)` 中排序
 
 所以当前路由的第一层过滤是 tenant 绑定关系。
 
 ### 当前选择流程
 
-`responses.Service.selectProvider()` 的流程：
+当前主链路并不直接调用 `Router.SelectFrom(...)` 选出单个 provider，而是：
 
 1. `ListTenantProviders(identity.TenantID)`
 2. `ProviderMgr.ListByNames(providerNames)`
-3. `Router.SelectFrom(candidates, sessionID)`
+3. `responses.Service.sortCandidatesByStrategy(...)` 对候选列表排序
+4. 主业务层自行按排序后的列表重试 / fallback
 
-当前实现中，选择逻辑不使用请求里的 `model` 做额外过滤。
+因此，当前 router 更多是“提供排序依据和负载状态”，而不是唯一选择入口。
 
 ### 负载跟踪
 
@@ -476,6 +487,12 @@ selected = candidates[abs(hash % len(candidates))]
 - `internal/service/responses/service.go`
 
 只有非流式请求会走缓存。
+
+当前还存在一条可选的语义缓存路径：
+
+- `internal/service/cache/semantic`
+
+但它还不是当前最稳定的生产路径。
 
 ### 读写时机
 
@@ -626,6 +643,8 @@ sha256(key_material)
 - 缓存值是完整响应 JSON
 - 命中后 usage provider 被记为 `cache`
 - 没有主动失效机制
+- 精确缓存 key 仍然没有纳入 `tenant/provider/max_tokens` 等隔离维度
+- 语义缓存代码已接线，但当前实现稳定性和隔离性都还不足以直接视为生产完成
 
 ## 维护建议
 
@@ -645,3 +664,7 @@ sha256(key_material)
 
 - 面向维护者的内部机制文档
 - 面向 API 使用者的运行时说明
+
+
+
+

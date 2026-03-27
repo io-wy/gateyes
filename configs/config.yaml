@@ -68,6 +68,19 @@ providers:
     timeout: 60
     enabled: true
 
+  - name: codex for me
+    type: openai
+    baseURL: https://api-vip.codex-for.me/v1
+    apiKey: clp_da5e4618afbeea4b8a9229e6a753e5a5405d92354a8b26d432b77ff4e066f49a
+    model: gpt-5.2
+    weight: 10
+    priceInput: 0
+    priceOutput: 0
+    maxTokens: 4096
+    timeout: 60
+    enabled: true
+
+
 apiKeys:
   - key: test-key-001
     secret: test-secret

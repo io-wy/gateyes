@@ -407,13 +407,7 @@ func TestAnthropicProviderHelpers(t *testing.T) {
 		t.Fatalf("buildAnthropicStreamResponse() = %+v, want computed completion tokens", streamResp.Usage)
 	}
 
-	outputs := convertAnthropicOutputs("assistant", []struct {
-		Type  string          `json:"type"`
-		Text  string          `json:"text"`
-		ID    string          `json:"id"`
-		Name  string          `json:"name"`
-		Input json.RawMessage `json:"input"`
-	}{
+	outputs := convertAnthropicOutputs("assistant", []AnthropicContentBlock{
 		{Type: "text", Text: "hello"},
 		{Type: "tool_use", ID: "call-1", Name: "lookup", Input: json.RawMessage(`{"city":"shanghai"}`)},
 	})

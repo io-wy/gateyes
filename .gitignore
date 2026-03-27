@@ -17,3 +17,5 @@ gateyes.db
 *.cover.out
 test/
 .gotools/
+tmp/
+test_doc/

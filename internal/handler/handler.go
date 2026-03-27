@@ -15,6 +15,7 @@ import (
 
 	"github.com/gateyes/gateway/internal/config"
 	"github.com/gateyes/gateway/internal/middleware"
+	"github.com/gateyes/gateway/internal/protocol/apicompat"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/provider"
 	responseSvc "github.com/gateyes/gateway/internal/service/responses"
@@ -37,26 +38,106 @@ type Dependencies struct {
 }
 
 type Metrics struct {
-	requests  *prometheus.CounterVec
-	latency   *prometheus.HistogramVec
-	tokens    *prometheus.CounterVec
-	errors    *prometheus.CounterVec
-	cacheHit  prometheus.Counter
-	cacheMiss prometheus.Counter
+	// 请求计数
+	requests         *prometheus.CounterVec
+	inflightRequests prometheus.Gauge
+
+	// 延迟
+	latency          *prometheus.HistogramVec
+	upstreamLatency  *prometheus.HistogramVec
+	timeToFirstToken *prometheus.HistogramVec
+
+	// Tokens
+	promptTokens     *prometheus.CounterVec
+	completionTokens *prometheus.CounterVec
+	totalTokens      *prometheus.CounterVec
+
+	// 错误分类
+	errors           *prometheus.CounterVec
+	upstreamErrors   *prometheus.CounterVec
+	timeouts         *prometheus.CounterVec
+	rateLimited      *prometheus.CounterVec
+	tokenRateLimited *prometheus.CounterVec
+
+	// Streaming
+	activeStreams  prometheus.Gauge
+	streamDuration *prometheus.HistogramVec
+
+	// Cache
+	cacheHits   prometheus.Counter
+	cacheMisses prometheus.Counter
+
+	// Model 维度
+	modelRequests *prometheus.CounterVec
+	modelFailures *prometheus.CounterVec
+	modelFallback *prometheus.CounterVec
+
+	// Retry/Fallback
+	retries  *prometheus.CounterVec
+	fallback *prometheus.CounterVec
+
+	// Circuit Breaker
+	circuitBreakerState *prometheus.GaugeVec
 }
 
 func NewMetrics(namespace string) *Metrics {
 	return &Metrics{
-		requests: promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "requests_total"}, []string{"model", "status"}),
+		// 请求计数
+		requests:         promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "requests_total"}, []string{"model", "status"}),
+		inflightRequests: promauto.NewGauge(prometheus.GaugeOpts{Namespace: namespace, Name: "inflight_requests"}),
+
+		// 延迟
 		latency: promauto.NewHistogramVec(prometheus.HistogramOpts{
 			Namespace: namespace,
-			Name:      "request_duration_seconds",
-			Buckets:   []float64{0.01, 0.05, 0.1, 0.5, 1, 5, 10},
+			Name:      "request_latency_seconds",
+			Buckets:   []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30},
 		}, []string{"model"}),
-		tokens:    promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "tokens_total"}, []string{"model", "type"}),
-		errors:    promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "errors_total"}, []string{"model", "type"}),
-		cacheHit:  promauto.NewCounter(prometheus.CounterOpts{Namespace: namespace, Name: "cache_hit_total"}),
-		cacheMiss: promauto.NewCounter(prometheus.CounterOpts{Namespace: namespace, Name: "cache_miss_total"}),
+		upstreamLatency: promauto.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "upstream_latency_seconds",
+			Buckets:   []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30},
+		}, []string{"model"}),
+		timeToFirstToken: promauto.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "time_to_first_token_seconds",
+			Buckets:   []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+		}, []string{"model"}),
+
+		// Tokens
+		promptTokens:     promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "prompt_tokens_total"}, []string{"model"}),
+		completionTokens: promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "completion_tokens_total"}, []string{"model"}),
+		totalTokens:      promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "total_tokens_total"}, []string{"model"}),
+
+		// 错误分类
+		errors:           promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "errors_total"}, []string{"model", "type"}),
+		upstreamErrors:   promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "upstream_errors_total"}, []string{"model"}),
+		timeouts:         promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "timeouts_total"}, []string{"model"}),
+		rateLimited:      promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "rate_limited_total"}, []string{"model"}),
+		tokenRateLimited: promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "token_rate_limited_total"}, []string{"model"}),
+
+		// Streaming
+		activeStreams: promauto.NewGauge(prometheus.GaugeOpts{Namespace: namespace, Name: "active_streams"}),
+		streamDuration: promauto.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "stream_duration_seconds",
+			Buckets:   []float64{0.1, 0.5, 1, 2.5, 5, 10, 30, 60},
+		}, []string{"model"}),
+
+		// Cache
+		cacheHits:   promauto.NewCounter(prometheus.CounterOpts{Namespace: namespace, Name: "cache_hits_total"}),
+		cacheMisses: promauto.NewCounter(prometheus.CounterOpts{Namespace: namespace, Name: "cache_misses_total"}),
+
+		// Model 维度
+		modelRequests: promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "model_requests_total"}, []string{"model"}),
+		modelFailures: promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "model_failures_total"}, []string{"model"}),
+		modelFallback: promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "model_fallback_total"}, []string{"model"}),
+
+		// Retry/Fallback
+		retries:  promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "retries_total"}, []string{"model"}),
+		fallback: promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "fallback_total"}, []string{"model"}),
+
+		// Circuit Breaker
+		circuitBreakerState: promauto.NewGaugeVec(prometheus.GaugeOpts{Namespace: namespace, Name: "circuit_breaker_state"}, []string{"tenant_id", "provider"}),
 	}
 }
 
@@ -72,10 +153,13 @@ func NewHandler(deps *Dependencies) *Handler {
 
 func (h *Handler) Chat(c *gin.Context) {
 	start := time.Now()
+	h.metrics.inflightRequests.Inc()
+	defer h.metrics.inflightRequests.Dec()
 
-	var req provider.ChatCompletionRequest
+	var req apicompat.ChatCompletionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.metrics.errors.WithLabelValues(req.Model, "invalid_request").Inc()
+		h.metrics.modelFailures.WithLabelValues(req.Model).Inc()
 		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": err.Error(), "type": "invalid_request_error"}})
 		return
 	}
@@ -86,14 +170,14 @@ func (h *Handler) Chat(c *gin.Context) {
 		return
 	}
 
-	responseReq := provider.ConvertChatRequest(&req)
+	responseReq := apicompat.ConvertChatRequest(&req)
 	if req.Stream {
 		stream, err := h.responses.CreateStream(c.Request.Context(), identity, responseReq, c.GetHeader("X-Session-ID"))
 		if err != nil {
 			h.renderServiceError(c, req.Model, err)
 			return
 		}
-		h.streamChatCompatibility(c, stream, req.Model)
+		h.streamChatCompatibility(c, stream, req.Model, start)
 		return
 	}
 
@@ -104,12 +188,15 @@ func (h *Handler) Chat(c *gin.Context) {
 	}
 
 	if result.CacheHit {
-		h.metrics.cacheHit.Inc()
+		h.metrics.cacheHits.Inc()
 	} else if h.cfg.Cache.Enabled {
-		h.metrics.cacheMiss.Inc()
+		h.metrics.cacheMisses.Inc()
 	}
-	h.observeResponse(req.Model, result.ProviderName, result.Response.Usage, time.Since(start), result.CacheHit)
-	c.JSON(http.StatusOK, provider.ConvertResponseToChat(result.Response))
+
+	// upstreamLatency = total latency - (retry delays)
+	upstreamLatency := time.Duration(result.LatencyMs) * time.Millisecond
+	h.observeResponseWithUpstream(req.Model, result.ProviderName, result.Response.Usage, time.Since(start), upstreamLatency, result.Retries, result.Fallback)
+	c.JSON(http.StatusOK, apicompat.ConvertResponseToChat(result.Response))
 }
 
 func (h *Handler) Responses(c *gin.Context) {
@@ -118,10 +205,13 @@ func (h *Handler) Responses(c *gin.Context) {
 
 func (h *Handler) AnthropicMessages(c *gin.Context) {
 	start := time.Now()
+	h.metrics.inflightRequests.Inc()
+	defer h.metrics.inflightRequests.Dec()
 
-	var req provider.AnthropicMessagesRequest
+	var req apicompat.AnthropicMessagesRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.metrics.errors.WithLabelValues(req.Model, "invalid_request").Inc()
+		h.metrics.modelFailures.WithLabelValues(req.Model).Inc()
 		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": err.Error(), "type": "invalid_request_error"}})
 		return
 	}
@@ -132,14 +222,14 @@ func (h *Handler) AnthropicMessages(c *gin.Context) {
 		return
 	}
 
-	responseReq := provider.ConvertAnthropicRequest(&req)
+	responseReq := apicompat.ConvertAnthropicRequest(&req)
 	if req.Stream {
 		stream, err := h.responses.CreateStream(c.Request.Context(), identity, responseReq, c.GetHeader("X-Session-ID"))
 		if err != nil {
 			h.renderServiceError(c, req.Model, err)
 			return
 		}
-		h.streamAnthropicMessages(c, stream, req.Model)
+		h.streamAnthropicMessages(c, stream, req.Model, start)
 		return
 	}
 
@@ -150,12 +240,15 @@ func (h *Handler) AnthropicMessages(c *gin.Context) {
 	}
 
 	if result.CacheHit {
-		h.metrics.cacheHit.Inc()
+		h.metrics.cacheHits.Inc()
 	} else if h.cfg.Cache.Enabled {
-		h.metrics.cacheMiss.Inc()
+		h.metrics.cacheMisses.Inc()
 	}
-	h.observeResponse(req.Model, result.ProviderName, result.Response.Usage, time.Since(start), result.CacheHit)
-	c.JSON(http.StatusOK, provider.ConvertResponseToAnthropic(result.Response))
+
+	// upstreamLatency = total latency - (retry delays)
+	upstreamLatency := time.Duration(result.LatencyMs) * time.Millisecond
+	h.observeResponseWithUpstream(req.Model, result.ProviderName, result.Response.Usage, time.Since(start), upstreamLatency, result.Retries, result.Fallback)
+	c.JSON(http.StatusOK, apicompat.ConvertResponseToAnthropic(result.Response))
 }
 
 func (h *Handler) Models(c *gin.Context) {
@@ -210,10 +303,48 @@ func (h *Handler) observeResponse(requestedModel, providerName string, usage pro
 		status = "cache_hit"
 	}
 
-	h.metrics.tokens.WithLabelValues(modelLabel, "prompt").Add(float64(usage.PromptTokens))
-	h.metrics.tokens.WithLabelValues(modelLabel, "completion").Add(float64(usage.CompletionTokens))
+	// Token 计数
+	h.metrics.promptTokens.WithLabelValues(modelLabel).Add(float64(usage.PromptTokens))
+	h.metrics.completionTokens.WithLabelValues(modelLabel).Add(float64(usage.CompletionTokens))
+	h.metrics.totalTokens.WithLabelValues(modelLabel).Add(float64(usage.TotalTokens))
+
+	// 请求计数
 	h.metrics.requests.WithLabelValues(modelLabel, status).Inc()
+	h.metrics.modelRequests.WithLabelValues(modelLabel).Inc()
+
+	// 延迟
 	h.metrics.latency.WithLabelValues(modelLabel).Observe(latency.Seconds())
+	// upstreamLatency 和 timeToFirstToken 由流式处理单独记录
+}
+
+func (h *Handler) observeResponseWithUpstream(requestedModel, providerName string, usage provider.Usage, latency, upstreamLatency time.Duration, retries, fallback int) {
+	modelLabel := providerName
+	if modelLabel == "" {
+		modelLabel = requestedModel
+	}
+	status := "success"
+
+	// Token 计数
+	h.metrics.promptTokens.WithLabelValues(modelLabel).Add(float64(usage.PromptTokens))
+	h.metrics.completionTokens.WithLabelValues(modelLabel).Add(float64(usage.CompletionTokens))
+	h.metrics.totalTokens.WithLabelValues(modelLabel).Add(float64(usage.TotalTokens))
+
+	// 请求计数
+	h.metrics.requests.WithLabelValues(modelLabel, status).Inc()
+	h.metrics.modelRequests.WithLabelValues(modelLabel).Inc()
+
+	// 延迟
+	h.metrics.latency.WithLabelValues(modelLabel).Observe(latency.Seconds())
+	h.metrics.upstreamLatency.WithLabelValues(modelLabel).Observe(upstreamLatency.Seconds())
+
+	// Retry/Fallback 计数
+	if retries > 0 {
+		h.metrics.retries.WithLabelValues(modelLabel).Add(float64(retries))
+	}
+	if fallback > 0 {
+		h.metrics.fallback.WithLabelValues(modelLabel).Add(float64(fallback))
+		h.metrics.modelFallback.WithLabelValues(modelLabel).Add(float64(fallback))
+	}
 }
 
 func (h *Handler) renderServiceError(c *gin.Context, model string, err error) {
@@ -222,7 +353,37 @@ func (h *Handler) renderServiceError(c *gin.Context, model string, err error) {
 	if status >= http.StatusInternalServerError {
 		status = h.inferHTTPStatus(err)
 	}
+
+	// 分类错误
 	h.metrics.errors.WithLabelValues(model, httpErr.Type).Inc()
+	h.metrics.modelFailures.WithLabelValues(model).Inc()
+
+	// 检查是否是上游错误、超时或限流
+	var upstreamErr *provider.UpstreamError
+	if errors.As(err, &upstreamErr) {
+		if upstreamErr.IsUpstream() {
+			h.metrics.upstreamErrors.WithLabelValues(model).Inc()
+		}
+		if upstreamErr.IsTimeout() {
+			h.metrics.timeouts.WithLabelValues(model).Inc()
+		}
+		if upstreamErr.IsRateLimited() {
+			h.metrics.rateLimited.WithLabelValues(model).Inc()
+		}
+	} else {
+		// 回退到字符串匹配
+		errMsg := strings.ToLower(err.Error())
+		if strings.Contains(errMsg, "timeout") {
+			h.metrics.timeouts.WithLabelValues(model).Inc()
+		}
+		if strings.Contains(errMsg, "rate_limit") || strings.Contains(errMsg, "429") {
+			h.metrics.rateLimited.WithLabelValues(model).Inc()
+		}
+		if strings.Contains(errMsg, "5") || strings.Contains(errMsg, "upstream") {
+			h.metrics.upstreamErrors.WithLabelValues(model).Inc()
+		}
+	}
+
 	c.JSON(status, gin.H{"error": gin.H{"message": httpErr.Message, "type": httpErr.Type}})
 }
 
@@ -242,6 +403,18 @@ func (h *Handler) inferHTTPStatus(err error) int {
 		return http.StatusBadRequest
 	default:
 		return http.StatusBadGateway
+	}
+}
+
+// SyncCircuitBreakerStates updates the circuit breaker state metrics
+func (h *Handler) SyncCircuitBreakerStates() {
+	states := h.responses.GetCircuitBreakerStates()
+	for key, state := range states {
+		// Parse key "tenantID:providerName"
+		parts := strings.SplitN(key, ":", 2)
+		if len(parts) == 2 {
+			h.metrics.circuitBreakerState.WithLabelValues(parts[0], parts[1]).Set(float64(state))
+		}
 	}
 }
 

@@ -60,8 +60,15 @@ func (p *openAIProvider) CreateResponse(ctx context.Context, req *ResponseReques
 		return nil, err
 	}
 
-	// 根据 endpoint 类型选择解析方式
-	switch p.cfg.Endpoint {
+	// 自动检测响应格式：按真实响应结构识别，不是按配置猜
+	responseFormat := detectResponseFormat(bodyBytes)
+	switch responseFormat {
+	case "chat":
+		var raw chatCompletionResponse
+		if err := json.Unmarshal(bodyBytes, &raw); err != nil {
+			return nil, err
+		}
+		return convertChatCompletionResponse(raw, req.Model), nil
 	case "responses":
 		var raw openAIResponsePayload
 		if err := json.Unmarshal(bodyBytes, &raw); err != nil {
@@ -69,12 +76,17 @@ func (p *openAIProvider) CreateResponse(ctx context.Context, req *ResponseReques
 		}
 		return convertOpenAIResponse(raw, req.Model), nil
 	default:
-		// chat completions 格式
-		var raw chatCompletionResponse
+		// 兜底：尝试 responses API 格式
+		var raw openAIResponsePayload
 		if err := json.Unmarshal(bodyBytes, &raw); err != nil {
-			return nil, err
+			// 再试 chat 格式
+			var chatRaw chatCompletionResponse
+			if err2 := json.Unmarshal(bodyBytes, &chatRaw); err2 != nil {
+				return nil, errors.New("unable to parse upstream response")
+			}
+			return convertChatCompletionResponse(chatRaw, req.Model), nil
 		}
-		return convertChatCompletionResponse(raw, req.Model), nil
+		return convertOpenAIResponse(raw, req.Model), nil
 	}
 }
 
@@ -106,11 +118,30 @@ func (p *openAIProvider) StreamResponse(ctx context.Context, req *ResponseReques
 			return
 		}
 
+		// 改进的 SSE 解析器：支持完整 SSE frame 解析
+		// 1. 累积多行 data chunk
+		// 2. 检测并处理 chat vs responses 格式
+		// 3. 处理 role-only/tool-call 增量等边界情况
+
 		reader := bufio.NewReader(resp.Body)
+		var pendingData string
+		var detectedFormat string // "chat" 或 "responses"
+
 		for {
 			line, err := reader.ReadString('\n')
 			if err != nil {
 				if err == io.EOF {
+					// 处理最后的 pending data
+					if pendingData != "" {
+						event, err := parseSSELine(pendingData, detectedFormat, req.Model)
+						if err != nil {
+							errCh <- err
+							return
+						}
+						if event != nil {
+							result <- *event
+						}
+					}
 					return
 				}
 				errCh <- err
@@ -118,28 +149,179 @@ func (p *openAIProvider) StreamResponse(ctx context.Context, req *ResponseReques
 			}
 
 			line = strings.TrimSpace(line)
-			if line == "" || !strings.HasPrefix(line, "data:") {
-				continue
-			}
 
-			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-			if data == "[DONE]" {
-				return
-			}
+			// 处理 data: 前缀
+			if strings.HasPrefix(line, "data:") {
+				data := strings.TrimPrefix(line, "data:")
+				data = strings.TrimSpace(data)
 
-			event, err := parseOpenAIResponseEvent(data, req.Model)
-			if err != nil {
-				errCh <- err
-				return
+				// [DONE] 需要特殊处理：不等待空行，直接结束
+				if data == "[DONE]" {
+					// 处理最后的 pending data
+					if pendingData != "" {
+						event, err := parseSSELine(pendingData, detectedFormat, req.Model)
+						if err != nil {
+							errCh <- err
+							return
+						}
+						if event != nil {
+							result <- *event
+						}
+					}
+					return
+				}
+
+				// 累积多行 data（某些 provider 会分片发送）
+				if pendingData != "" {
+					pendingData = pendingData + "\n" + data
+				} else {
+					pendingData = data
+				}
+			} else if line == "" && pendingData != "" {
+				// 空行表示一个 SSE frame 结束
+				event, err := parseSSELine(pendingData, detectedFormat, req.Model)
+				if err != nil {
+					errCh <- err
+					return
+				}
+				if event != nil {
+					// 首次检测到格式后记住
+					if detectedFormat == "" && event.Type != "" {
+						detectedFormat = detectStreamFormat(pendingData)
+					}
+					result <- *event
+				}
+				pendingData = ""
 			}
-			if event == nil {
-				continue
-			}
-			result <- *event
 		}
 	}()
 
 	return result, errCh
+}
+
+// detectStreamFormat 从 SSE data line 检测流式响应格式
+func detectStreamFormat(data string) string {
+	// 精确检测：解析 JSON 看 type 字段
+	var typeCheck struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(data), &typeCheck); err == nil && typeCheck.Type != "" {
+		// 如果有 type 字段，检查是否是 responses API 特有类型
+		if strings.HasPrefix(typeCheck.Type, "response.") {
+			return "responses"
+		}
+	}
+
+	// 回退：检查是否包含 choices（chat completions）
+	if strings.Contains(data, `"choices"`) {
+		return "chat"
+	}
+
+	return "chat" // 默认 chat
+}
+
+// parseSSELine 解析单个 SSE data line
+func parseSSELine(data, format, requestedModel string) (*ResponseEvent, error) {
+	// 先尝试自动检测格式
+	if format == "" {
+		format = detectStreamFormat(data)
+	}
+
+	if format == "chat" || strings.Contains(data, `"choices"`) {
+		event, err := parseChatCompletionEvent(data, requestedModel)
+		if err != nil {
+			// 容忍解析错误，返回 nil 而不是错误
+			// 这样不规范的 provider 响应不会中断流
+			return nil, nil
+		}
+		return event, nil
+	}
+
+	// 否则用 responses API 格式解析
+	event, err := parseOpenAIStreamEvent(data, requestedModel)
+	if err != nil {
+		// 容忍解析错误
+		return nil, nil
+	}
+	return event, nil
+}
+
+// parseOpenAIStreamEvent 解析 responses API 流式事件
+func parseOpenAIStreamEvent(data string, requestedModel string) (*ResponseEvent, error) {
+	// 先检测 type
+	var typeCheck struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(data), &typeCheck); err != nil {
+		return nil, err
+	}
+
+	switch typeCheck.Type {
+	case "response.output_text.delta":
+		var payload struct {
+			Type  string `json:"type"`
+			Delta string `json:"delta"`
+		}
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			return nil, err
+		}
+		return &ResponseEvent{
+			Type:  payload.Type,
+			Delta: payload.Delta,
+		}, nil
+	case "response.output_item.done":
+		var payload struct {
+			Type       string           `json:"type"`
+			Item       openAIOutputItem `json:"item"`
+			OutputItem openAIOutputItem `json:"output_item"`
+		}
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			return nil, err
+		}
+		item := payload.Item
+		if item.Type == "" {
+			item = payload.OutputItem
+		}
+		output := convertOpenAIOutputItem(item)
+		if output == nil {
+			return nil, nil
+		}
+		return &ResponseEvent{
+			Type:   payload.Type,
+			Output: output,
+		}, nil
+	case "response.completed":
+		var payload struct {
+			Type     string                `json:"type"`
+			Response openAIResponsePayload `json:"response"`
+		}
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			return nil, err
+		}
+		resp := convertOpenAIResponse(payload.Response, requestedModel)
+		return &ResponseEvent{
+			Type:     payload.Type,
+			Response: resp,
+		}, nil
+	case "response.failed":
+		var payload struct {
+			Response struct {
+				Error struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			} `json:"response"`
+		}
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			return nil, err
+		}
+		if payload.Response.Error.Message == "" {
+			payload.Response.Error.Message = "upstream response failed"
+		}
+		return nil, errors.New(payload.Response.Error.Message)
+	default:
+		// 兜底尝试 chat 格式
+		return parseChatCompletionEvent(data, requestedModel)
+	}
 }
 
 func (p *openAIProvider) newRequest(ctx context.Context, req *ResponseRequest, stream bool) (*http.Request, error) {
@@ -377,6 +559,59 @@ type openAIOutputItem struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`
+}
+
+// detectResponseFormat 检测响应格式：responses API vs chat completions
+// 通过检查响应 body 的结构特征来识别格式
+func detectResponseFormat(body []byte) string {
+	// 快速检查：responses API 有 output 字段，chat completions 有 choices 字段
+	var preview struct {
+		Output  json.RawMessage `json:"output"`
+		Choices json.RawMessage `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &preview); err != nil {
+		return "unknown"
+	}
+
+	// 如果有 output 字段且无 choices，是 responses API
+	if len(preview.Output) > 0 && len(preview.Choices) == 0 {
+		return "responses"
+	}
+
+	// 如果有 choices 字段且无 output，是 chat completions
+	if len(preview.Choices) > 0 && len(preview.Output) == 0 {
+		return "chat"
+	}
+
+	// 如果两者都没有，检查 object 字段的典型值
+	var objCheck struct {
+		Object string `json:"object"`
+	}
+	if json.Unmarshal(body, &objCheck) == nil {
+		if strings.Contains(objCheck.Object, "chat.completion") {
+			return "chat"
+		}
+		if strings.Contains(objCheck.Object, "response") {
+			return "responses"
+		}
+	}
+
+	// 最后的兜底：检查是否有 choices 数组（更精确）
+	var choicesCheck struct {
+		Choices []any `json:"choices"`
+	}
+	if json.Unmarshal(body, &choicesCheck) == nil && len(choicesCheck.Choices) > 0 {
+		return "chat"
+	}
+
+	var outputCheck struct {
+		Output []any `json:"output"`
+	}
+	if json.Unmarshal(body, &outputCheck) == nil && len(outputCheck.Output) > 0 {
+		return "responses"
+	}
+
+	return "unknown"
 }
 
 func parseOpenAIResponseEvent(data string, requestedModel string) (*ResponseEvent, error) {

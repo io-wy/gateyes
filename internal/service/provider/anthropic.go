@@ -123,19 +123,22 @@ func (p *anthropicProvider) StreamResponse(ctx context.Context, req *ResponseReq
 func (p *anthropicProvider) parseStream(body io.Reader, result chan<- ResponseEvent, errCh chan<- error, model string) {
 	reader := bufio.NewReader(body)
 	responseID := "stream-" + uuid()
+	state := &anthropicStreamState{
+		responseID: responseID,
+		model:      model,
+	}
+	var eventName string
+	var dataLines []string
 
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			if err == io.EOF {
-				// Send completion event if not already sent
-				result <- ResponseEvent{
-					Type: "response.completed",
-					Response: &Response{
-						ID:      responseID,
-						Model:   model,
-						Usage:   Usage{},
-					},
+				if event := parseAnthropicStreamEvent(eventName, strings.Join(dataLines, "\n"), state); event != nil {
+					result <- *event
+				}
+				if !state.completed {
+					result <- ResponseEvent{Type: "response.completed", Response: state.response()}
 				}
 				break
 			}
@@ -143,35 +146,38 @@ func (p *anthropicProvider) parseStream(body io.Reader, result chan<- ResponseEv
 			return
 		}
 
-		line = strings.TrimSpace(line)
-		if line == "" || !strings.HasPrefix(line, "data:") {
-			continue
-		}
-
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "[DONE]" {
-			break
-		}
-
-		// Check for error event
-		if strings.Contains(data, "\"type\":\"error\"") || strings.Contains(data, "\"error\":") {
-			var errResp struct {
-				Type  string `json:"type"`
-				Error struct {
-					Type    string `json:"type"`
-					Message string `json:"message"`
-				} `json:"error"`
-			}
-			if json.Unmarshal([]byte(data), &errResp) == nil && errResp.Error.Message != "" {
-				// stream 错误事件无法确定状态码，视为不可重试
-				errCh <- &UpstreamError{StatusCode: 0, Message: errResp.Error.Message}
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			data := strings.Join(dataLines, "\n")
+			if data == "[DONE]" {
 				return
 			}
+			if strings.Contains(data, "\"type\":\"error\"") || strings.Contains(data, "\"error\":") {
+				var errResp struct {
+					Type  string `json:"type"`
+					Error struct {
+						Type    string `json:"type"`
+						Message string `json:"message"`
+					} `json:"error"`
+				}
+				if json.Unmarshal([]byte(data), &errResp) == nil && errResp.Error.Message != "" {
+					errCh <- &UpstreamError{StatusCode: 0, Message: errResp.Error.Message}
+					return
+				}
+			}
+			if event := parseAnthropicStreamEvent(eventName, data, state); event != nil {
+				result <- *event
+			}
+			eventName = ""
+			dataLines = nil
+			continue
 		}
-
-		event := parseAnthropicStreamEvent(data, model, responseID)
-		if event != nil {
-			result <- *event
+		if strings.HasPrefix(line, "event:") {
+			eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			continue
+		}
+		if strings.HasPrefix(line, "data:") {
+			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
 		}
 	}
 }
@@ -181,24 +187,25 @@ func uuid() string {
 	return fmt.Sprintf("%x", time.Now().UnixNano())
 }
 
-func parseAnthropicStreamEvent(data string, model string, responseID string) *ResponseEvent {
-	// Parse Anthropic SSE event format
-	// Event types: message_start, content_block_start, content_block_delta, content_block_stop, message_delta, message_stop, ping
-
+func parseAnthropicStreamEvent(eventName, data string, state *anthropicStreamState) *ResponseEvent {
+	if state == nil || data == "" {
+		return nil
+	}
 	var event struct {
 		Type string `json:"type"`
 	}
-
-	if err := json.Unmarshal([]byte(data), &event); err != nil {
+	if json.Unmarshal([]byte(data), &event) != nil && eventName == "" {
 		return nil
 	}
+	if eventName == "" {
+		eventName = event.Type
+	}
 
-	switch event.Type {
+	switch eventName {
 	case "message_start":
 		var payload struct {
-			Type    string `json:"type"`
 			Message struct {
-				ID      string `json:"id"`
+				ID      string                  `json:"id"`
 				Content []AnthropicContentBlock `json:"content"`
 				Usage   struct {
 					InputTokens  int `json:"input_tokens"`
@@ -209,32 +216,49 @@ func parseAnthropicStreamEvent(data string, model string, responseID string) *Re
 		if err := json.Unmarshal([]byte(data), &payload); err != nil {
 			return nil
 		}
-		return &ResponseEvent{
-			Type: "response.created",
-			Response: &Response{
-				ID:      payload.Message.ID,
-				Model:   model,
-				Output:  convertAnthropicOutputs("assistant", payload.Message.Content),
-				Usage:   Usage{PromptTokens: payload.Message.Usage.InputTokens},
-			},
+		if payload.Message.ID != "" {
+			state.responseID = payload.Message.ID
 		}
+		state.promptTokens = payload.Message.Usage.InputTokens
+		for _, block := range payload.Message.Content {
+			state.applyContentBlock(block)
+		}
+		return nil
 
 	case "content_block_start":
-		// MiniMax may send this
-		return &ResponseEvent{
-			Type: "response.created",
-			Response: &Response{
-				ID:      responseID,
-				Model:   model,
-				Output:  []ResponseOutput{},
-			},
+		var payload struct {
+			Index        int                   `json:"index"`
+			ContentBlock AnthropicContentBlock `json:"content_block"`
 		}
+		if err := json.Unmarshal([]byte(data), &payload); err != nil {
+			return nil
+		}
+		switch payload.ContentBlock.Type {
+		case "text":
+			if payload.ContentBlock.Text != "" {
+				state.appendText(payload.ContentBlock.Text)
+				return &ResponseEvent{Type: "response.output_text.delta", Delta: payload.ContentBlock.Text}
+			}
+		case "tool_use":
+			args := strings.TrimSpace(string(payload.ContentBlock.Input))
+			if args == "" {
+				args = "{}"
+			}
+			state.activeTool = &ResponseOutput{
+				ID:     payload.ContentBlock.ID,
+				Type:   "function_call",
+				Status: "completed",
+				CallID: payload.ContentBlock.ID,
+				Name:   payload.ContentBlock.Name,
+				Args:   args,
+			}
+		}
+		return nil
 
 	case "content_block_delta":
 		var payload struct {
-			Type  string `json:"type"`
-			Index int    `json:"index"`
-			Delta any    `json:"delta"`
+			Index int `json:"index"`
+			Delta any `json:"delta"`
 		}
 		if err := json.Unmarshal([]byte(data), &payload); err != nil {
 			return nil
@@ -244,74 +268,144 @@ func parseAnthropicStreamEvent(data string, model string, responseID string) *Re
 		if deltaMap, ok := payload.Delta.(map[string]any); ok {
 			if deltaType, _ := deltaMap["type"].(string); deltaType == "text_delta" {
 				if text, _ := deltaMap["text"].(string); text != "" {
-					return &ResponseEvent{
-						Type:  "response.output_text.delta",
-						Delta: text,
-					}
+					state.appendText(text)
+					return &ResponseEvent{Type: "response.output_text.delta", Delta: text}
 				}
 			}
-			// Fallback: try to get text directly
 			if text, _ := deltaMap["text"].(string); text != "" {
-				return &ResponseEvent{
-					Type:  "response.output_text.delta",
-					Delta: text,
-				}
+				state.appendText(text)
+				return &ResponseEvent{Type: "response.output_text.delta", Delta: text}
+			}
+			if partial, _ := deltaMap["partial_json"].(string); partial != "" && state.activeTool != nil {
+				state.activeTool.Args += partial
 			}
 		}
+		return nil
 
 	case "content_block_stop":
-		return &ResponseEvent{
-			Type: "response.output_item.done",
+		if state.activeTool == nil {
+			return nil
 		}
+		output := *state.activeTool
+		state.outputs = append(state.outputs, output)
+		state.activeTool = nil
+		return &ResponseEvent{Type: "response.output_item.done", Output: &output}
 
 	case "message_delta":
+		// 扩展：支持更多第三方 provider 的 message_delta 变体
 		var payload struct {
-			Type       string `json:"type"`
-			Delta      any    `json:"delta"`
-			StopReason string `json:"stop_reason"`
-			Usage      struct {
+			Delta struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"delta"`
+			Usage struct {
 				OutputTokens int `json:"output_tokens"`
 			} `json:"usage"`
+			Content string `json:"content"` // 某些 provider 直接在 message_delta 里发文本
 		}
 		if err := json.Unmarshal([]byte(data), &payload); err != nil {
 			// Try minimal parsing
-			return &ResponseEvent{
-				Type: "response.completed",
-				Response: &Response{
-					ID:      responseID,
-					Model:   model,
-					Usage:   Usage{},
-				},
-			}
+			return nil
 		}
-		return &ResponseEvent{
-			Type: "response.completed",
-			Response: &Response{
-				ID:      responseID,
-				Model:   model,
-				Usage: Usage{
-					CompletionTokens: payload.Usage.OutputTokens,
-				},
-			},
+		// 如果有 delta.text，也发送 text delta
+		if payload.Delta.Text != "" {
+			state.appendText(payload.Delta.Text)
+			return &ResponseEvent{Type: "response.output_text.delta", Delta: payload.Delta.Text}
 		}
+		// 如果有 content 字段（某些 provider 变体）
+		if payload.Content != "" {
+			state.appendText(payload.Content)
+			return &ResponseEvent{Type: "response.output_text.delta", Delta: payload.Content}
+		}
+		if payload.Usage.OutputTokens > 0 {
+			state.completionTokens = payload.Usage.OutputTokens
+		}
+		return nil
 
 	case "message_stop":
-		// End of stream - send completion
-		return &ResponseEvent{
-			Type: "response.completed",
-			Response: &Response{
-				ID:      responseID,
-				Model:   model,
-				Usage:   Usage{},
-			},
-		}
+		state.completed = true
+		return &ResponseEvent{Type: "response.completed", Response: state.response()}
 
 	case "ping":
-		// Ignore ping events
+		return nil
+
+	// 扩展：支持更多第三方 provider 的事件变体
+	case "text_block", "content_block": // 某些 provider 使用不同的事件名
+		var payload struct {
+			Text string `json:"text"`
+		}
+		if json.Unmarshal([]byte(data), &payload) == nil && payload.Text != "" {
+			state.appendText(payload.Text)
+			return &ResponseEvent{Type: "response.output_text.delta", Delta: payload.Text}
+		}
 		return nil
 	}
 
 	return nil
+}
+
+type anthropicStreamState struct {
+	responseID       string
+	model            string
+	promptTokens     int
+	completionTokens int
+	outputs          []ResponseOutput
+	activeTool       *ResponseOutput
+	completed        bool
+}
+
+func (s *anthropicStreamState) appendText(text string) {
+	if text == "" {
+		return
+	}
+	if len(s.outputs) == 0 || s.outputs[len(s.outputs)-1].Type != "message" {
+		s.outputs = append(s.outputs, ResponseOutput{
+			Type:   "message",
+			Role:   "assistant",
+			Status: "completed",
+		})
+	}
+	index := len(s.outputs) - 1
+	s.outputs[index].Content = append(s.outputs[index].Content, ResponseContent{
+		Type: "output_text",
+		Text: text,
+	})
+}
+
+func (s *anthropicStreamState) applyContentBlock(block AnthropicContentBlock) {
+	switch block.Type {
+	case "text":
+		s.appendText(block.Text)
+	case "tool_use":
+		args := strings.TrimSpace(string(block.Input))
+		if args == "" {
+			args = "{}"
+		}
+		s.outputs = append(s.outputs, ResponseOutput{
+			ID:     block.ID,
+			Type:   "function_call",
+			Status: "completed",
+			CallID: block.ID,
+			Name:   block.Name,
+			Args:   args,
+		})
+	}
+}
+
+func (s *anthropicStreamState) response() *Response {
+	return &Response{
+		ID:      s.responseID,
+		Object:  "response",
+		Created: time.Now().Unix(),
+		Model:   s.model,
+		Status:  "completed",
+		Output:  append([]ResponseOutput(nil), s.outputs...),
+		Usage: Usage{
+			PromptTokens:     s.promptTokens,
+			CompletionTokens: s.completionTokens,
+			TotalTokens:      s.promptTokens + s.completionTokens,
+		},
+	}
 }
 
 func (p *anthropicProvider) buildParams(req *ResponseRequest) (map[string]any, error) {
@@ -329,7 +423,7 @@ func (p *anthropicProvider) buildParams(req *ResponseRequest) (map[string]any, e
 	}
 
 	params := map[string]any{
-		"model":     req.Model,
+		"model":      req.Model,
 		"max_tokens": maxTokens,
 		"messages":   messages,
 		"stream":     req.Stream,
@@ -357,8 +451,8 @@ func (p *anthropicProvider) buildParams(req *ResponseRequest) (map[string]any, e
 			parameters, _ := funcMap["parameters"].(map[string]any)
 
 			tools = append(tools, map[string]any{
-				"name":        name,
-				"description": description,
+				"name":         name,
+				"description":  description,
 				"input_schema": parameters,
 			})
 		}
@@ -391,9 +485,9 @@ func (p *anthropicProvider) buildMessages(msgs []Message) ([]map[string]any, str
 				// 直接使用原始参数，Anthropic 格式的 input 是对象
 				inputMap := mustUnmarshalJSON(tc.Function.Arguments)
 				content = append(content, map[string]any{
-					"type": "tool_use",
-					"id":   tc.ID,
-					"name": tc.Function.Name,
+					"type":  "tool_use",
+					"id":    tc.ID,
+					"name":  tc.Function.Name,
 					"input": inputMap,
 				})
 			}
@@ -408,9 +502,9 @@ func (p *anthropicProvider) buildMessages(msgs []Message) ([]map[string]any, str
 				"role": "user",
 				"content": []map[string]any{
 					{
-						"type":      "tool_result",
+						"type":        "tool_result",
 						"tool_use_id": msg.ToolCallID,
-						"content":    text,
+						"content":     text,
 					},
 				},
 			})

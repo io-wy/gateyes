@@ -181,3 +181,28 @@ func (cb *CircuitBreaker) GetState(tenantID, providerName string) string {
 	}
 	return state.state
 }
+
+// GetAllStates returns all provider states for metrics collection
+// Returns a map with key "tenantID:providerName" -> state string
+func (cb *CircuitBreaker) GetAllStates() map[string]int {
+	cb.mu.RLock()
+	defer cb.mu.RUnlock()
+
+	result := make(map[string]int)
+	for key, state := range cb.providers {
+		// Convert state string to numeric value for Gauge
+		var stateValue int
+		switch state.state {
+		case StateClosed:
+			stateValue = 0
+		case StateOpen:
+			stateValue = 1
+		case StateHalfOpen:
+			stateValue = 2
+		default:
+			stateValue = 0
+		}
+		result[key] = stateValue
+	}
+	return result
+}
