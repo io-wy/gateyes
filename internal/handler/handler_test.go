@@ -19,7 +19,6 @@ import (
 	"github.com/gateyes/gateway/internal/middleware"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/repository/sqlstore"
-	"github.com/gateyes/gateway/internal/service/cache"
 	"github.com/gateyes/gateway/internal/service/limiter"
 	"github.com/gateyes/gateway/internal/service/provider"
 	responseSvc "github.com/gateyes/gateway/internal/service/responses"
@@ -252,12 +251,6 @@ func newHandlerTestEnv(t *testing.T, cfg handlerTestEnvConfig) *handlerTestEnv {
 		},
 		Metrics: config.MetricsConfig{
 			Namespace: fmt.Sprintf("handler_test_%d", time.Now().UnixNano()),
-			Enabled:   true,
-		},
-		Cache: config.CacheConfig{
-			Enabled: false,
-			MaxSize: 32,
-			TTL:     60,
 		},
 		Router: config.RouterConfig{
 			Strategy: "round_robin",
@@ -282,10 +275,6 @@ func newHandlerTestEnv(t *testing.T, cfg handlerTestEnvConfig) *handlerTestEnv {
 	}
 	routerSvc := router.NewRouter(cfgObj.Router)
 	routerSvc.SetProviders(providerMgr.List())
-	var cacheSvc *cache.Cache
-	if cfgObj.Cache.Enabled {
-		cacheSvc = cache.NewMemoryCache(cfgObj.Cache)
-	}
 	limiterSvc := limiter.NewLimiter(config.LimiterConfig{
 		GlobalQPS:           100,
 		GlobalTPM:           100000,
@@ -301,7 +290,6 @@ func newHandlerTestEnv(t *testing.T, cfg handlerTestEnvConfig) *handlerTestEnv {
 		Auth:        mw.AuthService(),
 		ProviderMgr: providerMgr,
 		Router:      routerSvc,
-		Cache:       cacheSvc,
 		Alert:       nil,
 	})
 	h := NewHandler(&Dependencies{

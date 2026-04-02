@@ -73,12 +73,6 @@ func (h *Handler) handleResponsesCreate(c *gin.Context) {
 		return
 	}
 
-	if result.CacheHit {
-		h.metrics.cacheHits.Inc()
-	} else if h.cfg.Cache.Enabled {
-		h.metrics.cacheMisses.Inc()
-	}
-
 	// upstreamLatency = total latency - (retry delays)
 	upstreamLatency := time.Duration(result.LatencyMs) * time.Millisecond
 	h.observeResponseWithUpstream(req.Model, result.ProviderName, result.Response.Usage, time.Since(start), upstreamLatency, result.Retries, result.Fallback)
@@ -128,7 +122,7 @@ func (h *Handler) streamResponses(c *gin.Context, stream *responseSvc.Stream, re
 			}
 			flusher.Flush()
 			if event.Type == "response.completed" && event.Response != nil {
-				h.observeResponse(requestedModel, stream.ProviderName, event.Response.Usage, time.Since(start), false)
+				h.observeResponse(requestedModel, stream.ProviderName, event.Response.Usage, time.Since(start))
 			}
 		case err, ok := <-stream.Errors:
 			if ok && err != nil {
@@ -192,7 +186,7 @@ func (h *Handler) streamChatCompatibility(c *gin.Context, stream *responseSvc.St
 				flusher.Flush()
 			}
 			if event.Type == "response.completed" && event.Response != nil {
-				h.observeResponse(model, stream.ProviderName, event.Response.Usage, time.Since(start), false)
+				h.observeResponse(model, stream.ProviderName, event.Response.Usage, time.Since(start))
 			}
 		case err, ok := <-stream.Errors:
 			if ok && err != nil {
@@ -256,7 +250,7 @@ func (h *Handler) streamAnthropicMessages(c *gin.Context, stream *responseSvc.St
 				flusher.Flush()
 			}
 			if event.Type == "response.completed" && event.Response != nil {
-				h.observeResponse(model, stream.ProviderName, event.Response.Usage, time.Since(start), false)
+				h.observeResponse(model, stream.ProviderName, event.Response.Usage, time.Since(start))
 			}
 		case err, ok := <-stream.Errors:
 			if ok && err != nil {

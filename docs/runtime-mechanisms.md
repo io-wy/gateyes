@@ -1,12 +1,13 @@
 # Runtime Mechanisms
 
-本文档描述 Gateyes 当前实现中的五个核心机制：
+本文档描述 Gateyes 当前实现中的四个核心机制：
 
-- 缓存
 - 鉴权
 - 限流
 - 路由
 - 权限模型
+
+> **注意**：应用层缓存已在 2026-04-01 移除。provider 上游的 prefix caching / `prompt_tokens_details.cached_tokens` 才是真正的缓存节省，gateway 层无法控制。真正的缓存节省来自 provider 侧。
 
 文档目标是帮助维护者理解“现在的代码实际上在做什么”。本文按当前实现编写，不代表未来目标设计，也不主动修正现有行为。
 
@@ -17,7 +18,7 @@
 - 中间件：`internal/middleware`
 - 协议兼容层：`internal/protocol/apicompat`
 - 主业务编排：`internal/service/responses`
-- 核心服务：`internal/service/auth`、`internal/service/cache`、`internal/service/limiter`、`internal/service/router`
+- 核心服务：`internal/service/auth`、`internal/service/limiter`、`internal/service/router`
 - 持久化：`internal/repository`、`internal/repository/sqlstore`
 
 ## 请求主链路
@@ -40,8 +41,7 @@
    - 查询 tenant 可用 provider
    - 排序 candidate providers 并执行 retry / fallback
    - 写入 `responses` 表中的 `in_progress` 记录
-   - 命中缓存则直接返回缓存结果
-   - 未命中则调用上游 provider
+   - 调用上游 provider
    - 写回 `responses`
    - 写 usage
 
@@ -477,181 +477,12 @@ selected = candidates[abs(hash % len(candidates))]
 - 没有一致性哈希环
 - 候选集变化时映射可能整体漂移
 
-## 缓存
-
-### 缓存位置
-
-当前缓存是进程内内存缓存，实现位于：
-
-- `internal/service/cache/kv_cache.go`
-- `internal/service/responses/service.go`
-
-只有非流式请求会走缓存。
-
-当前还存在一条可选的语义缓存路径：
-
-- `internal/service/cache/semantic`
-
-但它还不是当前最稳定的生产路径。
-
-### 读写时机
-
-在 `responses.Service.Create()` 中：
-
-1. `prepare()` 先选 provider 并写 `responses` 表中的 `in_progress` 记录
-2. 如果 `cfg.Cache.Enabled && cache != nil && !req.Stream`
-   - 先查缓存
-3. 未命中才真正调用上游 provider
-4. 成功后再把响应 JSON 写入缓存
-
-也就是说，当前缓存命中发生在：
-
-- 已完成鉴权
-- 已完成限流
-- 已完成 provider 选择
-- 已写入一条新的 response 记录
-
-### Cache Key 算法
-
-`ResponseRequest.CacheKey()` 当前算法：
-
-1. 写入请求里的 `model`
-2. 逐条遍历 `InputMessages()`
-3. 对每条消息拼接：
-   - `role`
-   - `:`
-   - `message.Signature()`
-4. 用换行连接
-
-概括为：
-
-```text
-key_material =
-    req.model + "\n" +
-    message_1.role + ":" + message_1.signature + "\n" +
-    message_2.role + ":" + message_2.signature + "\n" + ...
-```
-
-真正落到缓存 map 之前，会再做一次：
-
-```text
-sha256(key_material)
-```
-
-### Message Signature 算法
-
-`Message.Signature()` 当前包含：
-
-- 普通文本内容
-- `tool_call_id`
-- tool call 的 `id`
-- tool call 的 `function.name`
-- tool call 的 `function.arguments`
-
-这让缓存 key 能区分普通对话和 tool call 轨迹。
-
-### 缓存数据结构
-
-缓存对象是：
-
-- `items map[string]*CacheItem`
-- `accessOrder []string`
-
-每个 `CacheItem` 保存：
-
-- `Value`
-- `ExpiresAt`
-- `AccessTime`
-- `HitCount`
-
-### 读算法
-
-`Cache.Get(prompt)` 的流程：
-
-1. 对传入 key material 做 SHA-256
-2. 加写锁
-3. 如果命中且未过期：
-   - 更新 `AccessTime`
-   - `HitCount++`
-   - 全局 `hitCount++`
-   - 把 key 移到 `accessOrder` 尾部
-   - 返回值
-4. 如果命中但已过期：
-   - 删除该项
-   - 从 `accessOrder` 移除
-5. 未命中：
-   - `missCount++`
-   - 返回 miss
-
-### 写算法
-
-`Cache.Set(prompt, response)` 的流程：
-
-1. 计算 SHA-256 key
-2. 加写锁
-3. 如果 key 已存在：
-   - 覆盖 `Value`
-   - 刷新 `ExpiresAt`
-   - 刷新 `AccessTime`
-   - 把 key 移到末尾
-4. 如果 key 不存在且缓存已满：
-   - 淘汰 `accessOrder[0]`
-5. 插入新项
-6. 把 key 追加到 `accessOrder` 尾部
-
-### 淘汰和过期
-
-当前同时存在两种移除机制：
-
-- 容量淘汰：近似 LRU
-- TTL 过期：后台每分钟清理一次
-
-近似 LRU 的原因是：
-
-- 访问顺序用切片维护
-- 每次命中会把 key 移到末尾
-- 容量满时移除头部
-
-### 命中后的业务处理
-
-命中缓存后，`responses.Service.useCachedResponse()` 会：
-
-1. 反序列化缓存中的响应 JSON
-2. 重写：
-   - `resp.ID`
-   - `resp.Model`
-   - `resp.Created`
-   - `resp.Status`
-3. 先做 quota 可用性检查
-4. 把 `responses` 表中的当前请求记录更新为 `completed`
-5. 调用 `auth.RecordUsage(...)`
-   - provider 名记为 `cache`
-   - latency 记为 `0`
-
-所以当前缓存不是“纯静态旁路缓存”，而是仍然参与：
-
-- 响应持久化
-- usage 记账
-- quota 消耗
-
-### 当前缓存边界
-
-当前缓存实现的几个边界：
-
-- 仅支持进程内缓存
-- 仅支持非流式请求
-- 缓存值是完整响应 JSON
-- 命中后 usage provider 被记为 `cache`
-- 没有主动失效机制
-- 精确缓存 key 仍然没有纳入 `tenant/provider/max_tokens` 等隔离维度
-- 语义缓存代码已接线，但当前实现稳定性和隔离性都还不足以直接视为生产完成
-
 ## 维护建议
 
-如果后续继续演进这五个机制，建议优先保持两个原则：
+如果后续继续演进这四个机制，建议优先保持两个原则：
 
-1. 先区分“当前行为文档”和“目标设计文档”
-2. 涉及缓存、限流、路由时，先明确维度，再谈实现
+1. 先区分”当前行为文档”和”目标设计文档”
+2. 涉及限流、路由时，先明确维度，再谈实现
 
 推荐的维度思考顺序：
 
@@ -660,7 +491,7 @@ sha256(key_material)
 - 路由依据是成本、负载、模型能力，还是 session 粘性
 - 权限依据是固定角色，还是策略系统
 
-当前这份文档的用途是帮助你在改动前先看清楚“代码现在到底怎么跑”。后续如果你需要，我可以再把这份文档拆成：
+当前这份文档的用途是帮助你在改动前先看清楚”代码现在到底怎么跑”。后续如果你需要，我可以再把这份文档拆成：
 
 - 面向维护者的内部机制文档
 - 面向 API 使用者的运行时说明

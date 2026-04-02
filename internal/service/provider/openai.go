@@ -171,6 +171,11 @@ func (p *openAIProvider) StreamResponse(ctx context.Context, req *ResponseReques
 					return
 				}
 
+				// 检测到首个 data: 行时立即确定格式，避免首个事件发出时格式还未记录
+				if pendingData == "" {
+					detectedFormat = detectStreamFormat(data)
+				}
+
 				// 累积多行 data（某些 provider 会分片发送）
 				if pendingData != "" {
 					pendingData = pendingData + "\n" + data
@@ -185,10 +190,6 @@ func (p *openAIProvider) StreamResponse(ctx context.Context, req *ResponseReques
 					return
 				}
 				if event != nil {
-					// 首次检测到格式后记住
-					if detectedFormat == "" && event.Type != "" {
-						detectedFormat = detectStreamFormat(pendingData)
-					}
 					result <- *event
 				}
 				pendingData = ""
@@ -614,88 +615,9 @@ func detectResponseFormat(body []byte) string {
 	return "unknown"
 }
 
+// parseOpenAIResponseEvent 是 parseOpenAIStreamEvent 的别名，保留以兼容测试
 func parseOpenAIResponseEvent(data string, requestedModel string) (*ResponseEvent, error) {
-	// 首先尝试检测格式：检查是否包含 choices 字段（chat completions）
-	var check struct {
-		Type    string `json:"type"`
-		Choices []any  `json:"choices"`
-	}
-	if err := json.Unmarshal([]byte(data), &check); err != nil {
-		return nil, err
-	}
-
-	// 如果有 choices 字段，说明是 chat completions 格式
-	if len(check.Choices) > 0 {
-		return parseChatCompletionEvent(data, requestedModel)
-	}
-
-	// 否则使用 responses API 格式解析
-	switch check.Type {
-	case "response.output_text.delta":
-		var payload struct {
-			Type  string `json:"type"`
-			Delta string `json:"delta"`
-		}
-		if err := json.Unmarshal([]byte(data), &payload); err != nil {
-			return nil, err
-		}
-		return &ResponseEvent{
-			Type:  payload.Type,
-			Delta: payload.Delta,
-		}, nil
-	case "response.output_item.done":
-		var payload struct {
-			Type       string           `json:"type"`
-			Item       openAIOutputItem `json:"item"`
-			OutputItem openAIOutputItem `json:"output_item"`
-		}
-		if err := json.Unmarshal([]byte(data), &payload); err != nil {
-			return nil, err
-		}
-		item := payload.Item
-		if item.Type == "" {
-			item = payload.OutputItem
-		}
-		output := convertOpenAIOutputItem(item)
-		if output == nil {
-			return nil, nil
-		}
-		return &ResponseEvent{
-			Type:   payload.Type,
-			Output: output,
-		}, nil
-	case "response.completed":
-		var payload struct {
-			Type     string                `json:"type"`
-			Response openAIResponsePayload `json:"response"`
-		}
-		if err := json.Unmarshal([]byte(data), &payload); err != nil {
-			return nil, err
-		}
-		resp := convertOpenAIResponse(payload.Response, requestedModel)
-		return &ResponseEvent{
-			Type:     payload.Type,
-			Response: resp,
-		}, nil
-	case "response.failed":
-		var payload struct {
-			Response struct {
-				Error struct {
-					Message string `json:"message"`
-				} `json:"error"`
-			} `json:"response"`
-		}
-		if err := json.Unmarshal([]byte(data), &payload); err != nil {
-			return nil, err
-		}
-		if payload.Response.Error.Message == "" {
-			payload.Response.Error.Message = "upstream response failed"
-		}
-		return nil, errors.New(payload.Response.Error.Message)
-	default:
-		// Try chat completion format (for /v1/chat/completions endpoint)
-		return parseChatCompletionEvent(data, requestedModel)
-	}
+	return parseOpenAIStreamEvent(data, requestedModel)
 }
 
 func parseChatCompletionEvent(data string, requestedModel string) (*ResponseEvent, error) {
@@ -737,6 +659,13 @@ func parseChatCompletionEvent(data string, requestedModel string) (*ResponseEven
 	}
 
 	delta := chunk.Choices[0].Delta
+	// 跳过无意义事件：delta.content 为空、无 tool_calls、无 finish_reason、无 usage
+	// 部分 provider（如 longcat）会发送大量空 delta，只在最后一条带内容
+	// 过滤空事件可减少 SSE 噪音，也避免客户端误认为流已结束
+	if delta.Content == "" && len(delta.ToolCalls) == 0 && delta.FinishReason == "" && chunk.Choices[0].FinishReason == "" && chunk.Usage.TotalTokens == 0 {
+		return nil, nil
+	}
+
 	event := ResponseEvent{
 		Type: "chat.delta",
 		Delta: delta.Content,

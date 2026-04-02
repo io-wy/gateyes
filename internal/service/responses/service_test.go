@@ -3,13 +3,11 @@ package responses
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,85 +16,9 @@ import (
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/repository/sqlstore"
 	"github.com/gateyes/gateway/internal/service/auth"
-	"github.com/gateyes/gateway/internal/service/cache"
 	"github.com/gateyes/gateway/internal/service/provider"
 	"github.com/gateyes/gateway/internal/service/router"
 )
-
-func TestCreateCachesAndReusesResponse(t *testing.T) {
-	var upstreamCalls int32
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&upstreamCalls, 1)
-		if r.URL.Path != "/v1/chat/completions" {
-			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id":      "chatcmpl-upstream",
-			"object":  "chat.completion",
-			"created": 1700000000,
-			"model":   "provider-model",
-			"choices": []map[string]any{{
-				"index": 0,
-				"message": map[string]any{
-					"role":    "assistant",
-					"content": "cached hello",
-				},
-				"finish_reason": "stop",
-			}},
-			"usage": map[string]any{
-				"prompt_tokens":     3,
-				"completion_tokens": 2,
-				"total_tokens":      5,
-			},
-		})
-	}))
-	defer upstream.Close()
-
-	env := newResponsesTestEnv(t, responsesTestEnvConfig{
-		upstreamURL:  upstream.URL,
-		endpoint:     "chat",
-		cacheEnabled: true,
-		providers:    []string{"test-openai"},
-	})
-
-	req := &provider.ResponseRequest{
-		Model: "public-model",
-		Input: []provider.Message{{Role: "user", Content: "hello"}},
-	}
-
-	first, err := env.service.Create(context.Background(), env.identity, req, "")
-	if err != nil {
-		t.Fatalf("first create: %v", err)
-	}
-	second, err := env.service.Create(context.Background(), env.identity, req, "")
-	if err != nil {
-		t.Fatalf("second create: %v", err)
-	}
-
-	if atomic.LoadInt32(&upstreamCalls) != 1 {
-		t.Fatalf("expected 1 upstream call, got %d", upstreamCalls)
-	}
-	if first.CacheHit {
-		t.Fatalf("expected first request to miss cache")
-	}
-	if !second.CacheHit {
-		t.Fatalf("expected second request to hit cache")
-	}
-	if got := second.Response.OutputText(); got != "cached hello" {
-		t.Fatalf("unexpected cached output: %q", got)
-	}
-	if second.ProviderName != "cache" {
-		t.Fatalf("expected cache provider, got %q", second.ProviderName)
-	}
-
-	stats, err := env.store.GetUsageSummary(context.Background(), env.identity.TenantID)
-	if err != nil {
-		t.Fatalf("usage summary: %v", err)
-	}
-	if stats.SuccessRequests != 2 {
-		t.Fatalf("expected 2 successful usage records, got %d", stats.SuccessRequests)
-	}
-}
 
 func TestCreateMarksUsageAndResponseOnUpstreamError(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -107,7 +29,6 @@ func TestCreateMarksUsageAndResponseOnUpstreamError(t *testing.T) {
 	env := newResponsesTestEnv(t, responsesTestEnvConfig{
 		upstreamURL:  upstream.URL,
 		endpoint:     "chat",
-		cacheEnabled: false,
 		providers:    []string{"test-openai"},
 	})
 
@@ -154,7 +75,6 @@ func TestCreateStreamPersistsCompletedResponse(t *testing.T) {
 	env := newResponsesTestEnv(t, responsesTestEnvConfig{
 		upstreamURL:  upstream.URL,
 		endpoint:     "responses",
-		cacheEnabled: false,
 		providers:    []string{"test-openai"},
 	})
 
@@ -229,7 +149,6 @@ type responsesTestEnv struct {
 type responsesTestEnvConfig struct {
 	upstreamURL  string
 	endpoint     string
-	cacheEnabled bool
 	providers    []string
 }
 
@@ -306,28 +225,12 @@ func newResponsesTestEnv(t *testing.T, cfg responsesTestEnvConfig) *responsesTes
 	routerSvc := router.NewRouter(config.RouterConfig{Strategy: "round_robin"})
 	routerSvc.SetProviders(providerMgr.List())
 
-	var cacheSvc *cache.Cache
-	if cfg.cacheEnabled {
-		cacheSvc = cache.NewMemoryCache(config.CacheConfig{
-			Enabled: true,
-			MaxSize: 32,
-			TTL:     60,
-		})
-	}
-
 	service := New(&Dependencies{
-		Config: &config.Config{
-			Cache: config.CacheConfig{
-				Enabled: cfg.cacheEnabled,
-				MaxSize: 32,
-				TTL:     60,
-			},
-		},
+		Config:      &config.Config{},
 		Store:       store,
 		Auth:        authSvc,
 		ProviderMgr: providerMgr,
 		Router:      routerSvc,
-		Cache:       cacheSvc,
 		Alert:       nil,
 	})
 

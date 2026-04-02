@@ -294,23 +294,21 @@ func parseAnthropicStreamEvent(eventName, data string, state *anthropicStreamSta
 	case "message_delta":
 		// 扩展：支持更多第三方 provider 的 message_delta 变体
 		var payload struct {
-			Delta struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"delta"`
+			Delta any `json:"delta"` // 可能是 {"type":"text","text":"..."} 或 {"type":"text_delta","text":"..."}
 			Usage struct {
 				OutputTokens int `json:"output_tokens"`
 			} `json:"usage"`
 			Content string `json:"content"` // 某些 provider 直接在 message_delta 里发文本
 		}
 		if err := json.Unmarshal([]byte(data), &payload); err != nil {
-			// Try minimal parsing
 			return nil
 		}
-		// 如果有 delta.text，也发送 text delta
-		if payload.Delta.Text != "" {
-			state.appendText(payload.Delta.Text)
-			return &ResponseEvent{Type: "response.output_text.delta", Delta: payload.Delta.Text}
+		// 尝试从 delta 对象中提取 text
+		if deltaMap, ok := payload.Delta.(map[string]any); ok {
+			if text, _ := deltaMap["text"].(string); text != "" {
+				state.appendText(text)
+				return &ResponseEvent{Type: "response.output_text.delta", Delta: text}
+			}
 		}
 		// 如果有 content 字段（某些 provider 变体）
 		if payload.Content != "" {

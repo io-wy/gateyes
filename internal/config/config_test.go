@@ -58,9 +58,6 @@ func TestDefaultConfigHasExpectedDefaults(t *testing.T) {
 	if got, want := cfg.Server.ListenAddr, ":8080"; got != want {
 		t.Fatalf("DefaultConfig().Server.ListenAddr = %q, want %q", got, want)
 	}
-	if !cfg.Cache.Enabled {
-		t.Fatalf("DefaultConfig().Cache.Enabled = %v, want true", cfg.Cache.Enabled)
-	}
 	if got, want := cfg.Router.Strategy, "round_robin"; got != want {
 		t.Fatalf("DefaultConfig().Router.Strategy = %q, want %q", got, want)
 	}

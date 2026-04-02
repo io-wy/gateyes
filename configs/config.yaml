@@ -13,11 +13,9 @@ database:
 
 metrics:
   namespace: gateway
-  enabled: true
 
 router:
   strategy: round_robin
-  stickySession: false
 
 limiter:
   globalQPS: 1000
@@ -25,11 +23,6 @@ limiter:
   globalTokenBurst: 100000
   perUserRequestBurst: 100
   queueSize: 1000
-
-cache:
-  enabled: true
-  maxSize: 10000
-  ttl: 3600
 
 retry:
   maxRetries: 2
@@ -49,7 +42,6 @@ providers:
     endpoint: chat
     apiKey: ak_26z4wO9fK7je7yJ34R6vP9Wu2Bx3b
     model: LongCat-Flash-Thinking
-    weight: 10
     priceInput: 0
     priceOutput: 0
     maxTokens: 4096
@@ -61,7 +53,6 @@ providers:
     baseURL: https://api.minimaxi.com/anthropic
     apiKey: sk-cp-9RiBlO0zc3d84nXjf8bid8OF1RQPBw_TaYTqDBoWVmGHlgZPTg6BZpPpUL8DyG3TUrVHGabnZCQF7H5lwokwyzuKUyil3hfY9sfwf89JGb45IpMVEkzOFig
     model: MiniMax-M2.5
-    weight: 10
     priceInput: 0
     priceOutput: 0
     maxTokens: 4096
@@ -73,7 +64,6 @@ providers:
     baseURL: https://api-vip.codex-for.me/v1
     apiKey: clp_da5e4618afbeea4b8a9229e6a753e5a5405d92354a8b26d432b77ff4e066f49a
     model: gpt-5.2
-    weight: 10
     priceInput: 0
     priceOutput: 0
     maxTokens: 4096

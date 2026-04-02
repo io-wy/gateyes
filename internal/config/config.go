@@ -13,7 +13,6 @@ type Config struct {
 	Metrics       MetricsConfig          `yaml:"metrics"`
 	Router        RouterConfig           `yaml:"router"`
 	Limiter       LimiterConfig          `yaml:"limiter"`
-	Cache         CacheConfig            `yaml:"cache"`
 	Alert         AlertConfig            `yaml:"alert"`
 	Retry         RetryConfig            `yaml:"retry"`
 	CircuitBreaker CircuitBreakerConfig  `yaml:"circuitBreaker"`
@@ -39,12 +38,10 @@ type DatabaseConfig struct {
 
 type MetricsConfig struct {
 	Namespace string `yaml:"namespace"`
-	Enabled   bool   `yaml:"enabled"`
 }
 
 type RouterConfig struct {
-	Strategy      string `yaml:"strategy"`
-	StickySession bool   `yaml:"stickySession"`
+	Strategy string `yaml:"strategy"`
 }
 
 type LimiterConfig struct {
@@ -55,25 +52,6 @@ type LimiterConfig struct {
 	QueueSize          int `yaml:"queueSize"`         // 队列大小
 }
 
-type CacheConfig struct {
-	Enabled        bool              `yaml:"enabled"`
-	MaxSize        int               `yaml:"maxSize"`
-	TTL            int               `yaml:"ttl"`
-	Semantic       SemanticCacheConfig `yaml:"semantic"`
-	VerifyOnHit    bool              `yaml:"verifyOnHit"` // 缓存命中时是否验证
-	VerifyModel    string            `yaml:"verifyModel"` // 验证用的模型
-}
-
-type SemanticCacheConfig struct {
-	Enabled          bool    `yaml:"enabled"`
-	Threshold        float64 `yaml:"threshold"` // 相似度阈值 0.0-1.0，默认 0.85
-	EmbeddingModel   string  `yaml:"embeddingModel"`
-	RedisAddr        string  `yaml:"redisAddr"`
-	RedisPassword   string  `yaml:"redisPassword"`
-	RedisDB         int     `yaml:"redisDB"`
-	Namespace       string  `yaml:"namespace"` // 缓存命名空间
-}
-
 type ProviderConfig struct {
 	Name        string  `yaml:"name"`
 	Type        string  `yaml:"type"`
@@ -81,7 +59,6 @@ type ProviderConfig struct {
 	Endpoint    string  `yaml:"endpoint"` // "chat" or "responses", default "chat"
 	APIKey      string  `yaml:"apiKey"`
 	Model       string  `yaml:"model"`
-	Weight      int     `yaml:"weight"`
 	PriceInput  float64 `yaml:"priceInput"`
 	PriceOutput float64 `yaml:"priceOutput"`
 	MaxTokens   int     `yaml:"maxTokens"`
@@ -98,7 +75,6 @@ type APIKeyConfig struct {
 }
 
 type AdminConfig struct {
-	AdminKey        string `yaml:"adminKey"`
 	DefaultTenant   string `yaml:"defaultTenant"`
 	BootstrapKey    string `yaml:"bootstrapKey"`
 	BootstrapSecret string `yaml:"bootstrapSecret"`
@@ -168,11 +144,9 @@ func DefaultConfig() *Config {
 		},
 		Metrics: MetricsConfig{
 			Namespace: "gateway",
-			Enabled:   true,
 		},
 		Router: RouterConfig{
-			Strategy:      "round_robin",
-			StickySession: false,
+			Strategy: "round_robin",
 		},
 		Limiter: LimiterConfig{
 			GlobalQPS:          1000,
@@ -180,11 +154,6 @@ func DefaultConfig() *Config {
 			GlobalTokenBurst:   100000,
 			PerUserRequestBurst: 100,
 			QueueSize:          1000,
-		},
-		Cache: CacheConfig{
-			Enabled: true,
-			MaxSize: 10000,
-			TTL:     3600,
 		},
 		Retry: RetryConfig{
 			MaxRetries:     2,
@@ -198,7 +167,6 @@ func DefaultConfig() *Config {
 			HalfOpenMaxRequests: 1,
 		},
 		Admin: AdminConfig{
-			AdminKey:        "admin-secret-key",
 			DefaultTenant:   "default",
 			BootstrapKey:    "admin-key-001",
 			BootstrapSecret: "admin-secret-001",

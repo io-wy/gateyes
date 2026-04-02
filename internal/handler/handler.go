@@ -63,10 +63,6 @@ type Metrics struct {
 	activeStreams  prometheus.Gauge
 	streamDuration *prometheus.HistogramVec
 
-	// Cache
-	cacheHits   prometheus.Counter
-	cacheMisses prometheus.Counter
-
 	// Model 维度
 	modelRequests *prometheus.CounterVec
 	modelFailures *prometheus.CounterVec
@@ -122,10 +118,6 @@ func NewMetrics(namespace string) *Metrics {
 			Name:      "stream_duration_seconds",
 			Buckets:   []float64{0.1, 0.5, 1, 2.5, 5, 10, 30, 60},
 		}, []string{"model"}),
-
-		// Cache
-		cacheHits:   promauto.NewCounter(prometheus.CounterOpts{Namespace: namespace, Name: "cache_hits_total"}),
-		cacheMisses: promauto.NewCounter(prometheus.CounterOpts{Namespace: namespace, Name: "cache_misses_total"}),
 
 		// Model 维度
 		modelRequests: promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "model_requests_total"}, []string{"model"}),
@@ -187,12 +179,6 @@ func (h *Handler) Chat(c *gin.Context) {
 		return
 	}
 
-	if result.CacheHit {
-		h.metrics.cacheHits.Inc()
-	} else if h.cfg.Cache.Enabled {
-		h.metrics.cacheMisses.Inc()
-	}
-
 	// upstreamLatency = total latency - (retry delays)
 	upstreamLatency := time.Duration(result.LatencyMs) * time.Millisecond
 	h.observeResponseWithUpstream(req.Model, result.ProviderName, result.Response.Usage, time.Since(start), upstreamLatency, result.Retries, result.Fallback)
@@ -237,12 +223,6 @@ func (h *Handler) AnthropicMessages(c *gin.Context) {
 	if err != nil {
 		h.renderServiceError(c, req.Model, err)
 		return
-	}
-
-	if result.CacheHit {
-		h.metrics.cacheHits.Inc()
-	} else if h.cfg.Cache.Enabled {
-		h.metrics.cacheMisses.Inc()
 	}
 
 	// upstreamLatency = total latency - (retry delays)
@@ -293,14 +273,10 @@ func (h *Handler) Ready(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ready"})
 }
 
-func (h *Handler) observeResponse(requestedModel, providerName string, usage provider.Usage, latency time.Duration, cacheHit bool) {
+func (h *Handler) observeResponse(requestedModel, providerName string, usage provider.Usage, latency time.Duration) {
 	modelLabel := providerName
-	if modelLabel == "" || cacheHit {
+	if modelLabel == "" {
 		modelLabel = requestedModel
-	}
-	status := "success"
-	if cacheHit {
-		status = "cache_hit"
 	}
 
 	// Token 计数
@@ -309,7 +285,7 @@ func (h *Handler) observeResponse(requestedModel, providerName string, usage pro
 	h.metrics.totalTokens.WithLabelValues(modelLabel).Add(float64(usage.TotalTokens))
 
 	// 请求计数
-	h.metrics.requests.WithLabelValues(modelLabel, status).Inc()
+	h.metrics.requests.WithLabelValues(modelLabel, "success").Inc()
 	h.metrics.modelRequests.WithLabelValues(modelLabel).Inc()
 
 	// 延迟

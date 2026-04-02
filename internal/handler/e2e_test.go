@@ -385,9 +385,7 @@ func newGatewayE2EEnv(t *testing.T) *gatewayE2EEnv {
 		Server: config.ServerConfig{ListenAddr: ":0", ReadTimeout: 30, WriteTimeout: 300},
 		Metrics: config.MetricsConfig{
 			Namespace: fmt.Sprintf("gateway_e2e_%d", time.Now().UnixNano()),
-			Enabled:   true,
 		},
-		Cache:  config.CacheConfig{Enabled: false, MaxSize: 32, TTL: 60},
 		Router: config.RouterConfig{Strategy: "round_robin"},
 		Providers: []config.ProviderConfig{
 			{Name: "openai-chat", Type: "openai", BaseURL: upstream.URL, Endpoint: "chat", APIKey: "upstream-key", Model: "chat-public", Timeout: 5, Enabled: true, MaxTokens: 256},
@@ -418,7 +416,6 @@ func newGatewayE2EEnv(t *testing.T) *gatewayE2EEnv {
 		Auth:        mw.AuthService(),
 		ProviderMgr: providerMgr,
 		Router:      routerSvc,
-		Cache:       nil,
 		Alert:       nil,
 	})
 	h := NewHandler(&Dependencies{

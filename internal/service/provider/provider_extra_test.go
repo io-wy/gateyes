@@ -93,9 +93,6 @@ func TestResponseRequestAndResponseHelpers(t *testing.T) {
 	if req.RequestedMaxTokens() != 42 {
 		t.Fatalf("ResponseRequest.RequestedMaxTokens() = %d, want %d", req.RequestedMaxTokens(), 42)
 	}
-	if !strings.Contains(req.CacheKey(), "gpt-test") || !strings.Contains(req.CacheKey(), "hello world") {
-		t.Fatalf("ResponseRequest.CacheKey() = %q, want model and prompt", req.CacheKey())
-	}
 	if got := req.EstimatePromptTokens(); got <= 0 {
 		t.Fatalf("ResponseRequest.EstimatePromptTokens() = %d, want > 0", got)
 	}

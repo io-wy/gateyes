@@ -17,7 +17,6 @@ import (
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/repository/sqlstore"
 	"github.com/gateyes/gateway/internal/service/alert"
-	"github.com/gateyes/gateway/internal/service/cache"
 	"github.com/gateyes/gateway/internal/service/limiter"
 	"github.com/gateyes/gateway/internal/service/provider"
 	responseSvc "github.com/gateyes/gateway/internal/service/responses"
@@ -87,7 +86,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	kvCache := cache.NewMemoryCache(cfg.Cache)
 	limiterSvc := limiter.NewLimiter(cfg.Limiter)
 	routerSvc := router.NewRouter(cfg.Router)
 	routerSvc.SetProviders(providerMgr.List())
@@ -102,7 +100,6 @@ func main() {
 		Auth:        httpMiddleware.AuthService(),
 		ProviderMgr: providerMgr,
 		Router:      routerSvc,
-		Cache:       kvCache,
 		Alert:       alertSvc,
 	})
 

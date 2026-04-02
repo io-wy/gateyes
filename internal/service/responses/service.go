@@ -17,8 +17,6 @@ import (
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/alert"
 	"github.com/gateyes/gateway/internal/service/auth"
-	"github.com/gateyes/gateway/internal/service/cache"
-	"github.com/gateyes/gateway/internal/service/cache/semantic"
 	"github.com/gateyes/gateway/internal/service/provider"
 	"github.com/gateyes/gateway/internal/service/router"
 )
@@ -30,14 +28,12 @@ var (
 )
 
 type Dependencies struct {
-	Config        *config.Config
-	Store         repository.Store
-	Auth          *auth.Auth
-	ProviderMgr   *provider.Manager
-	Router        *router.Router
-	Cache         *cache.Cache
-	SemanticCache semantic.Cache
-	Alert         *alert.AlertService
+	Config      *config.Config
+	Store       repository.Store
+	Auth        *auth.Auth
+	ProviderMgr *provider.Manager
+	Router      *router.Router
+	Alert       *alert.AlertService
 }
 
 type Service struct {
@@ -46,8 +42,6 @@ type Service struct {
 	auth           *auth.Auth
 	providerMgr    *provider.Manager
 	router         *router.Router
-	cache          *cache.Cache
-	semanticCache  semantic.Cache
 	alert          *alert.AlertService
 	circuitBreaker *CircuitBreaker
 }
@@ -56,7 +50,6 @@ type CreateResult struct {
 	Response         *provider.Response
 	ProviderName     string
 	LatencyMs        int64
-	CacheHit         bool
 	PromptTokens     int
 	CompletionTokens int
 	Retries          int // 本次请求的重试次数
@@ -83,76 +76,19 @@ type execution struct {
 }
 
 func New(deps *Dependencies) *Service {
-	svc := &Service{
+	return &Service{
 		cfg:            deps.Config,
 		store:          deps.Store,
 		auth:           deps.Auth,
 		providerMgr:    deps.ProviderMgr,
 		router:         deps.Router,
-		cache:          deps.Cache,
-		semanticCache:  deps.SemanticCache,
 		alert:          deps.Alert,
 		circuitBreaker: NewCircuitBreaker(deps.Config.CircuitBreaker),
 	}
-
-	// 自动初始化语义缓存
-	if svc.cfg.Cache.Semantic.Enabled && svc.cfg.Cache.Semantic.RedisAddr != "" {
-		emb, err := semantic.EmbedderFromConfig(semantic.Config{
-			Enabled:        true,
-			EmbeddingModel: svc.cfg.Cache.Semantic.EmbeddingModel,
-			APIKey:         svc.cfg.Cache.Semantic.RedisPassword, // API key 复用 redis password 字段
-		})
-		if err != nil {
-			// 日志记录错误但不中断启动
-			fmt.Printf("Failed to create embedder: %v\n", err)
-		} else if emb != nil {
-			semanticCache, err := semantic.NewRedisCache(semantic.Config{
-				Enabled:       true,
-				Threshold:     svc.cfg.Cache.Semantic.Threshold,
-				TTL:           time.Duration(svc.cfg.Cache.TTL) * time.Second,
-				Namespace:     svc.cfg.Cache.Semantic.Namespace,
-				RedisAddr:     svc.cfg.Cache.Semantic.RedisAddr,
-				RedisPassword: svc.cfg.Cache.Semantic.RedisPassword,
-				RedisDB:       svc.cfg.Cache.Semantic.RedisDB,
-			}, emb)
-			if err != nil {
-				fmt.Printf("Failed to create semantic cache: %v\n", err)
-			} else {
-				svc.semanticCache = semanticCache
-			}
-		}
-	}
-
-	return svc
 }
 
 func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*CreateResult, error) {
 	req.Normalize()
-
-	// 1. 精确缓存查找
-	if s.cfg.Cache.Enabled && s.cache != nil && !req.Stream {
-		if cached, ok := s.cache.Get(req.CacheKey()); ok {
-			// 先验证缓存响应有效性
-			if s.isValidCacheResponseBytes([]byte(cached)) {
-				return s.useCachedResponseWithRequest(ctx, identity, req, cached)
-			}
-			// 缓存无效，跳过并继续走 LLM
-		}
-	}
-
-	// 2. 语义缓存查找
-	if s.cfg.Cache.Semantic.Enabled && s.semanticCache != nil && !req.Stream {
-		// 构建规范化后的 prompt 用于语义匹配
-		prompt := req.NormalizeCacheKey()
-		result, err := s.semanticCache.Get(prompt)
-		if err == nil && result.IsHit {
-			// 先验证缓存响应有效性
-			if s.isValidCacheResponseString(result.Response) {
-				return s.useCachedResponseWithRequest(ctx, identity, req, result.Response)
-			}
-			// 缓存无效，跳过并继续走 LLM
-		}
-	}
 
 	candidates := s.getCandidateProviders(ctx, identity, sessionID, req.Model)
 	if len(candidates) == 0 {
@@ -243,18 +179,6 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 			return nil, err
 		}
 
-		if s.cfg.Cache.Enabled && s.cache != nil {
-			body, _ := json.Marshal(resp)
-			s.cache.Set(req.CacheKey(), string(body))
-		}
-
-		// 写入语义缓存
-		if s.cfg.Cache.Semantic.Enabled && s.semanticCache != nil {
-			prompt := req.NormalizeCacheKey()
-			body, _ := json.Marshal(resp)
-			_ = s.semanticCache.Set(prompt, string(body))
-		}
-
 		return &CreateResult{
 			Response:         resp,
 			ProviderName:     providerName,
@@ -267,73 +191,6 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 	}
 
 	return nil, lastErr
-}
-
-// isValidCacheResponse 验证缓存的 response 是否有效
-func (s *Service) isValidCacheResponse(resp *provider.Response) bool {
-	if resp == nil {
-		return false
-	}
-
-	// 检查 ID
-	if resp.ID == "" {
-		return false
-	}
-
-	// 检查 output 不为空
-	if len(resp.Output) == 0 {
-		return false
-	}
-
-	// 检查有有效内容：文本内容 或 tool calls
-	hasValidContent := false
-	for _, output := range resp.Output {
-		// 检查 text content
-		for _, content := range output.Content {
-			if content.Text != "" {
-				hasValidContent = true
-				break
-			}
-		}
-		// 检查 function_call / tool_call
-		if output.Type == "function_call" || output.Type == "tool_use" {
-			hasValidContent = true
-			break
-		}
-		// 检查 output 有 args (function call 的参数)
-		if output.Args != "" {
-			hasValidContent = true
-			break
-		}
-	}
-
-	if !hasValidContent {
-		return false
-	}
-
-	// 检查 usage 有效（允许 0 tokens）
-	if resp.Usage.TotalTokens < 0 {
-		return false
-	}
-
-	return true
-}
-
-// isValidCacheResponseBytes 验证缓存的 response bytes 是否有效
-func (s *Service) isValidCacheResponseBytes(data []byte) bool {
-	if len(data) == 0 {
-		return false
-	}
-	var resp provider.Response
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return false
-	}
-	return s.isValidCacheResponse(&resp)
-}
-
-// isValidCacheResponseString 验证缓存的 response string 是否有效
-func (s *Service) isValidCacheResponseString(data string) bool {
-	return s.isValidCacheResponseBytes([]byte(data))
 }
 
 func buildUpstreamRequest(req *provider.ResponseRequest) *provider.ResponseRequest {
@@ -684,143 +541,6 @@ func (s *Service) prepareWithProvider(ctx context.Context, identity *repository.
 		requestBody:           requestBody,
 		startedAt:             time.Now(),
 		estimatedPromptTokens: req.EstimatePromptTokens(),
-	}, nil
-}
-
-func (s *Service) useCachedResponse(ctx context.Context, identity *repository.AuthIdentity, exec *execution, cached string) (*CreateResult, error) {
-	var resp provider.Response
-	if err := json.Unmarshal([]byte(cached), &resp); err != nil {
-		return nil, err
-	}
-
-	resp.ID = exec.responseID
-	resp.Model = exec.requestedModel
-	resp.Created = time.Now().Unix()
-	resp.Status = "completed"
-
-	if err := s.ensureQuotaAvailable(ctx, identity, exec, &resp, 0, "cache", 0); err != nil {
-		return nil, err
-	}
-
-	body, _ := json.Marshal(resp)
-	if err := s.store.UpdateResponse(ctx, repository.ResponseRecord{
-		ID:           exec.responseID,
-		TenantID:     exec.tenantID,
-		ProviderName: "cache",
-		Model:        exec.requestedModel,
-		Status:       "completed",
-		ResponseBody: body,
-	}); err != nil {
-		return nil, err
-	}
-
-	if err := s.auth.RecordUsage(
-		ctx,
-		identity,
-		"cache",
-		exec.requestedModel,
-		resp.Usage.PromptTokens,
-		resp.Usage.CompletionTokens,
-		resp.Usage.TotalTokens,
-		0,
-		0,
-		"success",
-		"",
-	); err != nil {
-		if errors.Is(err, auth.ErrQuotaExceeded) {
-			_ = s.recordQuotaExceeded(ctx, identity, exec, &resp, 0, "cache", 0)
-		}
-		return nil, err
-	}
-
-	return &CreateResult{
-		Response:         &resp,
-		ProviderName:     "cache",
-		LatencyMs:        0,
-		CacheHit:         true,
-		PromptTokens:     resp.Usage.PromptTokens,
-		CompletionTokens: resp.Usage.CompletionTokens,
-		Retries:          0,
-		Fallback:         0,
-	}, nil
-}
-
-func (s *Service) useCachedResponseWithRequest(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, cached string) (*CreateResult, error) {
-	var resp provider.Response
-	if err := json.Unmarshal([]byte(cached), &resp); err != nil {
-		return nil, err
-	}
-
-	// 缓存验证：检查 response 有效性
-	if !s.isValidCacheResponse(&resp) {
-		// 缓存数据无效，返回错误让请求继续走 LLM
-		return nil, fmt.Errorf("invalid cached response")
-	}
-
-	responseID := uuid.NewString()
-	resp.ID = responseID
-	resp.Model = req.Model
-	resp.Created = time.Now().Unix()
-	resp.Status = "completed"
-
-	exec := &execution{
-		requestedModel:        req.Model,
-		responseID:            responseID,
-		tenantID:              identity.TenantID,
-		estimatedPromptTokens: req.EstimatePromptTokens(),
-	}
-
-	if err := s.ensureQuotaAvailable(ctx, identity, exec, &resp, 0, "cache", 0); err != nil {
-		return nil, err
-	}
-
-	body, _ := json.Marshal(resp)
-
-	// 先创建 response 记录（缓存命中）
-	requestBody, _ := json.Marshal(req)
-	if err := s.store.CreateResponse(ctx, repository.ResponseRecord{
-		ID:           responseID,
-		TenantID:     identity.TenantID,
-		UserID:       identity.UserID,
-		APIKeyID:     identity.APIKeyID,
-		ProviderName: "cache",
-		Model:        req.Model,
-		Status:       "completed",
-		RequestBody:  requestBody,
-		ResponseBody: body,
-	}); err != nil {
-		// 落库失败，返回错误而不是静默继续
-		return nil, fmt.Errorf("failed to create cache response record: %w", err)
-	}
-
-	if err := s.auth.RecordUsage(
-		ctx,
-		identity,
-		"cache",
-		req.Model,
-		resp.Usage.PromptTokens,
-		resp.Usage.CompletionTokens,
-		resp.Usage.TotalTokens,
-		0,
-		0,
-		"success",
-		"",
-	); err != nil {
-		if errors.Is(err, auth.ErrQuotaExceeded) {
-			_ = s.recordQuotaExceeded(ctx, identity, exec, &resp, 0, "cache", 0)
-		}
-		return nil, err
-	}
-
-	return &CreateResult{
-		Response:         &resp,
-		ProviderName:     "cache",
-		LatencyMs:        0,
-		CacheHit:         true,
-		PromptTokens:     resp.Usage.PromptTokens,
-		CompletionTokens: resp.Usage.CompletionTokens,
-		Retries:          0,
-		Fallback:         0,
 	}, nil
 }
 

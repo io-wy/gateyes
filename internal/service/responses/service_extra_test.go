@@ -20,7 +20,6 @@ func TestCreateReturnsQuotaExceededAfterUpstreamSuccess(t *testing.T) {
 	env := newResponsesTestEnv(t, responsesTestEnvConfig{
 		upstreamURL:  upstream.URL,
 		endpoint:     "chat",
-		cacheEnabled: false,
 		providers:    []string{"test-openai"},
 	})
 	env.identity.Quota = 1
