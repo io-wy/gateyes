@@ -149,6 +149,51 @@ func TestGatewayE2E(t *testing.T) {
 		}
 	})
 
+	t.Run("chat compatibility via responses provider", func(t *testing.T) {
+		env.setTenantProviders(t, "openai-responses")
+
+		resp, body := doRequest(t, client, http.MethodPost, env.server.URL+"/v1/chat/completions", authHeaders("test-key:test-secret"), map[string]any{
+			"model": "resp-public",
+			"messages": []map[string]any{{
+				"role":    "user",
+				"content": "hello through responses",
+			}},
+			"max_tokens": 64,
+		})
+		assertStatus(t, resp, http.StatusOK, body)
+		payload := decodeJSONMap(t, body)
+		choice := payload["choices"].([]any)[0].(map[string]any)
+		message := choice["message"].(map[string]any)
+		if message["content"] != "response hello" {
+			t.Fatalf("chat via responses content = %v, want response hello", message["content"])
+		}
+
+		resp, body = doRequest(t, client, http.MethodPost, env.server.URL+"/v1/chat/completions", authHeaders("test-key:test-secret"), map[string]any{
+			"model":  "resp-public",
+			"stream": true,
+			"messages": []map[string]any{{
+				"role":    "user",
+				"content": "stream through responses",
+			}},
+			"tools": []map[string]any{{
+				"type": "function",
+				"function": map[string]any{
+					"name":       "lookup",
+					"parameters": map[string]any{"type": "object"},
+				},
+			}},
+		})
+		assertStatus(t, resp, http.StatusOK, body)
+		events := parseSSEData(body)
+		if len(events) < 3 || events[len(events)-1] != "[DONE]" {
+			t.Fatalf("chat via responses stream events = %v, want done-terminated SSE", events)
+		}
+		jsonSnippets := bodyJSONSnippets(events[:len(events)-1])
+		if !contains(jsonSnippets, `"role":"assistant"`) || !contains(jsonSnippets, `"content":"response stream"`) || !contains(jsonSnippets, `"tool_calls"`) || !contains(jsonSnippets, `"finish_reason":"tool_calls"`) {
+			t.Fatalf("chat via responses stream body = %s, want assistant/content/tool_calls/finish_reason", body)
+		}
+	})
+
 	t.Run("anthropic compatibility and x-api-key precedence", func(t *testing.T) {
 		env.setTenantProviders(t, "anthropic-main")
 

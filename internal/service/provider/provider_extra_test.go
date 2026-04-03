@@ -156,7 +156,7 @@ func TestChatCompatibilityHelpers(t *testing.T) {
 		ID:      "resp-1",
 		Created: 123,
 		Model:   "gpt-test",
-		Output: []ResponseOutput{{Type: "message", Content: []ResponseContent{{Type: "output_text", Text: "hello"}}}},
+		Output:  []ResponseOutput{{Type: "message", Content: []ResponseContent{{Type: "output_text", Text: "hello"}}}},
 	}
 	chatResp := ConvertResponseToChat(resp)
 	if chatResp.Object != "chat.completion" || chatResp.Choices[0].Message.Content != "hello" {
@@ -289,6 +289,14 @@ func TestOpenAIProviderHelpersAndParsers(t *testing.T) {
 	if got, want := httpReq.URL.String(), "https://openai.example/v1/chat/completions"; got != want {
 		t.Fatalf("openAIProvider.newRequest(chat) URL = %q, want %q", got, want)
 	}
+	p.cfg.BaseURL = "https://openai.example/v1"
+	httpReq, err = p.newRequest(context.Background(), req, false)
+	if err != nil {
+		t.Fatalf("openAIProvider.newRequest(chat with /v1 base) error: %v", err)
+	}
+	if got, want := httpReq.URL.String(), "https://openai.example/v1/chat/completions"; got != want {
+		t.Fatalf("openAIProvider.newRequest(chat with /v1 base) URL = %q, want %q", got, want)
+	}
 
 	if msgs := buildChatCompletionMessages([]Message{{Role: "user", Content: "hello"}}); len(msgs) != 1 || msgs[0]["content"] != "hello" {
 		t.Fatalf("buildChatCompletionMessages() = %+v, want one simple chat message", msgs)
@@ -322,6 +330,22 @@ func TestOpenAIProviderHelpersAndParsers(t *testing.T) {
 	if err != nil || chatEvent == nil || chatEvent.Type != "chat.delta" || len(chatEvent.ToolCalls) != 1 || chatEvent.Usage == nil {
 		t.Fatalf("parseOpenAIResponseEvent(chat chunk) = (%+v,%v), want chat.delta with tool calls and usage", chatEvent, err)
 	}
+	chatEvent, err = parseOpenAIResponseEvent(`{"id":"chat-2","object":"chat.completion.chunk","created":1,"model":"provider-model","choices":[{"delta":{"content":[{"type":"text","text":"hello"},{"type":"text","text":" world"}]}}]}`, "public-model")
+	if err != nil || chatEvent == nil || chatEvent.Delta != "hello world" {
+		t.Fatalf("parseOpenAIResponseEvent(chat array content) = (%+v,%v), want concatenated delta", chatEvent, err)
+	}
+	chatEvent, err = parseOpenAIResponseEvent(`{"id":"chat-3","object":"chat.completion.chunk","created":1,"model":"provider-model","choices":[{"message":{"role":"assistant","content":"hello from message"}}]}`, "public-model")
+	if err != nil || chatEvent == nil || chatEvent.Delta != "hello from message" {
+		t.Fatalf("parseOpenAIResponseEvent(message fallback) = (%+v,%v), want delta from message.content", chatEvent, err)
+	}
+	chatEvent, err = parseOpenAIResponseEvent(`{"id":"chat-4","object":"chat.completion.chunk","created":1,"model":"provider-model","choices":[{"text":"legacy hello"}]}`, "public-model")
+	if err != nil || chatEvent == nil || chatEvent.Delta != "legacy hello" {
+		t.Fatalf("parseOpenAIResponseEvent(text fallback) = (%+v,%v), want delta from choice.text", chatEvent, err)
+	}
+	chatEvent, err = parseOpenAIResponseEvent(`{"id":"chat-5","object":"chat.completion.chunk","created":1,"model":"provider-model","choices":[{"message":{"tool_calls":[{"id":"call-2","type":"function","function":{"name":"lookup","arguments":"{}"}}]}}]}`, "public-model")
+	if err != nil || chatEvent == nil || len(chatEvent.ToolCalls) != 1 || chatEvent.ToolCalls[0].Function.Name != "lookup" {
+		t.Fatalf("parseOpenAIResponseEvent(message tool_calls fallback) = (%+v,%v), want tool call from message", chatEvent, err)
+	}
 
 	rawResp := chatCompletionResponse{
 		ID:      "chat-1",
@@ -329,18 +353,18 @@ func TestOpenAIProviderHelpersAndParsers(t *testing.T) {
 		Created: 1,
 		Model:   "provider-model",
 		Choices: []struct {
-			Index        int `json:"index"`
-			Message      struct {
-				Role       string     `json:"role"`
-				Content    string     `json:"content"`
-				ToolCalls  []ToolCall `json:"tool_calls"`
+			Index   int `json:"index"`
+			Message struct {
+				Role      string     `json:"role"`
+				Content   string     `json:"content"`
+				ToolCalls []ToolCall `json:"tool_calls"`
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		}{
 			{Message: struct {
-				Role       string     `json:"role"`
-				Content    string     `json:"content"`
-				ToolCalls  []ToolCall `json:"tool_calls"`
+				Role      string     `json:"role"`
+				Content   string     `json:"content"`
+				ToolCalls []ToolCall `json:"tool_calls"`
 			}{Role: "assistant", Content: "hello"}},
 		},
 	}

@@ -111,16 +111,17 @@ func (h *Handler) streamResponses(c *gin.Context, stream *responseSvc.Stream, re
 				return
 			}
 
-			// 记录首个 token 延迟
-			if !firstTokenRecorded && (event.Type == "response.output_text.delta" || event.Type == "chat.delta") {
-				h.metrics.timeToFirstToken.WithLabelValues(modelLabel).Observe(time.Since(start).Seconds())
-				firstTokenRecorded = true
+			normalizedEvents := normalizeResponsesStreamEvent(event)
+			for _, normalized := range normalizedEvents {
+				if !firstTokenRecorded && normalized.Type == "response.output_text.delta" {
+					h.metrics.timeToFirstToken.WithLabelValues(modelLabel).Observe(time.Since(start).Seconds())
+					firstTokenRecorded = true
+				}
+				if err := writeSSE(c, normalized); err != nil {
+					return
+				}
+				flusher.Flush()
 			}
-
-			if err := writeSSE(c, event); err != nil {
-				return
-			}
-			flusher.Flush()
 			if event.Type == "response.completed" && event.Response != nil {
 				h.observeResponse(requestedModel, stream.ProviderName, event.Response.Usage, time.Since(start))
 			}
@@ -137,6 +138,36 @@ func (h *Handler) streamResponses(c *gin.Context, stream *responseSvc.Stream, re
 		case <-c.Request.Context().Done():
 			return
 		}
+	}
+}
+
+func normalizeResponsesStreamEvent(event provider.ResponseEvent) []provider.ResponseEvent {
+	switch event.Type {
+	case "chat.delta":
+		var normalized []provider.ResponseEvent
+		if event.Delta != "" {
+			textEvent := event
+			textEvent.Type = "response.output_text.delta"
+			textEvent.ToolCalls = nil
+			normalized = append(normalized, textEvent)
+		}
+		for _, call := range event.ToolCalls {
+			output := provider.ResponseOutput{
+				ID:     call.ID,
+				Type:   "function_call",
+				Status: "completed",
+				CallID: call.ID,
+				Name:   call.Function.Name,
+				Args:   call.Function.Arguments,
+			}
+			normalized = append(normalized, provider.ResponseEvent{
+				Type:   "response.output_item.done",
+				Output: &output,
+			})
+		}
+		return normalized
+	default:
+		return []provider.ResponseEvent{event}
 	}
 }
 

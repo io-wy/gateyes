@@ -346,20 +346,21 @@ func (p *openAIProvider) newRequest(ctx context.Context, req *ResponseRequest, s
 		if maxTokens := req.RequestedMaxTokens(); maxTokens > 0 {
 			payload["max_output_tokens"] = maxTokens
 		}
-	case "chat": {
-		path = "/v1/chat/completions"
-		payload = map[string]any{
-			"model":    req.Model,
-			"messages": buildChatCompletionMessages(req.InputMessages()),
-			"stream":   stream,
+	case "chat":
+		{
+			path = "/v1/chat/completions"
+			payload = map[string]any{
+				"model":    req.Model,
+				"messages": buildChatCompletionMessages(req.InputMessages()),
+				"stream":   stream,
+			}
+			if maxTokens := req.RequestedMaxTokens(); maxTokens > 0 {
+				payload["max_tokens"] = maxTokens
+			}
+			if len(req.Tools) > 0 {
+				payload["tools"] = req.Tools
+			}
 		}
-		if maxTokens := req.RequestedMaxTokens(); maxTokens > 0 {
-			payload["max_tokens"] = maxTokens
-		}
-		if len(req.Tools) > 0 {
-			payload["tools"] = req.Tools
-		}
-	}
 	default:
 		// 完整路径，默认使用 chat 格式
 		path = endpoint
@@ -378,13 +379,21 @@ func (p *openAIProvider) newRequest(ctx context.Context, req *ResponseRequest, s
 
 	body, _ := json.Marshal(payload)
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(p.cfg.BaseURL, "/")+path, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, joinOpenAIPath(p.cfg.BaseURL, path), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
 	return httpReq, nil
+}
+
+func joinOpenAIPath(baseURL, path string) string {
+	base := strings.TrimRight(baseURL, "/")
+	if strings.HasSuffix(strings.ToLower(base), "/v1") && strings.HasPrefix(path, "/v1/") {
+		path = strings.TrimPrefix(path, "/v1")
+	}
+	return base + path
 }
 
 func buildOpenAIInput(messages []Message) []map[string]any {
@@ -533,11 +542,11 @@ type chatCompletionResponse struct {
 	Created int64  `json:"created"`
 	Model   string `json:"model"`
 	Choices []struct {
-		Index        int `json:"index"`
-		Message      struct {
-			Role       string     `json:"role"`
-			Content    string     `json:"content"`
-			ToolCalls  []ToolCall `json:"tool_calls"`
+		Index   int `json:"index"`
+		Message struct {
+			Role      string     `json:"role"`
+			Content   string     `json:"content"`
+			ToolCalls []ToolCall `json:"tool_calls"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -627,9 +636,9 @@ func parseChatCompletionEvent(data string, requestedModel string) (*ResponseEven
 		Created int64  `json:"created"`
 		Model   string `json:"model"`
 		Choices []struct {
-			Index        int `json:"index"`
-			Delta        struct {
-				Content   string `json:"content"`
+			Index int `json:"index"`
+			Delta struct {
+				Content   any    `json:"content"`
 				Role      string `json:"role"`
 				ToolCalls []struct {
 					ID       string `json:"id"`
@@ -641,6 +650,19 @@ func parseChatCompletionEvent(data string, requestedModel string) (*ResponseEven
 				} `json:"tool_calls"`
 				FinishReason string `json:"finish_reason"`
 			} `json:"delta"`
+			Message struct {
+				Role      string `json:"role"`
+				Content   any    `json:"content"`
+				ToolCalls []struct {
+					ID       string `json:"id"`
+					Type     string `json:"type"`
+					Function struct {
+						Name string `json:"name"`
+						Args string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"message"`
+			Text         string `json:"text"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Usage struct {
@@ -658,35 +680,30 @@ func parseChatCompletionEvent(data string, requestedModel string) (*ResponseEven
 		return nil, nil
 	}
 
-	delta := chunk.Choices[0].Delta
+	choice := chunk.Choices[0]
+	delta := choice.Delta
+	text := extractChatCompletionText(choice)
+	toolCalls := extractChatCompletionToolCalls(choice)
 	// 跳过无意义事件：delta.content 为空、无 tool_calls、无 finish_reason、无 usage
 	// 部分 provider（如 longcat）会发送大量空 delta，只在最后一条带内容
 	// 过滤空事件可减少 SSE 噪音，也避免客户端误认为流已结束
-	if delta.Content == "" && len(delta.ToolCalls) == 0 && delta.FinishReason == "" && chunk.Choices[0].FinishReason == "" && chunk.Usage.TotalTokens == 0 {
+	if text == "" && len(toolCalls) == 0 && delta.FinishReason == "" && choice.FinishReason == "" && chunk.Usage.TotalTokens == 0 {
 		return nil, nil
 	}
 
 	event := ResponseEvent{
-		Type: "chat.delta",
-		Delta: delta.Content,
+		Type:  "chat.delta",
+		Delta: text,
 	}
 
-	if len(delta.ToolCalls) > 0 {
-		for _, tc := range delta.ToolCalls {
-			event.ToolCalls = append(event.ToolCalls, ToolCall{
-				ID: tc.ID,
-				Function: FunctionCall{
-					Name:      tc.Function.Name,
-					Arguments: tc.Function.Args,
-				},
-			})
-		}
+	if len(toolCalls) > 0 {
+		event.ToolCalls = toolCalls
 	}
 
 	if delta.FinishReason != "" {
 		event.FinishReason = delta.FinishReason
-	} else if chunk.Choices[0].FinishReason != "" {
-		event.FinishReason = chunk.Choices[0].FinishReason
+	} else if choice.FinishReason != "" {
+		event.FinishReason = choice.FinishReason
 	}
 
 	if chunk.Usage.TotalTokens > 0 {
@@ -698,6 +715,93 @@ func parseChatCompletionEvent(data string, requestedModel string) (*ResponseEven
 	}
 
 	return &event, nil
+}
+
+func extractChatCompletionText(choice struct {
+	Index int `json:"index"`
+	Delta struct {
+		Content   any    `json:"content"`
+		Role      string `json:"role"`
+		ToolCalls []struct {
+			ID       string `json:"id"`
+			Type     string `json:"type"`
+			Function struct {
+				Name string `json:"name"`
+				Args string `json:"arguments"`
+			} `json:"function"`
+		} `json:"tool_calls"`
+		FinishReason string `json:"finish_reason"`
+	} `json:"delta"`
+	Message struct {
+		Role      string `json:"role"`
+		Content   any    `json:"content"`
+		ToolCalls []struct {
+			ID       string `json:"id"`
+			Type     string `json:"type"`
+			Function struct {
+				Name string `json:"name"`
+				Args string `json:"arguments"`
+			} `json:"function"`
+		} `json:"tool_calls"`
+	} `json:"message"`
+	Text         string `json:"text"`
+	FinishReason string `json:"finish_reason"`
+}) string {
+	if text := collectText(choice.Delta.Content); text != "" {
+		return text
+	}
+	if text := collectText(choice.Message.Content); text != "" {
+		return text
+	}
+	return choice.Text
+}
+
+func extractChatCompletionToolCalls(choice struct {
+	Index int `json:"index"`
+	Delta struct {
+		Content   any    `json:"content"`
+		Role      string `json:"role"`
+		ToolCalls []struct {
+			ID       string `json:"id"`
+			Type     string `json:"type"`
+			Function struct {
+				Name string `json:"name"`
+				Args string `json:"arguments"`
+			} `json:"function"`
+		} `json:"tool_calls"`
+		FinishReason string `json:"finish_reason"`
+	} `json:"delta"`
+	Message struct {
+		Role      string `json:"role"`
+		Content   any    `json:"content"`
+		ToolCalls []struct {
+			ID       string `json:"id"`
+			Type     string `json:"type"`
+			Function struct {
+				Name string `json:"name"`
+				Args string `json:"arguments"`
+			} `json:"function"`
+		} `json:"tool_calls"`
+	} `json:"message"`
+	Text         string `json:"text"`
+	FinishReason string `json:"finish_reason"`
+}) []ToolCall {
+	source := choice.Delta.ToolCalls
+	if len(source) == 0 {
+		source = choice.Message.ToolCalls
+	}
+	result := make([]ToolCall, 0, len(source))
+	for _, tc := range source {
+		result = append(result, ToolCall{
+			ID:   tc.ID,
+			Type: tc.Type,
+			Function: FunctionCall{
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Args,
+			},
+		})
+	}
+	return result
 }
 
 func convertOpenAIResponse(raw openAIResponsePayload, requestedModel string) *Response {

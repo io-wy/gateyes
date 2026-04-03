@@ -62,6 +62,7 @@ providers:
   - name: codex for me
     type: openai
     baseURL: https://api-vip.codex-for.me/v1
+    endpoint: responses
     apiKey: clp_da5e4618afbeea4b8a9229e6a753e5a5405d92354a8b26d432b77ff4e066f49a
     model: gpt-5.2
     priceInput: 0

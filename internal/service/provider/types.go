@@ -62,13 +62,13 @@ type FunctionCall struct {
 }
 
 type ResponseRequest struct {
-	Model           string    `json:"model"`
-	Input           any       `json:"input,omitempty"`
-	Messages        []Message `json:"messages,omitempty"`
-	Stream          bool      `json:"stream,omitempty"`
-	MaxOutputTokens int       `json:"max_output_tokens,omitempty"`
-	MaxTokens       int       `json:"max_tokens,omitempty"`
-	Tools           []any     `json:"tools,omitempty"`
+	Model           string         `json:"model"`
+	Input           any            `json:"input,omitempty"`
+	Messages        []Message      `json:"messages,omitempty"`
+	Stream          bool           `json:"stream,omitempty"`
+	MaxOutputTokens int            `json:"max_output_tokens,omitempty"`
+	MaxTokens       int            `json:"max_tokens,omitempty"`
+	Tools           []any          `json:"tools,omitempty"`
 	Extra           map[string]any `json:"-"` // Extra parameters like system, thinking, cache_control
 }
 
@@ -170,29 +170,29 @@ type ChatCompletionChunkToolCall struct {
 // Anthropic Messages API types
 
 type AnthropicMessagesRequest struct {
-	Model       string                   `json:"model"`
-	Messages    []AnthropicMessage      `json:"messages"`
-	System      any                     `json:"system,omitempty"` // string or []AnthropicSystemBlock
-	MaxTokens   int                     `json:"max_tokens,omitempty"`
-	Stream      bool                    `json:"stream,omitempty"`
-	Tools       []AnthropicTool         `json:"tools,omitempty"`
-	StopSequences []string              `json:"stop_sequences,omitempty"`
-	Temperature float64                 `json:"temperature,omitempty"`
-	TopK        int                     `json:"top_k,omitempty"`
-	TopP        float64                 `json:"top_p,omitempty"`
-	Thinking    *AnthropicThinking      `json:"thinking,omitempty"`
-	CacheControl *AnthropicCacheControl `json:"cache_control,omitempty"`
+	Model         string                 `json:"model"`
+	Messages      []AnthropicMessage     `json:"messages"`
+	System        any                    `json:"system,omitempty"` // string or []AnthropicSystemBlock
+	MaxTokens     int                    `json:"max_tokens,omitempty"`
+	Stream        bool                   `json:"stream,omitempty"`
+	Tools         []AnthropicTool        `json:"tools,omitempty"`
+	StopSequences []string               `json:"stop_sequences,omitempty"`
+	Temperature   float64                `json:"temperature,omitempty"`
+	TopK          int                    `json:"top_k,omitempty"`
+	TopP          float64                `json:"top_p,omitempty"`
+	Thinking      *AnthropicThinking     `json:"thinking,omitempty"`
+	CacheControl  *AnthropicCacheControl `json:"cache_control,omitempty"`
 }
 
 type AnthropicSystemBlock struct {
-	Type         string `json:"type"`
-	Text         string `json:"text,omitempty"`
+	Type         string                 `json:"type"`
+	Text         string                 `json:"text,omitempty"`
 	CacheControl *AnthropicCacheControl `json:"cache_control,omitempty"`
 }
 
 type AnthropicThinking struct {
-	Type        string `json:"type"`
-	BudgetTokens int   `json:"budget_tokens,omitempty"`
+	Type         string `json:"type"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
 type AnthropicCacheControl struct {
@@ -244,26 +244,26 @@ type AnthropicContentBlock struct {
 }
 
 type AnthropicSource struct {
-	Type   string `json:"type"`
+	Type      string `json:"type"`
 	MediaType string `json:"media_type,omitempty"`
-	Data   string `json:"data,omitempty"`
+	Data      string `json:"data,omitempty"`
 }
 
 type AnthropicTool struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description"`
-	InputSchema any         `json:"input_schema"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	InputSchema any    `json:"input_schema"`
 }
 
 type AnthropicMessagesResponse struct {
-	ID          string                    `json:"id"`
-	Type        string                    `json:"type"`
-	Role        string                    `json:"role"`
-	Content     []AnthropicContentBlock  `json:"content"`
-	Model       string                    `json:"model"`
-	StopReason  string                    `json:"stop_reason"`
-	StopSequence string                   `json:"stop_sequence,omitempty"`
-	Usage       AnthropicUsage           `json:"usage"`
+	ID           string                  `json:"id"`
+	Type         string                  `json:"type"`
+	Role         string                  `json:"role"`
+	Content      []AnthropicContentBlock `json:"content"`
+	Model        string                  `json:"model"`
+	StopReason   string                  `json:"stop_reason"`
+	StopSequence string                  `json:"stop_sequence,omitempty"`
+	Usage        AnthropicUsage          `json:"usage"`
 }
 
 type AnthropicUsage struct {
@@ -274,11 +274,11 @@ type AnthropicUsage struct {
 // Anthropic streaming types
 
 type AnthropicEvent struct {
-	Type    string                  `json:"type"`
-	Index   int                     `json:"index,omitempty"`
-	Delta   any                     `json:"delta,omitempty"`
-	Content []AnthropicContentBlock `json:"content,omitempty"`
-	Block   *AnthropicContentBlock `json:"block,omitempty"`
+	Type    string                     `json:"type"`
+	Index   int                        `json:"index,omitempty"`
+	Delta   any                        `json:"delta,omitempty"`
+	Content []AnthropicContentBlock    `json:"content,omitempty"`
+	Block   *AnthropicContentBlock     `json:"block,omitempty"`
 	Message *AnthropicMessagesResponse `json:"message,omitempty"`
 }
 
@@ -316,7 +316,7 @@ func (r *ResponseRequest) Normalize() {
 	}
 }
 
-
+// TODO: 这步没有意义，可以直接读 api 返回的 input tokens 数，后续优化
 func (r *ResponseRequest) EstimatePromptTokens() int {
 	total := 0
 	for _, message := range r.InputMessages() {
@@ -328,6 +328,7 @@ func (r *ResponseRequest) EstimatePromptTokens() int {
 	return total
 }
 
+// TODO: 这步没有意义，可以直接读 api 返回的 input tokens 数，后续优化
 func (r *Response) OutputText() string {
 	if r == nil {
 		return ""
@@ -531,8 +532,8 @@ func ConvertAnthropicRequest(req *AnthropicMessagesRequest) *ResponseRequest {
 		MaxTokens: req.MaxTokens,
 		Tools:     tools,
 		Extra: map[string]any{
-			"system": systemText,
-			"thinking": req.Thinking,
+			"system":        systemText,
+			"thinking":      req.Thinking,
 			"cache_control": req.CacheControl,
 		},
 	}
@@ -609,9 +610,9 @@ func convertAnthropicContent(blocks []AnthropicContentBlock) []any {
 				result = append(result, map[string]any{
 					"type": "image",
 					"source": map[string]any{
-						"type":      "base64",
+						"type":       "base64",
 						"media_type": block.Source.MediaType,
-						"data":      block.Source.Data,
+						"data":       block.Source.Data,
 					},
 				})
 			}
@@ -673,9 +674,9 @@ func convertResponseToAnthropicContent(outputs []ResponseOutput) []AnthropicCont
 			}
 			inputBytes, _ := json.Marshal(inputMap)
 			blocks = append(blocks, AnthropicContentBlock{
-				Type: "tool_use",
-				ID:   firstNonEmpty(output.ID, output.CallID),
-				Name: output.Name,
+				Type:  "tool_use",
+				ID:    firstNonEmpty(output.ID, output.CallID),
+				Name:  output.Name,
 				Input: inputBytes,
 			})
 		}
@@ -695,7 +696,7 @@ func ConvertEventToAnthropicEvent(responseID, model string, event ResponseEvent)
 				Type:    "message",
 				Model:   model,
 				Content: []AnthropicContentBlock{},
-				Usage: AnthropicUsage{},
+				Usage:   AnthropicUsage{},
 			},
 		}
 	case "response.output_text.delta", "chat.delta", "chat.completion.chunk":
@@ -721,7 +722,7 @@ func ConvertEventToAnthropicEvent(responseID, model string, event ResponseEvent)
 				_ = json.Unmarshal([]byte(event.Output.Args), &inputMap)
 			}
 			return &AnthropicEvent{
-				Type: "content_block_stop",
+				Type:  "content_block_stop",
 				Index: 0,
 			}
 		}
@@ -741,7 +742,7 @@ func ConvertEventToAnthropicEvent(responseID, model string, event ResponseEvent)
 			}
 		}
 		return &AnthropicEvent{
-			Type: "message_delta",
+			Type:  "message_delta",
 			Delta: stopReason,
 			Message: &AnthropicMessagesResponse{
 				StopReason: stopReason,

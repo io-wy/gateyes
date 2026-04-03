@@ -251,7 +251,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 	retryCfg := s.cfg.Retry
 	startedAt := time.Now()
 	firstResponseSent := false
-	hasSentContent := false // 标记是否已经发送了内容给客户端
+	hasSentPayload := false // 标记是否已经发送了可见 payload 给客户端
 
 	for _, p := range candidates {
 		providerName := p.Name()
@@ -301,20 +301,26 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 		stream, upstreamErrCh := p.StreamResponse(ctx, upstreamReq)
 		var finalResponse *provider.Response
 		var assistantText string
+		var streamUsage *provider.Usage
+		var streamedOutputs []provider.ResponseOutput
 
 		for {
 			select {
 			case event, ok := <-stream:
 				if !ok {
-					if finalResponse == nil {
-						finalResponse = provider.NewTextResponse(responseID, req.Model, assistantText, provider.Usage{
-							PromptTokens:     req.EstimatePromptTokens(),
-							CompletionTokens: provider.RoughTokenCount(assistantText),
-							TotalTokens:      req.EstimatePromptTokens() + provider.RoughTokenCount(assistantText),
-						})
+					fallbackExec := &execution{
+						provider:              p,
+						requestedModel:        req.Model,
+						upstreamRequest:       upstreamReq,
+						responseID:            responseID,
+						tenantID:              tenantID,
+						startedAt:             startedAt,
+						estimatedPromptTokens: req.EstimatePromptTokens(),
 					}
+					finalResponse = s.recoverStreamResponse(ctx, identity, fallbackExec, assistantText, streamedOutputs, finalResponse, hasSentPayload)
+					applyRecoveredStreamUsage(finalResponse, streamUsage)
 					latencyMs := time.Since(startedAt).Milliseconds()
-					s.finalizeStream(ctx, identity, responseID, providerName, req.Model, finalResponse, latencyMs, out)
+					s.finalizeStream(ctx, identity, responseID, providerName, req.Model, finalResponse, latencyMs, out, !hasSentPayload)
 					s.router.DecLoad(providerName)
 					s.providerMgr.Stats.DecrementLoad(providerName)
 					if s.circuitBreaker != nil {
@@ -325,11 +331,22 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 
 				switch event.Type {
 				case "response.output_text.delta", "chat.delta":
-					// 一旦发送了内容给客户端，就不能再进行 fallback
-					hasSentContent = true
-					assistantText += event.Delta
-					out <- event
+					if event.Usage != nil {
+						usageCopy := *event.Usage
+						streamUsage = &usageCopy
+					}
+					if len(event.ToolCalls) > 0 {
+						streamedOutputs = appendStreamedToolCalls(streamedOutputs, event.ToolCalls)
+					}
+					if isRenderableStreamEvent(event) {
+						// 一旦发送了可见内容给客户端，就不能再进行 fallback
+						hasSentPayload = true
+						assistantText += event.Delta
+						out <- event
+					}
 				case "response.output_item.done":
+					hasSentPayload = true
+					streamedOutputs = appendStreamOutput(streamedOutputs, event.Output)
 					out <- event
 				case "response.completed":
 					finalResponse = event.Response
@@ -347,7 +364,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 				}
 
 				// 只有在还没有发送内容给客户端时，才能进行重试
-				if s.isStreamRetryable(err) && !hasSentContent {
+				if s.isStreamRetryable(err) && !hasSentPayload {
 					for i := 0; i < retryCfg.MaxRetries; i++ {
 						delay := float64(retryCfg.InitialDelayMs) * math.Pow(retryCfg.BackoffFactor, float64(i))
 						delay = math.Min(delay, float64(retryCfg.MaxDelayMs))
@@ -366,7 +383,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 				}
 
 				// 只有在还没有发送内容给客户端时，才能 fallback 到下一个 provider
-				if !hasSentContent {
+				if !hasSentPayload {
 					// 当前 provider 失败，尝试下一个
 					goto nextProvider
 				}
@@ -387,15 +404,19 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 				select {
 				case event, ok := <-stream:
 					if !ok {
-						if finalResponse == nil {
-							finalResponse = provider.NewTextResponse(responseID, req.Model, assistantText, provider.Usage{
-								PromptTokens:     req.EstimatePromptTokens(),
-								CompletionTokens: provider.RoughTokenCount(assistantText),
-								TotalTokens:      req.EstimatePromptTokens() + provider.RoughTokenCount(assistantText),
-							})
+						fallbackExec := &execution{
+							provider:              p,
+							requestedModel:        req.Model,
+							upstreamRequest:       upstreamReq,
+							responseID:            responseID,
+							tenantID:              tenantID,
+							startedAt:             startedAt,
+							estimatedPromptTokens: req.EstimatePromptTokens(),
 						}
+						finalResponse = s.recoverStreamResponse(ctx, identity, fallbackExec, assistantText, streamedOutputs, finalResponse, hasSentPayload)
+						applyRecoveredStreamUsage(finalResponse, streamUsage)
 						latencyMs := time.Since(startedAt).Milliseconds()
-						s.finalizeStream(ctx, identity, responseID, providerName, req.Model, finalResponse, latencyMs, out)
+						s.finalizeStream(ctx, identity, responseID, providerName, req.Model, finalResponse, latencyMs, out, !hasSentPayload)
 						s.router.DecLoad(providerName)
 						s.providerMgr.Stats.DecrementLoad(providerName)
 						if s.circuitBreaker != nil {
@@ -406,11 +427,22 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 
 					switch event.Type {
 					case "response.output_text.delta", "chat.delta":
-						// 一旦发送了内容给客户端，就不能再进行 fallback
-						hasSentContent = true
-						assistantText += event.Delta
-						out <- event
+						if event.Usage != nil {
+							usageCopy := *event.Usage
+							streamUsage = &usageCopy
+						}
+						if len(event.ToolCalls) > 0 {
+							streamedOutputs = appendStreamedToolCalls(streamedOutputs, event.ToolCalls)
+						}
+						if isRenderableStreamEvent(event) {
+							// 一旦发送了可见内容给客户端，就不能再进行 fallback
+							hasSentPayload = true
+							assistantText += event.Delta
+							out <- event
+						}
 					case "response.output_item.done":
+						hasSentPayload = true
+						streamedOutputs = appendStreamOutput(streamedOutputs, event.Output)
 						out <- event
 					case "response.completed":
 						finalResponse = event.Response
@@ -428,7 +460,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 					}
 
 					// 只有在还没有发送内容给客户端时，才能继续 fallback
-					if !hasSentContent && s.isStreamRetryable(err) {
+					if !hasSentPayload && s.isStreamRetryable(err) {
 						goto nextProvider
 					}
 
@@ -458,7 +490,7 @@ func (s *Service) isStreamRetryable(err error) bool {
 	return isRetryable(err)
 }
 
-func (s *Service) finalizeStream(ctx context.Context, identity *repository.AuthIdentity, responseID, providerName, model string, resp *provider.Response, latencyMs int64, out chan<- provider.ResponseEvent) {
+func (s *Service) finalizeStream(ctx context.Context, identity *repository.AuthIdentity, responseID, providerName, model string, resp *provider.Response, latencyMs int64, out chan<- provider.ResponseEvent, emitOutputs bool) {
 	if resp == nil {
 		resp = provider.NewTextResponse(responseID, model, "", provider.Usage{})
 	}
@@ -481,7 +513,176 @@ func (s *Service) finalizeStream(ctx context.Context, identity *repository.AuthI
 
 	s.providerMgr.Stats.RecordRequest(providerName, true, resp.Usage.TotalTokens, latencyMs)
 
+	if emitOutputs {
+		s.emitStreamPayloadFromResponse(out, resp)
+	}
 	out <- provider.ResponseEvent{Type: "response.completed", Response: resp}
+}
+
+func (s *Service) recoverStreamResponse(ctx context.Context, identity *repository.AuthIdentity, exec *execution, assistantText string, streamedOutputs []provider.ResponseOutput, finalResponse *provider.Response, hasSentPayload bool) *provider.Response {
+	if !hasSentPayload && !hasRenderableStreamPayload(finalResponse) {
+		recovered, _, err := s.callWithRetry(context.WithoutCancel(ctx), identity, exec)
+		if err == nil && recovered != nil {
+			finalResponse = recovered
+		}
+	}
+	if !hasRenderableStreamPayload(finalResponse) && (assistantText != "" || len(streamedOutputs) > 0) {
+		finalResponse = buildAccumulatedStreamResponse(exec.responseID, exec.requestedModel, assistantText, streamedOutputs, exec.estimatedPromptTokens)
+		return finalResponse
+	}
+	if finalResponse == nil {
+		finalResponse = buildAccumulatedStreamResponse(exec.responseID, exec.requestedModel, assistantText, streamedOutputs, exec.estimatedPromptTokens)
+	}
+	return finalResponse
+}
+
+func (s *Service) emitStreamPayloadFromResponse(out chan<- provider.ResponseEvent, resp *provider.Response) {
+	if resp == nil {
+		return
+	}
+	for _, output := range resp.Output {
+		switch output.Type {
+		case "message":
+			for _, content := range output.Content {
+				if content.Text == "" {
+					continue
+				}
+				out <- provider.ResponseEvent{
+					Type:  "response.output_text.delta",
+					Delta: content.Text,
+				}
+			}
+		case "function_call":
+			item := output
+			out <- provider.ResponseEvent{
+				Type:   "response.output_item.done",
+				Output: &item,
+			}
+		}
+	}
+}
+
+func hasRenderableStreamPayload(resp *provider.Response) bool {
+	if resp == nil {
+		return false
+	}
+	if resp.OutputText() != "" || len(resp.OutputToolCalls()) > 0 {
+		return true
+	}
+	for _, output := range resp.Output {
+		if output.Type == "message" {
+			for _, content := range output.Content {
+				if content.Text != "" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func buildAccumulatedStreamResponse(responseID, model, assistantText string, streamedOutputs []provider.ResponseOutput, estimatedPromptTokens int) *provider.Response {
+	outputs := make([]provider.ResponseOutput, 0, len(streamedOutputs)+1)
+	if assistantText != "" {
+		outputs = append(outputs, provider.ResponseOutput{
+			Type:   "message",
+			Role:   "assistant",
+			Status: "completed",
+			Content: []provider.ResponseContent{{
+				Type: "output_text",
+				Text: assistantText,
+			}},
+		})
+	}
+	outputs = append(outputs, streamedOutputs...)
+	if len(outputs) == 0 {
+		return provider.NewTextResponse(responseID, model, "", provider.Usage{
+			PromptTokens:     estimatedPromptTokens,
+			CompletionTokens: 0,
+			TotalTokens:      estimatedPromptTokens,
+		})
+	}
+	return &provider.Response{
+		ID:      responseID,
+		Object:  "response",
+		Created: time.Now().Unix(),
+		Model:   model,
+		Status:  "completed",
+		Output:  outputs,
+		Usage: provider.Usage{
+			PromptTokens:     estimatedPromptTokens,
+			CompletionTokens: provider.RoughTokenCount(assistantText),
+			TotalTokens:      estimatedPromptTokens + provider.RoughTokenCount(assistantText),
+		},
+	}
+}
+
+func appendStreamedToolCalls(outputs []provider.ResponseOutput, calls []provider.ToolCall) []provider.ResponseOutput {
+	for _, call := range calls {
+		outputs = appendStreamOutput(outputs, &provider.ResponseOutput{
+			ID:     call.ID,
+			Type:   "function_call",
+			Status: "completed",
+			CallID: call.ID,
+			Name:   call.Function.Name,
+			Args:   call.Function.Arguments,
+		})
+	}
+	return outputs
+}
+
+func appendStreamOutput(outputs []provider.ResponseOutput, output *provider.ResponseOutput) []provider.ResponseOutput {
+	if output == nil {
+		return outputs
+	}
+	key := firstNonEmptyLocal(output.ID, output.CallID)
+	if output.Type == "function_call" && key != "" {
+		for _, existing := range outputs {
+			existingKey := firstNonEmptyLocal(existing.ID, existing.CallID)
+			if existing.Type == output.Type && existingKey == key {
+				return outputs
+			}
+		}
+	}
+	cloned := *output
+	return append(outputs, cloned)
+}
+
+func firstNonEmptyLocal(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func isRenderableStreamEvent(event provider.ResponseEvent) bool {
+	if event.Delta != "" {
+		return true
+	}
+	if len(event.ToolCalls) > 0 {
+		return true
+	}
+	if event.Output != nil && event.Output.Type == "function_call" {
+		return true
+	}
+	return false
+}
+
+func applyRecoveredStreamUsage(resp *provider.Response, usage *provider.Usage) {
+	if resp == nil || usage == nil {
+		return
+	}
+	if resp.Usage.PromptTokens == 0 {
+		resp.Usage.PromptTokens = usage.PromptTokens
+	}
+	if resp.Usage.CompletionTokens == 0 {
+		resp.Usage.CompletionTokens = usage.CompletionTokens
+	}
+	if resp.Usage.TotalTokens == 0 {
+		resp.Usage.TotalTokens = usage.TotalTokens
+	}
 }
 
 func (s *Service) handleStreamError(ctx context.Context, identity *repository.AuthIdentity, responseID, providerName, model string, latencyMs int64, streamErr error) {
@@ -569,23 +770,24 @@ func (s *Service) runStream(ctx context.Context, identity *repository.AuthIdenti
 	stream, upstreamErrCh := exec.provider.StreamResponse(ctx, exec.upstreamRequest)
 	var finalResponse *provider.Response
 	var assistantText string
+	hasSentPayload := false
+	var streamUsage *provider.Usage
+	var streamedOutputs []provider.ResponseOutput
 
 	for {
 		select {
 		case event, ok := <-stream:
 			if !ok {
-				if finalResponse == nil {
-					finalResponse = provider.NewTextResponse(exec.responseID, exec.requestedModel, assistantText, provider.Usage{
-						PromptTokens:     exec.estimatedPromptTokens,
-						CompletionTokens: provider.RoughTokenCount(assistantText),
-						TotalTokens:      exec.estimatedPromptTokens + provider.RoughTokenCount(assistantText),
-					})
-				}
+				finalResponse = s.recoverStreamResponse(ctx, identity, exec, assistantText, streamedOutputs, finalResponse, hasSentPayload)
+				applyRecoveredStreamUsage(finalResponse, streamUsage)
 				finalResponse = s.normalizeResponse(exec, finalResponse)
 				latencyMs := time.Since(exec.startedAt).Milliseconds()
 				if err := s.persistSuccess(ctx, identity, exec, finalResponse, latencyMs); err != nil {
 					errCh <- err
 					return
+				}
+				if !hasSentPayload {
+					s.emitStreamPayloadFromResponse(out, finalResponse)
 				}
 				out <- provider.ResponseEvent{Type: "response.completed", Response: finalResponse}
 				return
@@ -593,9 +795,21 @@ func (s *Service) runStream(ctx context.Context, identity *repository.AuthIdenti
 
 			switch event.Type {
 			case "response.output_text.delta", "chat.delta":
-				assistantText += event.Delta
-				out <- event
+				if event.Usage != nil {
+					usageCopy := *event.Usage
+					streamUsage = &usageCopy
+				}
+				if len(event.ToolCalls) > 0 {
+					streamedOutputs = appendStreamedToolCalls(streamedOutputs, event.ToolCalls)
+				}
+				if isRenderableStreamEvent(event) {
+					hasSentPayload = true
+					assistantText += event.Delta
+					out <- event
+				}
 			case "response.output_item.done":
+				hasSentPayload = true
+				streamedOutputs = appendStreamOutput(streamedOutputs, event.Output)
 				out <- event
 			case "response.completed":
 				finalResponse = event.Response

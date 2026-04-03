@@ -1,0 +1,799 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Gateyes Gateway API",
+    "description": "LLM API Gateway - OpenAI/Anthropic 兼容\n\n认证方式：\n```\nAuthorization: Bearer <api_key>:<api_secret>\n```\n\n环境变量参考 `configs/config.yaml`。",
+    "version": "1.0.0",
+    "contact": {
+      "name": "Gateyes"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8083",
+      "description": "本地"
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": ["系统"],
+        "summary": "健康检查",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": { "type": "string", "example": "ok" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "tags": ["系统"],
+        "summary": "就绪检查",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": { "type": "string", "example": "ready" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": ["系统"],
+        "summary": "Prometheus metrics",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Prometheus 格式 metrics"
+          }
+        }
+      }
+    },
+    "/v1/models": {
+      "get": {
+        "tags": ["模型"],
+        "summary": "列出可用模型",
+        "security": [{ "ApiKey": [] }],
+        "responses": {
+          "200": {
+            "description": "模型列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": { "type": "string" },
+                          "object": { "type": "string" },
+                          "provider": { "type": "string" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/responses/{id}": {
+      "get": {
+        "tags": ["响应"],
+        "summary": "获取已存储的响应",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "响应详情（Responses API 格式）"
+          },
+          "404": {
+            "description": "响应不存在"
+          }
+        }
+      }
+    },
+    "/v1/responses": {
+      "post": {
+        "tags": ["Responses API"],
+        "summary": "OpenAI Responses API（非流 / 流式）",
+        "description": "支持 stream: true 返回 SSE",
+        "security": [{ "ApiKey": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["model", "input"],
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "description": "公开模型名（由 provider 配置映射）",
+                    "example": "LongCat-Flash-Thinking"
+                  },
+                  "input": {
+                    "oneOf": [
+                      { "type": "string", "example": "hello" },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "role": { "type": "string", "enum": ["user", "assistant", "system"] },
+                            "content": { "type": "string" }
+                          }
+                        },
+                        "example": [{ "role": "user", "content": "hello" }]
+                      }
+                    ]
+                  },
+                  "stream": {
+                    "type": "boolean",
+                    "default": false,
+                    "example": false
+                  },
+                  "max_output_tokens": {
+                    "type": "integer",
+                    "example": 1024
+                  },
+                  "tools": {
+                    "type": "array",
+                    "description": "OpenAI 格式 function tools",
+                    "example": [
+                      {
+                        "type": "function",
+                        "function": {
+                          "name": "get_weather",
+                          "description": "获取天气",
+                          "parameters": {
+                            "type": "object",
+                            "properties": {
+                              "city": { "type": "string" }
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "非流响应（Responses API 格式）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": { "type": "string" },
+                    "object": { "type": "string", "example": "response" },
+                    "model": { "type": "string" },
+                    "status": { "type": "string" },
+                    "output": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": { "type": "string" },
+                          "type": { "type": "string" },
+                          "status": { "type": "string" },
+                          "content": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "type": { "type": "string" },
+                                "text": { "type": "string" }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "usage": {
+                      "type": "object",
+                      "properties": {
+                        "input_tokens": { "type": "integer" },
+                        "output_tokens": { "type": "integer" },
+                        "total_tokens": { "type": "integer" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/chat/completions": {
+      "post": {
+        "tags": ["Chat Completions API"],
+        "summary": "OpenAI Chat Completions API（非流 / 流式）",
+        "description": "支持 stream: true 返回 SSE",
+        "security": [{ "ApiKey": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["model", "messages"],
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "example": "LongCat-Flash-Thinking"
+                  },
+                  "messages": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["role", "content"],
+                      "properties": {
+                        "role": { "type": "string", "enum": ["system", "user", "assistant", "tool"] },
+                        "content": {
+                          "oneOf": [
+                            { "type": "string" },
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "type": { "type": "string" },
+                                  "text": { "type": "string" }
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        "tool_calls": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": { "type": "string" },
+                              "type": { "type": "string" },
+                              "function": {
+                                "type": "object",
+                                "properties": {
+                                  "name": { "type": "string" },
+                                  "arguments": { "type": "string" }
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "tool_call_id": { "type": "string" }
+                      }
+                    },
+                    "example": [{ "role": "user", "content": "hello" }]
+                  },
+                  "stream": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "max_tokens": {
+                    "type": "integer",
+                    "example": 1024
+                  },
+                  "tools": {
+                    "type": "array",
+                    "example": [
+                      {
+                        "type": "function",
+                        "function": {
+                          "name": "get_weather",
+                          "description": "获取天气",
+                          "parameters": { "type": "object" }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "非流响应（Chat Completions 格式）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": { "type": "string" },
+                    "object": { "type": "string", "example": "chat.completion" },
+                    "model": { "type": "string" },
+                    "choices": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "index": { "type": "integer" },
+                          "message": {
+                            "type": "object",
+                            "properties": {
+                              "role": { "type": "string" },
+                              "content": { "type": "string" }
+                            }
+                          },
+                          "finish_reason": { "type": "string" }
+                        }
+                      }
+                    },
+                    "usage": {
+                      "type": "object",
+                      "properties": {
+                        "prompt_tokens": { "type": "integer" },
+                        "completion_tokens": { "type": "integer" },
+                        "total_tokens": { "type": "integer" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/messages": {
+      "post": {
+        "tags": ["Anthropic Messages API"],
+        "summary": "Anthropic Messages API（非流 / 流式）",
+        "description": "支持 stream: true 返回 SSE",
+        "security": [{ "ApiKey": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["model", "messages"],
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "example": "MiniMax-M2.5"
+                  },
+                  "system": {
+                    "oneOf": [
+                      { "type": "string" },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "type": { "type": "string" },
+                            "text": { "type": "string" }
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "messages": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["role", "content"],
+                      "properties": {
+                        "role": { "type": "string", "enum": ["user", "assistant"] },
+                        "content": {
+                          "oneOf": [
+                            { "type": "string" },
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "type": { "type": "string" },
+                                  "text": { "type": "string" },
+                                  "source": {
+                                    "type": "object",
+                                    "properties": {
+                                      "type": { "type": "string" },
+                                      "media_type": { "type": "string" },
+                                      "data": { "type": "string" }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    },
+                    "example": [{ "role": "user", "content": "hello" }]
+                  },
+                  "stream": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "max_tokens": {
+                    "type": "integer",
+                    "example": 1024
+                  },
+                  "tools": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": { "type": "string" },
+                        "description": { "type": "string" },
+                        "input_schema": { "type": "object" }
+                      }
+                    },
+                    "example": [
+                      {
+                        "name": "get_weather",
+                        "description": "获取天气",
+                        "input_schema": {
+                          "type": "object",
+                          "properties": {
+                            "city": { "type": "string" }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "非流响应（Anthropic Messages 格式）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": { "type": "string" },
+                    "type": { "type": "string", "example": "message" },
+                    "role": { "type": "string" },
+                    "content": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "type": { "type": "string" },
+                          "text": { "type": "string" }
+                        }
+                      }
+                    },
+                    "stop_reason": { "type": "string" },
+                    "usage": {
+                      "type": "object",
+                      "properties": {
+                        "input_tokens": { "type": "integer" },
+                        "output_tokens": { "type": "integer" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/dashboard": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "仪表盘统计",
+        "security": [{ "ApiKey": [] }],
+        "responses": {
+          "200": {
+            "description": "统计数据"
+          }
+        }
+      }
+    },
+    "/admin/providers": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "列出所有 Provider",
+        "security": [{ "ApiKey": [] }],
+        "responses": {
+          "200": {
+            "description": "Provider 列表"
+          }
+        }
+      }
+    },
+    "/admin/providers/{name}": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "获取单个 Provider 详情",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "name", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Provider 详情" },
+          "404": { "description": "Provider 不存在" }
+        }
+      }
+    },
+    "/admin/providers/{name}/stats": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "获取 Provider 统计",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "name", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Provider 统计" }
+        }
+      }
+    },
+    "/admin/users": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "列出用户（tenant 作用域）",
+        "security": [{ "ApiKey": [] }],
+        "responses": {
+          "200": { "description": "用户列表" }
+        }
+      },
+      "post": {
+        "tags": ["管理"],
+        "summary": "创建用户",
+        "security": [{ "ApiKey": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "email": { "type": "string" },
+                  "quota": { "type": "integer" },
+                  "qps": { "type": "integer" },
+                  "role": { "type": "string" },
+                  "tenant_id": { "type": "string" }
+                }
+              },
+              "example": {
+                "name": "test-user",
+                "email": "test@example.com",
+                "quota": 100000,
+                "qps": 100,
+                "role": "tenant_user"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "用户已创建" },
+          "400": { "description": "参数错误" }
+        }
+      }
+    },
+    "/admin/users/{id}": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "获取用户详情",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "用户详情" },
+          "404": { "description": "用户不存在" }
+        }
+      },
+      "put": {
+        "tags": ["管理"],
+        "summary": "更新用户",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "email": { "type": "string" },
+                  "quota": { "type": "integer" },
+                  "qps": { "type": "integer" },
+                  "status": { "type": "string", "enum": ["active", "inactive"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "已更新" },
+          "404": { "description": "用户不存在" }
+        }
+      },
+      "delete": {
+        "tags": ["管理"],
+        "summary": "删除用户",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "已删除" },
+          "404": { "description": "用户不存在" }
+        }
+      }
+    },
+    "/admin/users/{id}/reset": {
+      "post": {
+        "tags": ["管理"],
+        "summary": "重置用户用量",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "已重置" },
+          "404": { "description": "用户不存在" }
+        }
+      }
+    },
+    "/admin/users/{id}/usage": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "获取用户用量记录",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "用量记录" },
+          "404": { "description": "用户不存在" }
+        }
+      }
+    },
+    "/admin/tenants": {
+      "get": {
+        "tags": ["租户"],
+        "summary": "列出租户（仅 super_admin）",
+        "security": [{ "ApiKey": [] }],
+        "responses": {
+          "200": { "description": "租户列表" }
+        }
+      },
+      "post": {
+        "tags": ["租户"],
+        "summary": "创建租户（仅 super_admin）",
+        "security": [{ "ApiKey": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "string" },
+                  "name": { "type": "string" },
+                  "slug": { "type": "string" },
+                  "status": { "type": "string", "enum": ["active", "inactive"] }
+                }
+              },
+              "example": { "id": "tenant-x", "name": "Tenant X", "slug": "tenant-x", "status": "active" }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "租户已创建" }
+        }
+      }
+    },
+    "/admin/tenants/{id}": {
+      "get": {
+        "tags": ["租户"],
+        "summary": "获取租户详情",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "租户详情" },
+          "404": { "description": "租户不存在" }
+        }
+      },
+      "put": {
+        "tags": ["租户"],
+        "summary": "更新租户",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "status": { "type": "string", "enum": ["active", "inactive"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "已更新" },
+          "404": { "description": "租户不存在" }
+        }
+      }
+    },
+    "/admin/tenants/{id}/providers": {
+      "post": {
+        "tags": ["租户"],
+        "summary": "替换租户 Provider 列表",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "providers": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "example": ["longcat-primary", "minimax"]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "已更新" },
+          "400": { "description": "Provider 不存在" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ApiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Authorization",
+        "description": "格式：Bearer <api_key>:<api_secret>"
+      }
+    }
+  }
+}

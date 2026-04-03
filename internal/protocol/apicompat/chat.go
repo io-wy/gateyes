@@ -54,6 +54,7 @@ type ChatStreamEncoder struct {
 	responseID string
 	model      string
 	sentRole   bool
+	finished   bool
 }
 
 func NewChatStreamEncoder(responseID, model string) *ChatStreamEncoder {
@@ -72,7 +73,13 @@ func (e *ChatStreamEncoder) Encode(event provider.ResponseEvent) []*ChatCompleti
 	case "response.created":
 		return nil
 	case "response.output_text.delta", "chat.delta", "chat.completion.chunk":
+		if e.finished {
+			return nil
+		}
 		chunks := e.ensureAssistantRole()
+		if event.Delta == "" && len(event.ToolCalls) == 0 && event.FinishReason == "" && event.Usage == nil {
+			return chunks
+		}
 		chunk := e.newChunk()
 		chunk.Choices[0].Delta.Content = event.Delta
 		if len(event.ToolCalls) > 0 {
@@ -85,8 +92,14 @@ func (e *ChatStreamEncoder) Encode(event provider.ResponseEvent) []*ChatCompleti
 			usage := *event.Usage
 			chunk.Usage = &usage
 		}
+		if chunk.Choices[0].FinishReason != "" {
+			e.finished = true
+		}
 		return append(chunks, chunk)
 	case "response.output_item.done":
+		if e.finished {
+			return nil
+		}
 		if event.Output == nil || event.Output.Type != "function_call" {
 			return nil
 		}
@@ -103,6 +116,10 @@ func (e *ChatStreamEncoder) Encode(event provider.ResponseEvent) []*ChatCompleti
 		}}
 		return append(chunks, chunk)
 	case "response.completed":
+		if e.finished {
+			return nil
+		}
+		e.finished = true
 		chunk := e.newChunk()
 		chunk.Choices[0].FinishReason = "stop"
 		if event.Response != nil {

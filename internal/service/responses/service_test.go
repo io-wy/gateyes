@@ -3,6 +3,7 @@ package responses
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -27,9 +28,9 @@ func TestCreateMarksUsageAndResponseOnUpstreamError(t *testing.T) {
 	defer upstream.Close()
 
 	env := newResponsesTestEnv(t, responsesTestEnvConfig{
-		upstreamURL:  upstream.URL,
-		endpoint:     "chat",
-		providers:    []string{"test-openai"},
+		upstreamURL: upstream.URL,
+		endpoint:    "chat",
+		providers:   []string{"test-openai"},
 	})
 
 	_, err := env.service.Create(context.Background(), env.identity, &provider.ResponseRequest{
@@ -73,9 +74,9 @@ func TestCreateStreamPersistsCompletedResponse(t *testing.T) {
 	defer upstream.Close()
 
 	env := newResponsesTestEnv(t, responsesTestEnvConfig{
-		upstreamURL:  upstream.URL,
-		endpoint:     "responses",
-		providers:    []string{"test-openai"},
+		upstreamURL: upstream.URL,
+		endpoint:    "responses",
+		providers:   []string{"test-openai"},
 	})
 
 	stream, err := env.service.CreateStream(context.Background(), env.identity, &provider.ResponseRequest{
@@ -139,6 +140,249 @@ LIMIT 1`).Scan(&responseBody); err != nil {
 	}
 }
 
+func TestCreateStreamEmitsPayloadFromFinalResponseWithoutDelta(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_up\",\"created_at\":1700000000,\"model\":\"provider-model\",\"status\":\"completed\",\"output\":[{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"final hello\"}]}],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		upstreamURL: upstream.URL,
+		endpoint:    "responses",
+		providers:   []string{"test-openai"},
+	})
+
+	stream, err := env.service.CreateStream(context.Background(), env.identity, &provider.ResponseRequest{
+		Model:  "public-model",
+		Input:  "hello",
+		Stream: true,
+	}, "session-emit-final")
+	if err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+
+	var (
+		eventTypes []string
+		deltas     []string
+		streamErr  error
+	)
+	eventsCh := stream.Events
+	errCh := stream.Errors
+	for eventsCh != nil || errCh != nil {
+		select {
+		case event, ok := <-eventsCh:
+			if !ok {
+				eventsCh = nil
+				continue
+			}
+			eventTypes = append(eventTypes, event.Type)
+			if event.Delta != "" {
+				deltas = append(deltas, event.Delta)
+			}
+		case err, ok := <-errCh:
+			if !ok {
+				errCh = nil
+				continue
+			}
+			if err != nil {
+				streamErr = err
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("timed out waiting for stream")
+		}
+	}
+
+	if streamErr != nil {
+		t.Fatalf("unexpected stream error: %v", streamErr)
+	}
+	if len(eventTypes) < 3 || eventTypes[0] != "response.created" || eventTypes[1] != "response.output_text.delta" || eventTypes[len(eventTypes)-1] != "response.completed" {
+		t.Fatalf("unexpected event sequence: %v", eventTypes)
+	}
+	if strings.Join(deltas, "") != "final hello" {
+		t.Fatalf("unexpected deltas: %v", deltas)
+	}
+}
+
+func TestCreateStreamFallsBackToNonStreamResponseWhenStreamHasNoRenderablePayload(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
+		}
+		if r.Header.Get("Accept") == "text/event-stream" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_up\",\"created_at\":1700000000,\"model\":\"provider-model\",\"status\":\"completed\",\"output\":null,\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n")
+			_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":         "resp_up",
+			"created_at": 1700000000,
+			"model":      "provider-model",
+			"status":     "completed",
+			"output": []map[string]any{{
+				"id":     "msg_1",
+				"type":   "message",
+				"role":   "assistant",
+				"status": "completed",
+				"content": []map[string]any{{
+					"type": "output_text",
+					"text": "fallback hello",
+				}},
+			}},
+			"usage": map[string]any{"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
+		})
+	}))
+	defer upstream.Close()
+
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		upstreamURL: upstream.URL,
+		endpoint:    "responses",
+		providers:   []string{"test-openai"},
+	})
+
+	stream, err := env.service.CreateStream(context.Background(), env.identity, &provider.ResponseRequest{
+		Model:  "public-model",
+		Input:  "hello",
+		Stream: true,
+	}, "session-fallback-final")
+	if err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+
+	var (
+		eventTypes []string
+		deltas     []string
+		streamErr  error
+	)
+	eventsCh := stream.Events
+	errCh := stream.Errors
+	for eventsCh != nil || errCh != nil {
+		select {
+		case event, ok := <-eventsCh:
+			if !ok {
+				eventsCh = nil
+				continue
+			}
+			eventTypes = append(eventTypes, event.Type)
+			if event.Delta != "" {
+				deltas = append(deltas, event.Delta)
+			}
+		case err, ok := <-errCh:
+			if !ok {
+				errCh = nil
+				continue
+			}
+			if err != nil {
+				streamErr = err
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("timed out waiting for stream")
+		}
+	}
+
+	if streamErr != nil {
+		t.Fatalf("unexpected stream error: %v", streamErr)
+	}
+	if len(eventTypes) < 3 || eventTypes[0] != "response.created" || eventTypes[1] != "response.output_text.delta" || eventTypes[len(eventTypes)-1] != "response.completed" {
+		t.Fatalf("unexpected event sequence: %v", eventTypes)
+	}
+	if strings.Join(deltas, "") != "fallback hello" {
+		t.Fatalf("unexpected deltas: %v", deltas)
+	}
+}
+
+func TestCreateStreamRecoversChatPayloadFromFinishOnlyStream(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
+		}
+		if r.Header.Get("Accept") == "text/event-stream" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = fmt.Fprint(w, "data: {\"id\":\"chat-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"provider-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n")
+			_, _ = fmt.Fprint(w, "data: {\"id\":\"chat-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"provider-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5,\"total_tokens\":8}}\n\n")
+			_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":      "chat-1",
+			"object":  "chat.completion",
+			"created": 1700000000,
+			"model":   "provider-model",
+			"choices": []map[string]any{{
+				"index": 0,
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": "recovered hello",
+				},
+				"finish_reason": "stop",
+			}},
+			"usage": map[string]any{"prompt_tokens": 3, "completion_tokens": 5, "total_tokens": 8},
+		})
+	}))
+	defer upstream.Close()
+
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		upstreamURL: upstream.URL,
+		endpoint:    "chat",
+		providers:   []string{"test-openai"},
+	})
+
+	stream, err := env.service.CreateStream(context.Background(), env.identity, &provider.ResponseRequest{
+		Model:  "public-model",
+		Input:  "hello",
+		Stream: true,
+	}, "session-chat-recover")
+	if err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+
+	var (
+		eventTypes []string
+		deltas     []string
+		streamErr  error
+	)
+	eventsCh := stream.Events
+	errCh := stream.Errors
+	for eventsCh != nil || errCh != nil {
+		select {
+		case event, ok := <-eventsCh:
+			if !ok {
+				eventsCh = nil
+				continue
+			}
+			eventTypes = append(eventTypes, event.Type)
+			if event.Delta != "" {
+				deltas = append(deltas, event.Delta)
+			}
+		case err, ok := <-errCh:
+			if !ok {
+				errCh = nil
+				continue
+			}
+			if err != nil {
+				streamErr = err
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("timed out waiting for stream")
+		}
+	}
+
+	if streamErr != nil {
+		t.Fatalf("unexpected stream error: %v", streamErr)
+	}
+	if len(eventTypes) < 3 || eventTypes[0] != "response.created" || eventTypes[1] != "response.output_text.delta" || eventTypes[len(eventTypes)-1] != "response.completed" {
+		t.Fatalf("unexpected event sequence: %v", eventTypes)
+	}
+	if strings.Join(deltas, "") != "recovered hello" {
+		t.Fatalf("unexpected deltas: %v", deltas)
+	}
+}
+
 type responsesTestEnv struct {
 	database *db.DB
 	store    *sqlstore.Store
@@ -147,9 +391,9 @@ type responsesTestEnv struct {
 }
 
 type responsesTestEnvConfig struct {
-	upstreamURL  string
-	endpoint     string
-	providers    []string
+	upstreamURL string
+	endpoint    string
+	providers   []string
 }
 
 func newResponsesTestEnv(t *testing.T, cfg responsesTestEnvConfig) *responsesTestEnv {
