@@ -22,9 +22,11 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	ListenAddr   string `yaml:"listenAddr"`
-	ReadTimeout  int    `yaml:"readTimeout"`
-	WriteTimeout int    `yaml:"writeTimeout"`
+	ListenAddr      string `yaml:"listenAddr"`
+	ReadTimeout     int    `yaml:"readTimeout"`
+	WriteTimeout    int    `yaml:"writeTimeout"`
+	IdleTimeout     int    `yaml:"idleTimeout"`
+	ShutdownTimeout int    `yaml:"shutdownTimeout"`
 }
 
 type DatabaseConfig struct {
@@ -164,9 +166,11 @@ func Load(path string) (*Config, error) {
 func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
-			ListenAddr:   ":8080",
-			ReadTimeout:  30,
-			WriteTimeout: 300,
+			ListenAddr:      ":8080",
+			ReadTimeout:     30,
+			WriteTimeout:    300,
+			IdleTimeout:     120,
+			ShutdownTimeout: 10,
 		},
 		Database: DatabaseConfig{
 			Driver:                 "sqlite",

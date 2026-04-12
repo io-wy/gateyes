@@ -23,10 +23,8 @@ type anthropicProvider struct {
 
 func NewAnthropicProvider(cfg config.ProviderConfig) Provider {
 	return &anthropicProvider{
-		cfg: cfg,
-		client: &http.Client{
-			Timeout: time.Duration(cfg.Timeout) * time.Second,
-		},
+		cfg:    cfg,
+		client: newProviderHTTPClient(cfg.Timeout),
 	}
 }
 
@@ -37,6 +35,13 @@ func (p *anthropicProvider) Model() string     { return p.cfg.Model }
 func (p *anthropicProvider) UnitCost() float64 { return p.cfg.PriceInput + p.cfg.PriceOutput }
 func (p *anthropicProvider) Cost(prompt, completion int) float64 {
 	return float64(prompt)*p.cfg.PriceInput + float64(completion)*p.cfg.PriceOutput
+}
+
+func (p *anthropicProvider) CloseIdleConnections() {
+	if p == nil || p.client == nil {
+		return
+	}
+	p.client.CloseIdleConnections()
 }
 
 func (p *anthropicProvider) CreateResponse(ctx context.Context, req *ResponseRequest) (*Response, error) {
@@ -239,11 +244,12 @@ func parseAnthropicStreamEvent(eventName, data string, state *anthropicStreamSta
 		case "text":
 			if payload.ContentBlock.Text != "" {
 				state.appendText(payload.ContentBlock.Text)
-				return &ResponseEvent{Type: EventContentDelta, Delta: payload.ContentBlock.Text}
+				return &ResponseEvent{Type: EventContentDelta, Delta: payload.ContentBlock.Text, TextDelta: payload.ContentBlock.Text}
 			}
 		case "thinking":
 			if payload.ContentBlock.Thinking != "" {
 				state.appendThinking(payload.ContentBlock.Thinking, payload.ContentBlock.Signature)
+				return &ResponseEvent{Type: EventThinkingDelta, ThinkingDelta: payload.ContentBlock.Thinking}
 			}
 		case "tool_use":
 			args := strings.TrimSpace(string(payload.ContentBlock.Input))
@@ -275,15 +281,22 @@ func parseAnthropicStreamEvent(eventName, data string, state *anthropicStreamSta
 			if deltaType, _ := deltaMap["type"].(string); deltaType == "text_delta" {
 				if text, _ := deltaMap["text"].(string); text != "" {
 					state.appendText(text)
-					return &ResponseEvent{Type: EventContentDelta, Delta: text}
+					return &ResponseEvent{Type: EventContentDelta, Delta: text, TextDelta: text}
 				}
 			}
 			if text, _ := deltaMap["text"].(string); text != "" {
 				state.appendText(text)
-				return &ResponseEvent{Type: EventContentDelta, Delta: text}
+				return &ResponseEvent{Type: EventContentDelta, Delta: text, TextDelta: text}
 			}
 			if thinking, _ := deltaMap["thinking"].(string); thinking != "" {
 				state.appendThinking(thinking, "")
+				return &ResponseEvent{Type: EventThinkingDelta, ThinkingDelta: thinking}
+			}
+			if deltaType, _ := deltaMap["type"].(string); deltaType == "thinking_delta" {
+				if thinking, _ := deltaMap["thinking"].(string); thinking != "" {
+					state.appendThinking(thinking, "")
+					return &ResponseEvent{Type: EventThinkingDelta, ThinkingDelta: thinking}
+				}
 			}
 			if partial, _ := deltaMap["partial_json"].(string); partial != "" && state.activeTool != nil {
 				state.activeTool.Args += partial
@@ -316,13 +329,13 @@ func parseAnthropicStreamEvent(eventName, data string, state *anthropicStreamSta
 		if deltaMap, ok := payload.Delta.(map[string]any); ok {
 			if text, _ := deltaMap["text"].(string); text != "" {
 				state.appendText(text)
-				return &ResponseEvent{Type: EventContentDelta, Delta: text}
+				return &ResponseEvent{Type: EventContentDelta, Delta: text, TextDelta: text}
 			}
 		}
 		// 如果有 content 字段（某些 provider 变体）
 		if payload.Content != "" {
 			state.appendText(payload.Content)
-			return &ResponseEvent{Type: EventContentDelta, Delta: payload.Content}
+			return &ResponseEvent{Type: EventContentDelta, Delta: payload.Content, TextDelta: payload.Content}
 		}
 		if payload.Usage.OutputTokens > 0 {
 			state.completionTokens = payload.Usage.OutputTokens
@@ -343,7 +356,7 @@ func parseAnthropicStreamEvent(eventName, data string, state *anthropicStreamSta
 		}
 		if json.Unmarshal([]byte(data), &payload) == nil && payload.Text != "" {
 			state.appendText(payload.Text)
-			return &ResponseEvent{Type: EventContentDelta, Delta: payload.Text}
+			return &ResponseEvent{Type: EventContentDelta, Delta: payload.Text, TextDelta: payload.Text}
 		}
 		return nil
 	}
@@ -461,6 +474,20 @@ func (p *anthropicProvider) buildParams(req *ResponseRequest) (map[string]any, e
 
 	if system != "" {
 		params["system"] = system
+	}
+	if req.Options != nil {
+		for key, value := range req.Options.Raw {
+			params[key] = value
+		}
+		if req.Options.System != "" {
+			params["system"] = req.Options.System
+		}
+		if req.Options.Thinking != nil {
+			params["thinking"] = req.Options.Thinking
+		}
+		if req.Options.CacheControl != nil {
+			params["cache_control"] = req.Options.CacheControl
+		}
 	}
 
 	// 添加工具

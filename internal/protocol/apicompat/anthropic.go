@@ -32,10 +32,10 @@ func ConvertAnthropicRequest(req *AnthropicMessagesRequest) *provider.ResponseRe
 		Stream:    req.Stream,
 		MaxTokens: req.MaxTokens,
 		Tools:     tools,
-		Extra: map[string]any{
-			"system":        convertAnthropicSystem(req.System),
-			"thinking":      req.Thinking,
-			"cache_control": req.CacheControl,
+		Options: &provider.RequestOptions{
+			System:       convertAnthropicSystem(req.System),
+			Thinking:     convertAnthropicThinking(req.Thinking),
+			CacheControl: convertAnthropicCacheControl(req.CacheControl),
 		},
 	}
 }
@@ -69,6 +69,7 @@ type AnthropicStreamEncoder struct {
 	model       string
 	started     bool
 	activeIndex int
+	activeType  string
 	nextIndex   int
 }
 
@@ -104,20 +105,35 @@ func (e *AnthropicStreamEncoder) Encode(event provider.ResponseEvent) []*Anthrop
 		}}
 	case provider.EventContentDelta:
 		result := e.ensureMessageStart(nil)
-		result = append(result, e.ensureTextBlockStart()...)
-		if event.Delta != "" {
+		if event.Text() != "" {
+			result = append(result, e.ensureBlockStart("text")...)
 			result = append(result, &AnthropicEvent{
 				Type:  "content_block_delta",
 				Index: e.activeIndex,
 				Delta: map[string]any{
 					"type": "text_delta",
-					"text": event.Delta,
+					"text": event.Text(),
 				},
 			})
 		}
 		if len(event.ToolCalls) > 0 {
 			result = append(result, e.emitToolCalls(event.ToolCalls)...)
 		}
+		return result
+	case provider.EventThinkingDelta:
+		if event.ThinkingDelta == "" {
+			return nil
+		}
+		result := e.ensureMessageStart(nil)
+		result = append(result, e.ensureBlockStart("thinking")...)
+		result = append(result, &AnthropicEvent{
+			Type:  "content_block_delta",
+			Index: e.activeIndex,
+			Delta: map[string]any{
+				"type":     "thinking_delta",
+				"thinking": event.ThinkingDelta,
+			},
+		})
 		return result
 	case provider.EventToolCallDone:
 		if event.Output == nil {
@@ -187,18 +203,20 @@ func (e *AnthropicStreamEncoder) ensureMessageStart(resp *provider.Response) []*
 	}}
 }
 
-func (e *AnthropicStreamEncoder) ensureTextBlockStart() []*AnthropicEvent {
-	if e.activeIndex >= 0 {
+func (e *AnthropicStreamEncoder) ensureBlockStart(blockType string) []*AnthropicEvent {
+	if e.activeIndex >= 0 && e.activeType == blockType {
 		return nil
 	}
+	result := e.closeActiveBlock()
 	index := e.nextIndex
 	e.activeIndex = index
+	e.activeType = blockType
 	e.nextIndex++
-	return []*AnthropicEvent{{
+	return append(result, &AnthropicEvent{
 		Type:  "content_block_start",
 		Index: index,
-		Block: &AnthropicContentBlock{Type: "text", Text: ""},
-	}}
+		Block: &AnthropicContentBlock{Type: blockType, Text: ""},
+	})
 }
 
 func (e *AnthropicStreamEncoder) closeActiveBlock() []*AnthropicEvent {
@@ -207,6 +225,7 @@ func (e *AnthropicStreamEncoder) closeActiveBlock() []*AnthropicEvent {
 	}
 	index := e.activeIndex
 	e.activeIndex = -1
+	e.activeType = ""
 	return []*AnthropicEvent{{Type: "content_block_stop", Index: index}}
 }
 
@@ -250,6 +269,26 @@ func convertAnthropicSystem(system any) string {
 		return strings.Join(parts, "\n\n")
 	default:
 		return ""
+	}
+}
+
+func convertAnthropicThinking(value *AnthropicThinking) *provider.AnthropicThinking {
+	if value == nil {
+		return nil
+	}
+	return &provider.AnthropicThinking{
+		Type:         value.Type,
+		BudgetTokens: value.BudgetTokens,
+	}
+}
+
+func convertAnthropicCacheControl(value *AnthropicCacheControl) *provider.AnthropicCacheControl {
+	if value == nil {
+		return nil
+	}
+	return &provider.AnthropicCacheControl{
+		Type: value.Type,
+		TTL:  value.TTL,
 	}
 }
 

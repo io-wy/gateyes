@@ -4,11 +4,32 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/gateyes/gateway/internal/config"
 )
+
+type closableProviderStub struct {
+	closed bool
+}
+
+func (p *closableProviderStub) Name() string                                    { return "closable" }
+func (p *closableProviderStub) Type() string                                    { return "test" }
+func (p *closableProviderStub) BaseURL() string                                 { return "" }
+func (p *closableProviderStub) Model() string                                   { return "" }
+func (p *closableProviderStub) UnitCost() float64                               { return 0 }
+func (p *closableProviderStub) Cost(promptTokens, completionTokens int) float64 { return 0 }
+func (p *closableProviderStub) CreateResponse(ctx context.Context, req *ResponseRequest) (*Response, error) {
+	return nil, nil
+}
+func (p *closableProviderStub) StreamResponse(ctx context.Context, req *ResponseRequest) (<-chan ResponseEvent, <-chan error) {
+	return nil, nil
+}
+func (p *closableProviderStub) CloseIdleConnections() {
+	p.closed = true
+}
 
 func TestManagerStatsAndFactoryHelpers(t *testing.T) {
 	cfgs := []config.ProviderConfig{
@@ -56,6 +77,8 @@ func TestManagerStatsAndFactoryHelpers(t *testing.T) {
 		t.Fatal("newProvider(unsupported) error = nil, want non-nil")
 	}
 
+	manager.CloseIdleConnections()
+
 	stats := NewStats()
 	p := NewOpenAIProvider(cfgs[0])
 	stats.Register(p)
@@ -77,6 +100,55 @@ func TestManagerStatsAndFactoryHelpers(t *testing.T) {
 	total, success, failed, tokens, avgLatency := stats.GlobalStats()
 	if total != 2 || success != 1 || failed != 1 || tokens != 15 || avgLatency != 30 {
 		t.Fatalf("Stats.GlobalStats() = (%d,%d,%d,%d,%v), want (2,1,1,15,30)", total, success, failed, tokens, avgLatency)
+	}
+}
+
+func TestProviderHTTPClientsUseExplicitConnectionPools(t *testing.T) {
+	openaiProvider := NewOpenAIProvider(config.ProviderConfig{
+		Name:    "openai-a",
+		Type:    "openai",
+		BaseURL: "https://openai.example",
+		APIKey:  "test-key",
+		Model:   "gpt-test",
+		Timeout: 5,
+	}).(*openAIProvider)
+	openaiTransport, ok := openaiProvider.client.Transport.(*http.Transport)
+	if !ok || openaiTransport == nil {
+		t.Fatalf("openai client transport = %T, want *http.Transport", openaiProvider.client.Transport)
+	}
+	if openaiTransport.MaxIdleConns <= 0 || openaiTransport.MaxIdleConnsPerHost <= 0 || openaiTransport.IdleConnTimeout <= 0 {
+		t.Fatalf("openai transport pool = %+v, want explicit positive pool settings", openaiTransport)
+	}
+
+	anthropicProvider := NewAnthropicProvider(config.ProviderConfig{
+		Name:    "anthropic-a",
+		Type:    "anthropic",
+		BaseURL: "https://anthropic.example",
+		APIKey:  "anthropic-key",
+		Model:   "claude-test",
+		Timeout: 5,
+	}).(*anthropicProvider)
+	anthropicTransport, ok := anthropicProvider.client.Transport.(*http.Transport)
+	if !ok || anthropicTransport == nil {
+		t.Fatalf("anthropic client transport = %T, want *http.Transport", anthropicProvider.client.Transport)
+	}
+	if anthropicTransport.MaxIdleConns <= 0 || anthropicTransport.MaxIdleConnsPerHost <= 0 || anthropicTransport.IdleConnTimeout <= 0 {
+		t.Fatalf("anthropic transport pool = %+v, want explicit positive pool settings", anthropicTransport)
+	}
+}
+
+func TestManagerCloseIdleConnectionsClosesClosableProviders(t *testing.T) {
+	provider := &closableProviderStub{}
+	manager := &Manager{
+		providers: map[string]Provider{
+			"closable": provider,
+		},
+		Stats: NewStats(),
+	}
+
+	manager.CloseIdleConnections()
+	if !provider.closed {
+		t.Fatal("CloseIdleConnections() did not close idle connections on closable provider")
 	}
 }
 

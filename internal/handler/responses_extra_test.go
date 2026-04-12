@@ -40,3 +40,13 @@ func TestNormalizeResponsesStreamEventDropsFinishOnlyChatDelta(t *testing.T) {
 		t.Fatalf("finish-only chat.delta normalized to %d events, want 0", len(events))
 	}
 }
+
+func TestNormalizeResponsesStreamEventSuppressesThinkingDelta(t *testing.T) {
+	events := normalizeResponsesStreamEvent(provider.ResponseEvent{
+		Type:          provider.EventThinkingDelta,
+		ThinkingDelta: "hidden chain",
+	})
+	if len(events) != 0 {
+		t.Fatalf("thinking_delta normalized to %d events, want 0", len(events))
+	}
+}

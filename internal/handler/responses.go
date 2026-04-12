@@ -139,9 +139,11 @@ func normalizeResponsesStreamEvent(event provider.ResponseEvent) []provider.Resp
 	switch event.Type {
 	case provider.EventContentDelta:
 		var normalized []provider.ResponseEvent
-		if event.Delta != "" {
+		if event.Text() != "" {
 			textEvent := event
 			textEvent.Type = "response.output_text.delta"
+			textEvent.Delta = event.Text()
+			textEvent.TextDelta = ""
 			textEvent.ToolCalls = nil
 			normalized = append(normalized, textEvent)
 		}
@@ -172,6 +174,8 @@ func normalizeResponsesStreamEvent(event provider.ResponseEvent) []provider.Resp
 		done := event
 		done.Type = "response.output_item.done"
 		return []provider.ResponseEvent{done}
+	case provider.EventThinkingDelta:
+		return nil
 	default:
 		return []provider.ResponseEvent{event}
 	}

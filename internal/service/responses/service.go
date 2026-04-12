@@ -211,7 +211,7 @@ func buildUpstreamRequest(req *provider.ResponseRequest) *provider.ResponseReque
 		MaxTokens:       req.MaxTokens,
 		Tools:           req.Tools,
 		OutputFormat:    cloneOutputFormat(req.OutputFormat),
-		Extra:           cloneStringAnyMap(req.Extra),
+		Options:         provider.CloneRequestOptions(req.Options),
 	}
 }
 
@@ -339,6 +339,8 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 			MaxOutputTokens: req.MaxOutputTokens,
 			MaxTokens:       req.MaxTokens,
 			Tools:           req.Tools,
+			OutputFormat:    cloneOutputFormat(req.OutputFormat),
+			Options:         provider.CloneRequestOptions(req.Options),
 		}
 
 		stream, upstreamErrCh := p.StreamResponse(ctx, upstreamReq)
@@ -395,7 +397,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 					if isRenderableStreamEvent(event) {
 						// 一旦发送了可见内容给客户端，就不能再进行 fallback
 						hasSentPayload = true
-						assistantText += event.Delta
+						assistantText += event.Text()
 						out <- event
 					}
 				case provider.EventToolCallDone:
@@ -502,7 +504,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 						if isRenderableStreamEvent(event) {
 							// 一旦发送了可见内容给客户端，就不能再进行 fallback
 							hasSentPayload = true
-							assistantText += event.Delta
+							assistantText += event.Text()
 							out <- event
 						}
 					case provider.EventToolCallDone:
@@ -723,7 +725,7 @@ func firstNonEmptyLocal(values ...string) string {
 }
 
 func isRenderableStreamEvent(event provider.ResponseEvent) bool {
-	if event.Delta != "" {
+	if event.Text() != "" {
 		return true
 	}
 	if len(event.ToolCalls) > 0 {
@@ -796,6 +798,8 @@ func (s *Service) prepareWithProvider(ctx context.Context, identity *repository.
 		MaxOutputTokens: req.MaxOutputTokens,
 		MaxTokens:       req.MaxTokens,
 		Tools:           req.Tools,
+		OutputFormat:    cloneOutputFormat(req.OutputFormat),
+		Options:         provider.CloneRequestOptions(req.Options),
 	}
 
 	return &execution{
@@ -869,7 +873,7 @@ func (s *Service) runStream(ctx context.Context, identity *repository.AuthIdenti
 				}
 				if isRenderableStreamEvent(event) {
 					hasSentPayload = true
-					assistantText += event.Delta
+					assistantText += event.Text()
 					out <- event
 				}
 			case provider.EventToolCallDone:

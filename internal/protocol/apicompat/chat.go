@@ -110,12 +110,15 @@ func (e *ChatStreamEncoder) Encode(event provider.ResponseEvent) []*ChatCompleti
 		if e.finished {
 			return nil
 		}
-		chunks := e.ensureAssistantRole()
-		if event.Delta == "" && len(event.ToolCalls) == 0 && event.FinishReason == "" && event.Usage == nil {
-			return chunks
+		if event.Text() == "" && len(event.ToolCalls) == 0 && event.FinishReason == "" && event.Usage == nil {
+			return nil
 		}
 		chunk := e.newChunk()
-		chunk.Choices[0].Delta.Content = event.Delta
+		if !e.sentRole {
+			e.sentRole = true
+			chunk.Choices[0].Delta.Role = "assistant"
+		}
+		chunk.Choices[0].Delta.Content = event.Text()
 		if len(event.ToolCalls) > 0 {
 			chunk.Choices[0].Delta.ToolCalls = e.convertToolCalls(event.ToolCalls)
 		}
@@ -129,7 +132,7 @@ func (e *ChatStreamEncoder) Encode(event provider.ResponseEvent) []*ChatCompleti
 		if chunk.Choices[0].FinishReason != "" {
 			e.finished = true
 		}
-		return append(chunks, chunk)
+		return []*ChatCompletionChunk{chunk}
 	case provider.EventToolCallDone:
 		if e.finished {
 			return nil
@@ -137,8 +140,11 @@ func (e *ChatStreamEncoder) Encode(event provider.ResponseEvent) []*ChatCompleti
 		if event.Output == nil || event.Output.Type != "function_call" {
 			return nil
 		}
-		chunks := e.ensureAssistantRole()
 		chunk := e.newChunk()
+		if !e.sentRole {
+			e.sentRole = true
+			chunk.Choices[0].Delta.Role = "assistant"
+		}
 		chunk.Choices[0].Delta.ToolCalls = []ChatCompletionChunkToolCall{{
 			Index: 0,
 			ID:    firstNonEmpty(event.Output.ID, event.Output.CallID),
@@ -148,7 +154,7 @@ func (e *ChatStreamEncoder) Encode(event provider.ResponseEvent) []*ChatCompleti
 				Arguments: event.Output.Args,
 			},
 		}}
-		return append(chunks, chunk)
+		return []*ChatCompletionChunk{chunk}
 	case provider.EventResponseCompleted:
 		if e.finished {
 			return nil

@@ -1,6 +1,10 @@
 package provider
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/gateyes/gateway/internal/config"
+)
 
 func TestParseOpenAIResponseEventHandlesResponsesFailure(t *testing.T) {
 	event, err := parseOpenAIResponseEvent(`{"type":"response.failed","response":{"error":{"message":"upstream exploded"}}}`, "public-model")
@@ -30,5 +34,72 @@ func TestConvertOpenAIResponseAcceptsNullOutput(t *testing.T) {
 	}
 	if len(resp.Output) != 0 {
 		t.Fatalf("convertOpenAIResponse(nil output) output = %+v, want empty slice", resp.Output)
+	}
+}
+
+func TestAnthropicBuildParamsUsesTypedOptionsAndRawFallback(t *testing.T) {
+	p := NewAnthropicProvider(config.ProviderConfig{
+		Name:      "anthropic-a",
+		Type:      "anthropic",
+		BaseURL:   "https://anthropic.example",
+		APIKey:    "anthropic-key",
+		Model:     "claude-test",
+		Timeout:   5,
+		MaxTokens: 256,
+	}).(*anthropicProvider)
+
+	params, err := p.buildParams(&ResponseRequest{
+		Model: "claude-public",
+		Messages: []Message{{
+			Role:    "user",
+			Content: TextBlocks("hello"),
+		}},
+		Options: &RequestOptions{
+			System: "be concise",
+			Thinking: &AnthropicThinking{
+				Type:         "enabled",
+				BudgetTokens: 32,
+			},
+			CacheControl: &AnthropicCacheControl{
+				Type: "ephemeral",
+				TTL:  "10m",
+			},
+			Raw: map[string]any{
+				"metadata": map[string]any{"suite": "regression"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildParams() error: %v", err)
+	}
+	if params["system"] != "be concise" {
+		t.Fatalf("buildParams() system = %#v, want typed system option", params["system"])
+	}
+	thinking, ok := params["thinking"].(*AnthropicThinking)
+	if !ok || thinking.BudgetTokens != 32 {
+		t.Fatalf("buildParams() thinking = %#v, want typed thinking config", params["thinking"])
+	}
+	cacheControl, ok := params["cache_control"].(*AnthropicCacheControl)
+	if !ok || cacheControl.TTL != "10m" {
+		t.Fatalf("buildParams() cache_control = %#v, want typed cache control", params["cache_control"])
+	}
+	metadata, ok := params["metadata"].(map[string]any)
+	if !ok || metadata["suite"] != "regression" {
+		t.Fatalf("buildParams() raw fallback = %#v, want metadata passthrough", params["metadata"])
+	}
+}
+
+func TestParseAnthropicStreamEventEmitsThinkingDelta(t *testing.T) {
+	state := &anthropicStreamState{
+		responseID: "resp-1",
+		model:      "claude-test",
+	}
+
+	event := parseAnthropicStreamEvent("content_block_delta", `{"delta":{"type":"thinking_delta","thinking":"step by step"}}`, state)
+	if event == nil {
+		t.Fatal("parseAnthropicStreamEvent(thinking_delta) = nil, want thinking event")
+	}
+	if event.Type != EventThinkingDelta || event.ThinkingDelta != "step by step" {
+		t.Fatalf("parseAnthropicStreamEvent(thinking_delta) = %+v, want thinking_delta payload", event)
 	}
 }

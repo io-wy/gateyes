@@ -77,12 +77,7 @@ func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mw *mi
 }
 
 func (s *Server) Start() error {
-	s.srv = &http.Server{
-		Addr:         s.cfg.ListenAddr,
-		Handler:      s.engine,
-		ReadTimeout:  time.Duration(s.cfg.ReadTimeout) * time.Second,
-		WriteTimeout: time.Duration(s.cfg.WriteTimeout) * time.Second,
-	}
+	s.srv = s.buildHTTPServer()
 	return s.srv.ListenAndServe()
 }
 
@@ -91,4 +86,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		return fmt.Errorf("server not started")
 	}
 	return s.srv.Shutdown(ctx)
+}
+
+func (s *Server) buildHTTPServer() *http.Server {
+	return &http.Server{
+		Addr:         s.cfg.ListenAddr,
+		Handler:      s.engine,
+		ReadTimeout:  time.Duration(s.cfg.ReadTimeout) * time.Second,
+		WriteTimeout: time.Duration(s.cfg.WriteTimeout) * time.Second,
+		IdleTimeout:  time.Duration(s.cfg.IdleTimeout) * time.Second,
+	}
 }

@@ -129,12 +129,17 @@ func main() {
 	}()
 
 	<-ctx.Done()
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownTimeout := time.Duration(cfg.Server.ShutdownTimeout) * time.Second
+	if shutdownTimeout <= 0 {
+		shutdownTimeout = 10 * time.Second
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("shutdown error", "error", err)
 	}
+	providerMgr.CloseIdleConnections()
 }
 
 func seedConfiguredAPIKeys(ctx context.Context, store repository.IdentityStore, tenantID string, configured []config.APIKeyConfig) error {

@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/gateyes/gateway/internal/config"
 )
@@ -21,10 +20,8 @@ type openAIProvider struct {
 
 func NewOpenAIProvider(cfg config.ProviderConfig) Provider {
 	return &openAIProvider{
-		cfg: cfg,
-		client: &http.Client{
-			Timeout: time.Duration(cfg.Timeout) * time.Second,
-		},
+		cfg:    cfg,
+		client: newProviderHTTPClient(cfg.Timeout),
 	}
 }
 
@@ -35,6 +32,13 @@ func (p *openAIProvider) Model() string     { return p.cfg.Model }
 func (p *openAIProvider) UnitCost() float64 { return p.cfg.PriceInput + p.cfg.PriceOutput }
 func (p *openAIProvider) Cost(prompt, completion int) float64 {
 	return float64(prompt)*p.cfg.PriceInput + float64(completion)*p.cfg.PriceOutput
+}
+
+func (p *openAIProvider) CloseIdleConnections() {
+	if p == nil || p.client == nil {
+		return
+	}
+	p.client.CloseIdleConnections()
 }
 
 func (p *openAIProvider) CreateResponse(ctx context.Context, req *ResponseRequest) (*Response, error) {
@@ -267,8 +271,9 @@ func parseOpenAIStreamEvent(data string, requestedModel string) (*ResponseEvent,
 			return nil, err
 		}
 		return &ResponseEvent{
-			Type:  EventContentDelta,
-			Delta: payload.Delta,
+			Type:      EventContentDelta,
+			Delta:     payload.Delta,
+			TextDelta: payload.Delta,
 		}, nil
 	case "response.output_item.done":
 		var payload struct {
@@ -758,8 +763,9 @@ func parseChatCompletionEvent(data string, requestedModel string) (*ResponseEven
 	}
 
 	event := ResponseEvent{
-		Type:  EventContentDelta,
-		Delta: text,
+		Type:      EventContentDelta,
+		Delta:     text,
+		TextDelta: text,
 	}
 
 	if len(toolCalls) > 0 {

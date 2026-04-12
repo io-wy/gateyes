@@ -123,15 +123,15 @@ type FunctionCall struct {
 }
 
 type ResponseRequest struct {
-	Model           string         `json:"model"`
-	Input           any            `json:"input,omitempty"`
-	Messages        []Message      `json:"messages,omitempty"`
-	Stream          bool           `json:"stream,omitempty"`
-	MaxOutputTokens int            `json:"max_output_tokens,omitempty"`
-	MaxTokens       int            `json:"max_tokens,omitempty"`
-	Tools           []any          `json:"tools,omitempty"`
-	OutputFormat    *OutputFormat  `json:"-"`
-	Extra           map[string]any `json:"-"` // Extra parameters like system, thinking, cache_control
+	Model           string          `json:"model"`
+	Input           any             `json:"input,omitempty"`
+	Messages        []Message       `json:"messages,omitempty"`
+	Stream          bool            `json:"stream,omitempty"`
+	MaxOutputTokens int             `json:"max_output_tokens,omitempty"`
+	MaxTokens       int             `json:"max_tokens,omitempty"`
+	Tools           []any           `json:"tools,omitempty"`
+	OutputFormat    *OutputFormat   `json:"-"`
+	Options         *RequestOptions `json:"-"`
 }
 
 type OutputFormat struct {
@@ -140,6 +140,13 @@ type OutputFormat struct {
 	Strict bool           `json:"strict,omitempty"`
 	Schema map[string]any `json:"schema,omitempty"`
 	Raw    map[string]any `json:"raw,omitempty"`
+}
+
+type RequestOptions struct {
+	System       string                 `json:"-"`
+	Thinking     *AnthropicThinking     `json:"-"`
+	CacheControl *AnthropicCacheControl `json:"-"`
+	Raw          map[string]any         `json:"-"`
 }
 
 type Response struct {
@@ -182,13 +189,22 @@ const (
 )
 
 type ResponseEvent struct {
-	Type         string          `json:"type"`
-	Delta        string          `json:"delta,omitempty"`
-	Response     *Response       `json:"response,omitempty"`
-	Output       *ResponseOutput `json:"output,omitempty"`
-	ToolCalls    []ToolCall      `json:"tool_calls,omitempty"`
-	FinishReason string          `json:"finish_reason,omitempty"`
-	Usage        *Usage          `json:"usage,omitempty"`
+	Type          string          `json:"type"`
+	Delta         string          `json:"delta,omitempty"`
+	TextDelta     string          `json:"-"`
+	ThinkingDelta string          `json:"-"`
+	Response      *Response       `json:"response,omitempty"`
+	Output        *ResponseOutput `json:"output,omitempty"`
+	ToolCalls     []ToolCall      `json:"tool_calls,omitempty"`
+	FinishReason  string          `json:"finish_reason,omitempty"`
+	Usage         *Usage          `json:"usage,omitempty"`
+}
+
+func (e ResponseEvent) Text() string {
+	if e.TextDelta != "" {
+		return e.TextDelta
+	}
+	return e.Delta
 }
 
 type Usage struct {
@@ -622,7 +638,7 @@ func ConvertEventToChatChunk(responseID, model string, event ResponseEvent) *Cha
 		// 流开始事件，返回一个初始 chunk
 		return chunk
 	case EventContentDelta:
-		chunk.Choices[0].Delta = ChatCompletionChunkDelta{Content: event.Delta}
+		chunk.Choices[0].Delta = ChatCompletionChunkDelta{Content: event.Text()}
 		chunk.Choices[0].FinishReason = event.FinishReason
 		if len(event.ToolCalls) > 0 {
 			toolCalls := make([]ChatCompletionChunkToolCall, 0, len(event.ToolCalls))
@@ -670,6 +686,46 @@ func ConvertEventToChatChunk(responseID, model string, event ResponseEvent) *Cha
 	return chunk
 }
 
+func CloneRequestOptions(value *RequestOptions) *RequestOptions {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	if value.Thinking != nil {
+		thinking := *value.Thinking
+		cloned.Thinking = &thinking
+	}
+	if value.CacheControl != nil {
+		cacheControl := *value.CacheControl
+		cloned.CacheControl = &cacheControl
+	}
+	cloned.Raw = cloneStringAnyMapLocal(value.Raw)
+	return &cloned
+}
+
+func cloneStringAnyMapLocal(value map[string]any) map[string]any {
+	if len(value) == 0 {
+		return nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		cloned := make(map[string]any, len(value))
+		for key, item := range value {
+			cloned[key] = item
+		}
+		return cloned
+	}
+	var cloned map[string]any
+	if err := json.Unmarshal(raw, &cloned); err != nil {
+		fallback := make(map[string]any, len(value))
+		for key, item := range value {
+			fallback[key] = item
+		}
+		return fallback
+	}
+	return cloned
+}
+
 // === Anthropic Messages API conversion ===
 
 func ConvertAnthropicRequest(req *AnthropicMessagesRequest) *ResponseRequest {
@@ -701,10 +757,10 @@ func ConvertAnthropicRequest(req *AnthropicMessagesRequest) *ResponseRequest {
 		Stream:    req.Stream,
 		MaxTokens: req.MaxTokens,
 		Tools:     tools,
-		Extra: map[string]any{
-			"system":        systemText,
-			"thinking":      req.Thinking,
-			"cache_control": req.CacheControl,
+		Options: &RequestOptions{
+			System:       systemText,
+			Thinking:     req.Thinking,
+			CacheControl: req.CacheControl,
 		},
 	}
 }

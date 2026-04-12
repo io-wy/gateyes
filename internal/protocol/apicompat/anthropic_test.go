@@ -23,8 +23,8 @@ func TestAnthropicStreamEncoderEmitsTextToolAndCompletionLifecycle(t *testing.T)
 	}
 
 	textAndTool := encoder.Encode(provider.ResponseEvent{
-		Type:  provider.EventContentDelta,
-		Delta: "hello",
+		Type:      provider.EventContentDelta,
+		TextDelta: "hello",
 		ToolCalls: []provider.ToolCall{{
 			ID:   "call-1",
 			Type: "function",
@@ -60,6 +60,21 @@ func TestAnthropicStreamEncoderEmitsTextToolAndCompletionLifecycle(t *testing.T)
 		t.Fatalf("fifth event = %+v, want tool block stop", textAndTool[4])
 	}
 
+	thinking := encoder.Encode(provider.ResponseEvent{
+		Type:          provider.EventThinkingDelta,
+		ThinkingDelta: "internal chain",
+	})
+	if len(thinking) != 2 {
+		t.Fatalf("thinking_delta emitted %d events, want 2", len(thinking))
+	}
+	if thinking[0].Type != "content_block_start" || thinking[0].Block == nil || thinking[0].Block.Type != "thinking" {
+		t.Fatalf("thinking first event = %+v, want thinking block start", thinking[0])
+	}
+	thinkingDelta, _ := thinking[1].Delta.(map[string]any)
+	if thinking[1].Type != "content_block_delta" || thinkingDelta["thinking"] != "internal chain" {
+		t.Fatalf("thinking delta event = %+v, want thinking delta payload", thinking[1])
+	}
+
 	completed := encoder.Encode(provider.ResponseEvent{
 		Type: provider.EventResponseCompleted,
 		Response: &provider.Response{
@@ -75,21 +90,24 @@ func TestAnthropicStreamEncoderEmitsTextToolAndCompletionLifecycle(t *testing.T)
 			},
 		},
 	})
-	if len(completed) != 2 {
-		t.Fatalf("response_completed emitted %d events, want 2", len(completed))
+	if len(completed) != 3 {
+		t.Fatalf("response_completed emitted %d events, want 3", len(completed))
 	}
-	if completed[0].Type != "message_delta" {
-		t.Fatalf("completion first event = %+v, want message_delta", completed[0])
+	if completed[0].Type != "content_block_stop" {
+		t.Fatalf("completion first event = %+v, want active thinking block stop", completed[0])
 	}
-	stopDelta, _ := completed[0].Delta.(map[string]any)
+	if completed[1].Type != "message_delta" {
+		t.Fatalf("completion second event = %+v, want message_delta", completed[1])
+	}
+	stopDelta, _ := completed[1].Delta.(map[string]any)
 	if stopDelta["stop_reason"] != "tool_use" {
-		t.Fatalf("message_delta payload = %#v, want tool_use", completed[0].Delta)
+		t.Fatalf("message_delta payload = %#v, want tool_use", completed[1].Delta)
 	}
-	if completed[0].Message == nil || completed[0].Message.Usage.OutputTokens != 5 {
-		t.Fatalf("message_delta usage = %+v, want completion tokens copied", completed[0].Message)
+	if completed[1].Message == nil || completed[1].Message.Usage.OutputTokens != 5 {
+		t.Fatalf("message_delta usage = %+v, want completion tokens copied", completed[1].Message)
 	}
-	if completed[1].Type != "message_stop" {
-		t.Fatalf("completion last event = %+v, want message_stop", completed[1])
+	if completed[2].Type != "message_stop" {
+		t.Fatalf("completion last event = %+v, want message_stop", completed[2])
 	}
 }
 

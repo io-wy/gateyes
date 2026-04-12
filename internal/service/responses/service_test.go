@@ -623,7 +623,7 @@ FROM responses`).Scan(&count, &status)
 	return count, status, err
 }
 
-func TestBuildUpstreamRequestPreservesOutputFormatAndExtra(t *testing.T) {
+func TestBuildUpstreamRequestPreservesOutputFormatAndOptions(t *testing.T) {
 	req := &provider.ResponseRequest{
 		Model: "public-model",
 		Messages: []provider.Message{{
@@ -644,11 +644,18 @@ func TestBuildUpstreamRequestPreservesOutputFormatAndExtra(t *testing.T) {
 				},
 			},
 		},
-		Extra: map[string]any{
-			"system": "be concise",
-			"thinking": map[string]any{
-				"type":          "enabled",
-				"budget_tokens": float64(64),
+		Options: &provider.RequestOptions{
+			System: "be concise",
+			Thinking: &provider.AnthropicThinking{
+				Type:         "enabled",
+				BudgetTokens: 64,
+			},
+			CacheControl: &provider.AnthropicCacheControl{
+				Type: "ephemeral",
+				TTL:  "5m",
+			},
+			Raw: map[string]any{
+				"vendor_hint": "anthropic-compatible",
 			},
 		},
 	}
@@ -657,17 +664,23 @@ func TestBuildUpstreamRequestPreservesOutputFormatAndExtra(t *testing.T) {
 	if upstream.OutputFormat == nil || upstream.OutputFormat.Type != "json_schema" || upstream.OutputFormat.Name != "Answer" || !upstream.OutputFormat.Strict {
 		t.Fatalf("buildUpstreamRequest() output format = %+v, want preserved output format", upstream.OutputFormat)
 	}
-	if upstream.Extra["system"] != "be concise" {
-		t.Fatalf("buildUpstreamRequest() system extra = %#v, want preserved system", upstream.Extra["system"])
+	if upstream.Options == nil || upstream.Options.System != "be concise" {
+		t.Fatalf("buildUpstreamRequest() options = %+v, want preserved system option", upstream.Options)
 	}
-	thinking, ok := upstream.Extra["thinking"].(map[string]any)
-	if !ok || thinking["type"] != "enabled" || thinking["budget_tokens"] != float64(64) {
-		t.Fatalf("buildUpstreamRequest() thinking extra = %#v, want preserved thinking config", upstream.Extra["thinking"])
+	if upstream.Options.Thinking == nil || upstream.Options.Thinking.Type != "enabled" || upstream.Options.Thinking.BudgetTokens != 64 {
+		t.Fatalf("buildUpstreamRequest() thinking option = %+v, want preserved thinking config", upstream.Options.Thinking)
+	}
+	if upstream.Options.CacheControl == nil || upstream.Options.CacheControl.Type != "ephemeral" || upstream.Options.CacheControl.TTL != "5m" {
+		t.Fatalf("buildUpstreamRequest() cache_control option = %+v, want preserved cache control", upstream.Options.CacheControl)
+	}
+	if upstream.Options.Raw["vendor_hint"] != "anthropic-compatible" {
+		t.Fatalf("buildUpstreamRequest() raw options = %+v, want preserved raw fallback", upstream.Options.Raw)
 	}
 
 	req.OutputFormat.Name = "Mutated"
-	req.Extra["system"] = "changed"
-	if upstream.OutputFormat.Name != "Answer" || upstream.Extra["system"] != "be concise" {
-		t.Fatalf("buildUpstreamRequest() should clone output format and extra, got format=%+v extra=%+v", upstream.OutputFormat, upstream.Extra)
+	req.Options.System = "changed"
+	req.Options.Raw["vendor_hint"] = "mutated"
+	if upstream.OutputFormat.Name != "Answer" || upstream.Options.System != "be concise" || upstream.Options.Raw["vendor_hint"] != "anthropic-compatible" {
+		t.Fatalf("buildUpstreamRequest() should clone output format and options, got format=%+v options=%+v", upstream.OutputFormat, upstream.Options)
 	}
 }

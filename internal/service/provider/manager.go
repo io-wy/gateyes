@@ -66,6 +66,17 @@ func (m *Manager) ListByNames(names []string) []Provider {
 	return result
 }
 
+func (m *Manager) CloseIdleConnections() {
+	if m == nil {
+		return
+	}
+	for _, instance := range m.providers {
+		if closer, ok := instance.(interface{ CloseIdleConnections() }); ok {
+			closer.CloseIdleConnections()
+		}
+	}
+}
+
 func newProvider(cfg config.ProviderConfig) (Provider, error) {
 	switch cfg.Type {
 	case "openai", "azure", "":
