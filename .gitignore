@@ -19,3 +19,5 @@ test/
 .gotools/
 tmp/
 test_doc/
+.gomodcache/
+.uv-cache/

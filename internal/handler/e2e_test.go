@@ -95,6 +95,30 @@ func TestGatewayE2E(t *testing.T) {
 		}
 	})
 
+	t.Run("responses legacy messages compatibility", func(t *testing.T) {
+		env.setTenantProviders(t, "openai-responses")
+
+		resp, body := doRequest(t, client, http.MethodPost, env.server.URL+"/v1/responses", authHeaders("test-key:test-secret"), map[string]any{
+			"model": "resp-public",
+			"messages": []map[string]any{{
+				"role":    "user",
+				"content": "hello via legacy messages",
+			}},
+			"max_output_tokens": 64,
+		})
+		assertStatus(t, resp, http.StatusOK, body)
+		payload := decodeJSONMap(t, body)
+		if payload["model"] != "resp-public" || payload["status"] != "completed" {
+			t.Fatalf("POST /v1/responses legacy payload = %#v, want normalized completed response", payload)
+		}
+		output := payload["output"].([]any)
+		first := output[0].(map[string]any)
+		content := first["content"].([]any)[0].(map[string]any)
+		if content["text"] != "response hello" {
+			t.Fatalf("POST /v1/responses legacy text = %v, want %q", content["text"], "response hello")
+		}
+	})
+
 	t.Run("chat compatibility and tool calls", func(t *testing.T) {
 		env.setTenantProviders(t, "openai-chat")
 
