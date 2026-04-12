@@ -86,7 +86,7 @@ func (e *AnthropicStreamEncoder) Encode(event provider.ResponseEvent) []*Anthrop
 	}
 
 	switch event.Type {
-	case "response.created":
+	case provider.EventResponseStarted:
 		e.started = true
 		return []*AnthropicEvent{{
 			Type: "message_start",
@@ -102,7 +102,7 @@ func (e *AnthropicStreamEncoder) Encode(event provider.ResponseEvent) []*Anthrop
 				},
 			},
 		}}
-	case "response.output_text.delta", "chat.delta", "chat.completion.chunk":
+	case provider.EventContentDelta:
 		result := e.ensureMessageStart(nil)
 		result = append(result, e.ensureTextBlockStart()...)
 		if event.Delta != "" {
@@ -119,7 +119,7 @@ func (e *AnthropicStreamEncoder) Encode(event provider.ResponseEvent) []*Anthrop
 			result = append(result, e.emitToolCalls(event.ToolCalls)...)
 		}
 		return result
-	case "response.output_item.done":
+	case provider.EventToolCallDone:
 		if event.Output == nil {
 			return nil
 		}
@@ -134,7 +134,7 @@ func (e *AnthropicStreamEncoder) Encode(event provider.ResponseEvent) []*Anthrop
 			}})
 		}
 		return nil
-	case "response.completed":
+	case provider.EventResponseCompleted:
 		result := e.ensureMessageStart(event.Response)
 		result = append(result, e.closeActiveBlock()...)
 		stopReason := "end_turn"
@@ -256,45 +256,64 @@ func convertAnthropicSystem(system any) string {
 func convertAnthropicMessages(msgs []AnthropicMessage) []provider.Message {
 	result := make([]provider.Message, 0, len(msgs))
 	for _, msg := range msgs {
-		content := convertAnthropicContent(msg.Content)
-		if len(content) == 1 {
-			if text, ok := content[0].(string); ok {
-				result = append(result, provider.Message{Role: msg.Role, Content: text})
+		content := make([]provider.ContentBlock, 0, len(msg.Content))
+		toolCalls := make([]provider.ToolCall, 0)
+		for _, block := range msg.Content {
+			if block.Type == "tool_use" {
+				toolCalls = append(toolCalls, provider.ToolCall{
+					ID:   block.ID,
+					Type: "function",
+					Function: provider.FunctionCall{
+						Name:      block.Name,
+						Arguments: strings.TrimSpace(string(block.Input)),
+					},
+				})
 				continue
 			}
+			if block.Type == "tool_result" {
+				result = append(result, provider.Message{
+					Role:       "tool",
+					ToolCallID: block.ToolUseID,
+					Content:    provider.TextBlocks(firstNonEmpty(block.Content, block.Text)),
+				})
+				continue
+			}
+			content = append(content, convertAnthropicBlock(block)...)
 		}
-		result = append(result, provider.Message{Role: msg.Role, Content: content})
+		if len(content) == 0 && len(toolCalls) == 0 {
+			continue
+		}
+		result = append(result, provider.Message{Role: msg.Role, Content: content, ToolCalls: toolCalls})
 	}
 	return result
 }
 
-func convertAnthropicContent(blocks []AnthropicContentBlock) []any {
-	result := make([]any, 0, len(blocks))
-	for _, block := range blocks {
-		switch block.Type {
-		case "text":
-			result = append(result, block.Text)
-		case "tool_use":
-			result = append(result, map[string]any{
-				"type":      "function_call",
-				"id":        block.ID,
-				"name":      block.Name,
-				"arguments": strings.TrimSpace(string(block.Input)),
-			})
-		case "image":
-			if block.Source != nil && block.Source.Data != "" {
-				result = append(result, map[string]any{
-					"type": "image",
-					"source": map[string]any{
-						"type":       "base64",
-						"media_type": block.Source.MediaType,
-						"data":       block.Source.Data,
-					},
-				})
-			}
+func convertAnthropicBlock(block AnthropicContentBlock) []provider.ContentBlock {
+	switch block.Type {
+	case "text":
+		return provider.TextBlocks(block.Text)
+	case "thinking":
+		return []provider.ContentBlock{{
+			Type:      "thinking",
+			Thinking:  block.Thinking,
+			Signature: block.Signature,
+		}}
+	case "image":
+		if block.Source == nil {
+			return nil
 		}
+		return []provider.ContentBlock{{
+			Type: "image",
+			Image: &provider.ContentImage{
+				SourceType: block.Source.Type,
+				URL:        block.Source.Data, // URL-style image support remains provider-specific; keep raw source here
+				MediaType:  block.Source.MediaType,
+				Data:       block.Source.Data,
+			},
+		}}
+	default:
+		return nil
 	}
-	return result
 }
 
 func convertResponseToAnthropicContent(outputs []provider.ResponseOutput) []AnthropicContentBlock {

@@ -16,14 +16,24 @@ func ConvertChatRequest(req *ChatCompletionRequest) *provider.ResponseRequest {
 		cloned, _ := cloneAny(req.Tools).([]any)
 		tools = cloned
 	}
-	messages := cloneMessages(req.Messages)
+	messages := make([]provider.Message, 0, len(req.Messages))
+	for _, msg := range req.Messages {
+		messages = append(messages, provider.Message{
+			Role:       msg.Role,
+			Name:       msg.Name,
+			ToolCallID: msg.ToolCallID,
+			ToolCalls:  append([]provider.ToolCall(nil), msg.ToolCalls...),
+			Content:    provider.NormalizeMessageContent(msg.Content),
+		})
+	}
 	return &provider.ResponseRequest{
-		Model:     req.Model,
-		Input:     messages,
-		Messages:  messages,
-		Stream:    req.Stream,
-		MaxTokens: req.MaxTokens,
-		Tools:     tools,
+		Model:        req.Model,
+		Input:        messages,
+		Messages:     messages,
+		Stream:       req.Stream,
+		MaxTokens:    req.MaxTokens,
+		Tools:        tools,
+		OutputFormat: normalizeOutputFormat(req.ResponseFormat),
 	}
 }
 
@@ -39,7 +49,7 @@ func ConvertResponseToChat(resp *provider.Response) *ChatCompletionResponse {
 		Model:   resp.Model,
 		Choices: []ChatCompletionChoice{{
 			Index: 0,
-			Message: provider.Message{
+			Message: provider.ChatMessage{
 				Role:      "assistant",
 				Content:   resp.OutputText(),
 				ToolCalls: resp.OutputToolCalls(),
@@ -48,6 +58,30 @@ func ConvertResponseToChat(resp *provider.Response) *ChatCompletionResponse {
 		}},
 		Usage: resp.Usage,
 	}
+}
+
+func normalizeOutputFormat(value any) *provider.OutputFormat {
+	current, ok := value.(map[string]any)
+	if !ok || len(current) == 0 {
+		return nil
+	}
+	format := &provider.OutputFormat{
+		Type: "",
+		Raw:  current,
+	}
+	format.Type, _ = current["type"].(string)
+	if jsonSchema, ok := current["json_schema"].(map[string]any); ok {
+		format.Type = "json_schema"
+		format.Name, _ = jsonSchema["name"].(string)
+		format.Strict, _ = jsonSchema["strict"].(bool)
+		if schema, ok := jsonSchema["schema"].(map[string]any); ok {
+			format.Schema = schema
+		}
+	}
+	if format.Type == "" {
+		format.Type = "text"
+	}
+	return format
 }
 
 type ChatStreamEncoder struct {
@@ -70,9 +104,9 @@ func (e *ChatStreamEncoder) Encode(event provider.ResponseEvent) []*ChatCompleti
 	}
 
 	switch event.Type {
-	case "response.created":
+	case provider.EventResponseStarted:
 		return nil
-	case "response.output_text.delta", "chat.delta", "chat.completion.chunk":
+	case provider.EventContentDelta:
 		if e.finished {
 			return nil
 		}
@@ -96,7 +130,7 @@ func (e *ChatStreamEncoder) Encode(event provider.ResponseEvent) []*ChatCompleti
 			e.finished = true
 		}
 		return append(chunks, chunk)
-	case "response.output_item.done":
+	case provider.EventToolCallDone:
 		if e.finished {
 			return nil
 		}
@@ -115,7 +149,7 @@ func (e *ChatStreamEncoder) Encode(event provider.ResponseEvent) []*ChatCompleti
 			},
 		}}
 		return append(chunks, chunk)
-	case "response.completed":
+	case provider.EventResponseCompleted:
 		if e.finished {
 			return nil
 		}

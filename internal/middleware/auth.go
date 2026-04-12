@@ -10,12 +10,14 @@ import (
 )
 
 type AuthMiddleware struct {
-	auth *auth.Auth
+	auth    *auth.Auth
+	metrics MetricsRecorder
 }
 
-func NewAuthMiddleware(store repository.Store) *AuthMiddleware {
+func NewAuthMiddleware(store repository.Store, metrics MetricsRecorder) *AuthMiddleware {
 	return &AuthMiddleware{
-		auth: auth.NewAuth(store),
+		auth:    auth.NewAuth(store),
+		metrics: metrics,
 	}
 }
 
@@ -39,10 +41,14 @@ func (m *AuthMiddleware) Auth() gin.HandlerFunc {
 		if err != nil {
 			status := http.StatusUnauthorized
 			message := "invalid API key"
+			result := metricsResultAuthError
+			errorClass := "invalid_api_key"
 			if err == auth.ErrInactiveAPIKey {
 				status = http.StatusForbidden
 				message = "inactive API key"
+				errorClass = "inactive_api_key"
 			}
+			recordMiddlewareError(m.metrics, c, result, errorClass)
 			c.JSON(status, gin.H{"error": gin.H{"message": message, "type": "invalid_request_error"}})
 			c.Abort()
 			return
@@ -58,11 +64,13 @@ func (m *AuthMiddleware) RequireRoles(roles ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		identity, ok := Identity(c)
 		if !ok {
+			recordMiddlewareError(m.metrics, c, metricsResultAuthError, "invalid_api_key")
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid api key"})
 			c.Abort()
 			return
 		}
 		if !repository.HasRole(identity.Role, roles...) {
+			recordMiddlewareError(m.metrics, c, metricsResultAuthError, "forbidden")
 			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 			c.Abort()
 			return

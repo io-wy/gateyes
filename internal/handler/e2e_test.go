@@ -454,7 +454,7 @@ func newGatewayE2EEnv(t *testing.T) *gatewayE2EEnv {
 		QueueSize:           128,
 	})
 	t.Cleanup(limiterSvc.Stop)
-	mw := middleware.New(store, limiterSvc)
+	mw := middleware.New(store, limiterSvc, metrics)
 	responseService := responseSvc.New(&responseSvc.Dependencies{
 		Config:      cfgObj,
 		Store:       store,

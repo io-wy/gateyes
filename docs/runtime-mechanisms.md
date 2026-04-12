@@ -1,11 +1,12 @@
 # Runtime Mechanisms
 
-本文档描述 Gateyes 当前实现中的四个核心机制：
+本文档描述 Gateyes 当前实现中的五个核心机制：
 
 - 鉴权
 - 限流
 - 路由
 - 权限模型
+- 监控
 
 > **注意**：应用层缓存已在 2026-04-01 移除。provider 上游的 prefix caching / `prompt_tokens_details.cached_tokens` 才是真正的缓存节省，gateway 层无法控制。真正的缓存节省来自 provider 侧。
 
@@ -19,6 +20,7 @@
 - 协议兼容层：`internal/protocol/apicompat`
 - 主业务编排：`internal/service/responses`
 - 核心服务：`internal/service/auth`、`internal/service/limiter`、`internal/service/router`
+- 监控：`internal/handler/metrics.go`
 - 持久化：`internal/repository`、`internal/repository/sqlstore`
 
 ## 请求主链路
@@ -51,6 +53,7 @@
 - `internal/protocol/apicompat`
 - `internal/middleware/middleware.go`
 - `internal/service/responses/service.go`
+- `internal/handler/metrics.go`
 
 ## 鉴权
 
@@ -361,30 +364,203 @@ else:
 - 没有按 provider 区分限流
 - 每个请求只做一次准入判定，不做后续补扣
 
+## 监控
+
+### 暴露方式
+
+Prometheus 指标通过：
+
+```text
+GET /metrics
+```
+
+对外暴露。
+
+运行时链路是：
+
+```text
+cmd/gateway/main.go
+-> handler.NewMetricsFromConfig(cfg.Metrics)
+-> internal/handler/server.go 注册 /metrics
+-> internal/handler/metrics.go
+-> promhttp.Handler()
+```
+
+当前 `metrics.enabled=false` 时，路由仍会注册，但 handler 会返回 `404`。
+
+### 主指标口径
+
+当前已经统一成 `surface + provider + result` 三类核心维度。
+
+主指标包括：
+
+- `gateway_llm_requests_total{surface,result,provider}`
+- `gateway_llm_request_duration_seconds{surface,provider,result}`
+- `gateway_llm_upstream_duration_seconds{surface,provider,result}`
+- `gateway_llm_time_to_first_token_seconds{surface,provider}`
+- `gateway_llm_stream_duration_seconds{surface,provider,result}`
+- `gateway_llm_tokens_total{provider,token_type}`
+- `gateway_llm_errors_total{surface,provider,error_class}`
+- `gateway_llm_retries_total{provider}`
+- `gateway_llm_fallbacks_total{provider}`
+- `gateway_provider_requests_total{provider,result}`
+- `gateway_provider_circuit_state{tenant_id,provider}`
+
+### Label 语义
+
+#### `surface`
+
+固定值：
+
+- `responses`
+- `chat_completions`
+- `messages`
+- `models`
+- `admin`
+
+主 LLM 写请求稳定落在前三个值。
+
+#### `provider`
+
+表示最终命中的 provider 名。
+
+如果错误发生在 middleware 或 handler 早期、尚未选到 provider，则为：
+
+```text
+provider="none"
+```
+
+#### `result`
+
+当前统一枚举：
+
+- `success`
+- `client_error`
+- `auth_error`
+- `rate_limited`
+- `timeout`
+- `upstream_error`
+- `internal_error`
+
+#### `error_class`
+
+用于更细粒度错误归类，例如：
+
+- `invalid_api_key`
+- `inactive_api_key`
+- `forbidden`
+- `invalid_request`
+- `model_not_allowed`
+- `quota_exceeded`
+- `rate_limited`
+- `upstream_4xx`
+- `upstream_5xx`
+- `timeout`
+- `no_provider`
+- `internal_error`
+
+### 埋点位置
+
+#### Middleware
+
+`internal/middleware` 现在会把前置拦截也记入主 metrics：
+
+- `Auth()`：
+  - `invalid_api_key`
+  - `inactive_api_key`
+- `RequireRoles()`：
+  - `forbidden`
+- `GuardLLMRequest()`：
+  - `invalid_request`
+  - `model_not_allowed`
+  - `quota_exceeded`
+  - `rate_limited`
+
+也就是说，middleware 不再只是返回 HTTP 错误，不记 Prometheus。
+
+#### Handler
+
+成功路径主要在 `observeResponse()` / `observeResponseWithUpstream()`：
+
+- 计请求成功数
+- 记 request / upstream duration
+- 记 token 计数
+- 记 retry / fallback
+- 记 provider request
+
+#### Streaming
+
+流式 handler 会单独记录：
+
+- `gateway_llm_active_streams`
+- `gateway_llm_time_to_first_token_seconds`
+- `gateway_llm_stream_duration_seconds`
+
+其中：
+
+- TTFT 在首个可见文本事件到达时记录
+- stream duration 在流正常结束或带错误结束时记录
+
+### ProviderStats 和 Prometheus 的边界
+
+`internal/service/provider/stats.go` 的 `ProviderStats` 仍然保留，用于：
+
+- `/admin/providers`
+- `/admin/providers/:name/stats`
+
+它不是 Prometheus 主口径，而是操作面展示口径。
+
+可以理解为：
+
+- Prometheus：监控、告警、Grafana
+- ProviderStats：后台页面和人工运维查看
+
+### 当前边界
+
+当前监控仍然有几个已知边界：
+
+- 没有 tracing / span 体系
+- 没有 request-id 级别的 metrics/log correlation
+- `provider_circuit_state` 只有在显式同步时才会更新，不是后台定时采集
+- Prometheus alert rules 和 Grafana dashboard 只提供最小样例，不代表完整生产规则
+
 ## 路由
 
 ### 路由器职责
 
-`internal/service/router` 的职责是“在候选 provider 集合里选一个 provider”，不负责鉴权，也不负责上游协议转换。
+`internal/service/router` 的职责是“对候选 provider 集合做分流、排序和选择”，不负责鉴权，也不负责上游协议转换。
 
 候选 provider 不是全局 provider 列表，而是：
 
 1. 先从数据库读取 tenant 可用 provider 名单
 2. 再通过 `ProviderMgr.ListByNames()` 得到候选列表
-3. 主业务层在 `responses.Service.sortCandidatesByStrategy(...)` 中排序
+3. `responses.Service.buildRouteContext(...)` 提取输入特征
+4. `router.OrderCandidates(...)` 执行分流和排序
 
 所以当前路由的第一层过滤是 tenant 绑定关系。
 
 ### 当前选择流程
 
-当前主链路并不直接调用 `Router.SelectFrom(...)` 选出单个 provider，而是：
+当前主链路的路由现在是三段式：
 
 1. `ListTenantProviders(identity.TenantID)`
 2. `ProviderMgr.ListByNames(providerNames)`
-3. `responses.Service.sortCandidatesByStrategy(...)` 对候选列表排序
-4. 主业务层自行按排序后的列表重试 / fallback
+3. `responses.Service.buildRouteContext(...)` 提取：
+   - `model`
+   - `sessionID`
+   - `inputText`
+   - `promptTokens`
+   - `stream`
+   - `hasTools`
+   - `hasImages`
+   - `hasStructuredOutput`
+4. `router.OrderCandidates(...)` 依次执行：
+   - `ruleEngine`
+   - `ranker`
+   - `strategy`
+5. 主业务层自行按排序后的列表重试 / fallback
 
-因此，当前 router 更多是“提供排序依据和负载状态”，而不是唯一选择入口。
+因此，当前 router 仍然不负责业务重试，但它已经成为“候选集过滤 + 排序”的统一入口。
 
 ### 负载跟踪
 
@@ -397,14 +573,53 @@ else:
 
 这让 `least_load` 策略可以基于当前内存中的并发计数工作。
 
-### 五种策略
+### 路由三层
 
-#### 1. round_robin
+#### 1. ruleEngine
+
+`ruleEngine` 是分流辅助层，语义类似 Clash 规则：
+
+- 按顺序匹配，`first match wins`
+- 命中规则后，把候选 provider 收缩到 `action.providers`
+- 如果规则命中但与当前 tenant 候选集没有交集，则回退到原候选集，不直接打空
+
+当前支持的匹配条件：
+
+- `models`
+- `minPromptTokens`
+- `maxPromptTokens`
+- `hasTools`
+- `hasImages`
+- `hasStructuredOutput`
+- `stream`
+- `anyRegex`
+
+这层是“候选集过滤”，不是最终选择器。
+
+#### 2. ranker
+
+`ranker` 是独立排序入口。
+
+当前状态：
+
+- `ranker.enabled=false`：默认关闭
+- `ranker.method=ml_rank`：已经预留配置和代码入口，但当前只返回原顺序
+
+也就是说，`ml_rank` 目前只是显式 `TODO`，没有真正引入 `LightGBM` / `BERT` 推断。
+
+#### 3. strategy
+
+`strategy` 是最终排序/选择策略。
+
+### 五种 strategy
+
+#### 1. `round_robin`
 
 算法：
 
 ```text
-selected = candidates[index % len(candidates)]
+start = index % len(candidates)
+ordered = candidates[start:] + candidates[:start]
 index = (index + 1) % len(candidates)
 ```
 
@@ -412,26 +627,27 @@ index = (index + 1) % len(candidates)
 
 - 简单
 - 全局共享一个递增索引
+- 返回的是“轮转后的候选顺序”，不是直接选单个 provider
 
-#### 2. random
+#### 2. `random`
 
 算法：
 
 ```text
-selected = candidates[rand.Intn(len(candidates))]
+ordered = shuffle(candidates)
 ```
 
 特点：
 
-- 随机选取
+- 随机打乱候选顺序
 - 不看成本，不看当前负载
 
-#### 3. least_load
+#### 3. `least_load`
 
 算法：
 
 ```text
-selected = provider with minimal loads[name]
+ordered = sortBy(loads[name] asc)
 ```
 
 特点：
@@ -439,12 +655,12 @@ selected = provider with minimal loads[name]
 - 基于本进程内存中的实时负载
 - 不依赖数据库统计
 
-#### 4. cost_based
+#### 4. `cost_based`
 
 算法：
 
 ```text
-selected = provider with minimal UnitCost()
+ordered = sortBy(UnitCost asc)
 ```
 
 特点：
@@ -453,14 +669,14 @@ selected = provider with minimal UnitCost()
 - 完全不看延迟
 - 只看配置中的价格字段
 
-#### 5. sticky
+#### 5. `sticky`
 
 算法：
 
 1. 如果 `sessionID` 为空，回退到 `round_robin`
 2. 否则按字符做 31 进制累乘哈希
 3. `index = hash % len(candidates)`
-4. 返回该位置 provider
+4. 以该位置作为排序起点轮转候选顺序
 
 即：
 
@@ -468,7 +684,8 @@ selected = provider with minimal UnitCost()
 hash = 0
 for ch in sessionID:
     hash = hash*31 + int(ch)
-selected = candidates[abs(hash % len(candidates))]
+start = abs(hash % len(candidates))
+ordered = candidates[start:] + candidates[:start]
 ```
 
 特点：
@@ -476,6 +693,7 @@ selected = candidates[abs(hash % len(candidates))]
 - 同一 `sessionID` 在同一候选集下会倾向命中同一 provider
 - 没有一致性哈希环
 - 候选集变化时映射可能整体漂移
+- 如果 `sessionID` 为空，会回退到 round-robin 风格的轮转顺序
 
 ## 维护建议
 

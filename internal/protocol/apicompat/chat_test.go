@@ -10,7 +10,7 @@ func TestChatStreamEncoderSuppressesDuplicateCompletedChunkAfterFinish(t *testin
 	encoder := NewChatStreamEncoder("resp-1", "gpt-test")
 
 	first := encoder.Encode(provider.ResponseEvent{
-		Type:         "chat.delta",
+		Type:         provider.EventContentDelta,
 		FinishReason: "stop",
 		Usage:        &provider.Usage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3},
 	})
@@ -22,7 +22,7 @@ func TestChatStreamEncoderSuppressesDuplicateCompletedChunkAfterFinish(t *testin
 	}
 
 	second := encoder.Encode(provider.ResponseEvent{
-		Type:     "response.completed",
+		Type:     provider.EventResponseCompleted,
 		Response: &provider.Response{Usage: provider.Usage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3}},
 	})
 	if len(second) != 0 {

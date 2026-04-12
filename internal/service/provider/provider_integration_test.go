@@ -94,7 +94,7 @@ func TestOpenAIProviderCreateAndStream(t *testing.T) {
 			t.Fatalf("openAIProvider.StreamResponse() error: %v", err)
 		}
 	}
-	if len(got) != 3 || got[0].Type != "response.output_text.delta" || got[2].Type != "response.completed" {
+	if len(got) != 3 || got[0].Type != EventContentDelta || got[2].Type != EventResponseCompleted {
 		t.Fatalf("openAIProvider.StreamResponse() events = %+v, want delta/item/completed sequence", got)
 	}
 }
@@ -176,7 +176,7 @@ func TestAnthropicProviderCreateAndStream(t *testing.T) {
 			t.Fatalf("anthropicProvider.StreamResponse() error: %v", err)
 		}
 	}
-	if len(got) < 3 || got[0].Type != "response.output_text.delta" || got[len(got)-1].Type != "response.completed" {
+	if len(got) < 3 || got[0].Type != EventContentDelta || got[len(got)-1].Type != EventResponseCompleted {
 		t.Fatalf("anthropicProvider.StreamResponse() events = %+v, want text/tool/completed sequence", got)
 	}
 }

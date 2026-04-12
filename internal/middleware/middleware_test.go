@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -18,6 +19,26 @@ import (
 	"github.com/gateyes/gateway/internal/service/limiter"
 	"github.com/gateyes/gateway/internal/service/provider"
 )
+
+type recordedMetric struct {
+	surface    string
+	provider   string
+	result     string
+	errorClass string
+}
+
+type fakeMetricsRecorder struct {
+	entries []recordedMetric
+}
+
+func (f *fakeMetricsRecorder) RecordError(surface, providerName, result, errorClass string) {
+	f.entries = append(f.entries, recordedMetric{
+		surface:    surface,
+		provider:   providerName,
+		result:     result,
+		errorClass: errorClass,
+	})
+}
 
 func TestAuthMiddlewareRejectsInvalidSecret(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -123,7 +144,7 @@ func TestGuardLLMRequestSetsMetaAndPreservesBody(t *testing.T) {
 	req := newGuardedRequest(t, provider.ResponseRequest{
 		Model: "test-model",
 		Input: []provider.Message{
-			{Role: "user", Content: "hello world"},
+			{Role: "user", Content: provider.TextBlocks("hello world")},
 		},
 	})
 	req.Header.Set("Authorization", "Bearer test-key:test-secret")
@@ -233,5 +254,134 @@ func newTestMiddleware(
 		t.Cleanup(limiterSvc.Stop)
 	}
 
-	return New(store, limiterSvc)
+	return New(store, limiterSvc, nil)
+}
+
+func TestMiddlewareMetricsContracts(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	metrics := &fakeMetricsRecorder{}
+	mw := newTestMiddlewareWithMetrics(t, repository.RoleTenantUser, 2, []string{"allowed-model"}, &config.LimiterConfig{
+		GlobalQPS:           100,
+		GlobalTPM:           600000,
+		GlobalTokenBurst:    10000,
+		PerUserRequestBurst: 1,
+		QueueSize:           8,
+	}, metrics)
+	engine := guardedEngine(mw)
+
+	// invalid auth
+	rec := httptest.NewRecorder()
+	req := newGuardedRequest(t, provider.ResponseRequest{Model: "allowed-model", Input: "hello"})
+	req.Header.Set("Authorization", "Bearer test-key:wrong-secret")
+	engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// invalid request
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/guarded", strings.NewReader(`{invalid`))
+	req.Header.Set("Authorization", "Bearer test-key:test-secret")
+	req.Header.Set("Content-Type", "application/json")
+	engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// model not allowed
+	rec = httptest.NewRecorder()
+	req = newGuardedRequest(t, provider.ResponseRequest{Model: "blocked-model", Input: "hello"})
+	req.Header.Set("Authorization", "Bearer test-key:test-secret")
+	engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// quota exceeded
+	rec = httptest.NewRecorder()
+	req = newGuardedRequest(t, provider.ResponseRequest{Model: "allowed-model", Input: "this prompt is deliberately long enough to exceed quota"})
+	req.Header.Set("Authorization", "Bearer test-key:test-secret")
+	engine.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	if len(metrics.entries) != 4 {
+		t.Fatalf("metrics entries = %d, want 4: %+v", len(metrics.entries), metrics.entries)
+	}
+	if metrics.entries[0].result != metricsResultAuthError || metrics.entries[0].errorClass != "invalid_api_key" {
+		t.Fatalf("first metric = %+v, want auth invalid_api_key", metrics.entries[0])
+	}
+	if metrics.entries[1].result != metricsResultClientError || metrics.entries[1].errorClass != "invalid_request" {
+		t.Fatalf("second metric = %+v, want client invalid_request", metrics.entries[1])
+	}
+	if metrics.entries[2].result != metricsResultAuthError || metrics.entries[2].errorClass != "model_not_allowed" {
+		t.Fatalf("third metric = %+v, want auth model_not_allowed", metrics.entries[2])
+	}
+	if metrics.entries[3].result != metricsResultRateLimited || metrics.entries[3].errorClass != "quota_exceeded" {
+		t.Fatalf("fourth metric = %+v, want rate_limited quota_exceeded", metrics.entries[3])
+	}
+}
+
+func newTestMiddlewareWithMetrics(
+	t *testing.T,
+	role string,
+	quota int,
+	models []string,
+	limiterCfg *config.LimiterConfig,
+	metrics MetricsRecorder,
+) *Middleware {
+	t.Helper()
+
+	ctx := context.Background()
+	database, err := db.Open(config.DatabaseConfig{
+		Driver:                 "sqlite",
+		DSN:                    filepath.Join(t.TempDir(), "middleware-metrics.db"),
+		AutoMigrate:            true,
+		MaxOpenConns:           1,
+		MaxIdleConns:           1,
+		ConnMaxLifetimeSeconds: 60,
+	})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = database.Close()
+	})
+	if err := database.Migrate(ctx); err != nil {
+		t.Fatalf("migrate db: %v", err)
+	}
+
+	store := sqlstore.New(database)
+	tenant, err := store.EnsureTenant(ctx, repository.EnsureTenantParams{
+		ID:     "tenant-a",
+		Slug:   "tenant-a",
+		Name:   "tenant-a",
+		Status: repository.StatusActive,
+	})
+	if err != nil {
+		t.Fatalf("ensure tenant: %v", err)
+	}
+	if err := store.EnsureBootstrapKey(ctx, repository.BootstrapAPIKeyParams{
+		TenantID:   tenant.ID,
+		Key:        "test-key",
+		SecretHash: repository.HashSecret("test-secret"),
+		Name:       "test-user",
+		Email:      "test@example.com",
+		Role:       role,
+		Quota:      quota,
+		QPS:        100,
+		Models:     models,
+	}); err != nil {
+		t.Fatalf("seed api key: %v", err)
+	}
+
+	var limiterSvc *limiter.Limiter
+	if limiterCfg != nil {
+		limiterSvc = limiter.NewLimiter(*limiterCfg)
+		t.Cleanup(limiterSvc.Stop)
+	}
+
+	return New(store, limiterSvc, metrics)
 }

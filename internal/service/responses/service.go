@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"math/rand"
-	"sort"
 	"strings"
 	"time"
 
@@ -22,9 +20,10 @@ import (
 )
 
 var (
-	ErrNoProvider   = errors.New("no provider available")
-	ErrUnauthorized = errors.New("unauthorized")
-	ErrForbidden    = errors.New("forbidden")
+	ErrNoProvider         = errors.New("no provider available")
+	ErrUnauthorized       = errors.New("unauthorized")
+	ErrForbidden          = errors.New("forbidden")
+	ErrOutputBudgetTooLow = errors.New("output budget too low")
 )
 
 type Dependencies struct {
@@ -90,7 +89,7 @@ func New(deps *Dependencies) *Service {
 func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*CreateResult, error) {
 	req.Normalize()
 
-	candidates := s.getCandidateProviders(ctx, identity, sessionID, req.Model)
+	candidates := s.getCandidateProviders(ctx, identity, sessionID, req)
 	if len(candidates) == 0 {
 		return nil, ErrNoProvider
 	}
@@ -175,6 +174,14 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 		}
 
 		resp = s.normalizeResponse(exec, resp)
+		if budgetErr := validateVisibleOutputBudget(exec, resp); budgetErr != nil {
+			if s.circuitBreaker != nil {
+				s.circuitBreaker.RecordSuccess(tenantID, providerName)
+			}
+			_ = s.recordOutputBudgetError(ctx, identity, exec, resp, latencyMs, providerName)
+			s.providerMgr.Stats.RecordRequest(providerName, true, resp.Usage.TotalTokens, latencyMs)
+			return nil, budgetErr
+		}
 		if err := s.persistSuccess(ctx, identity, exec, resp, latencyMs); err != nil {
 			return nil, err
 		}
@@ -194,21 +201,57 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 }
 
 func buildUpstreamRequest(req *provider.ResponseRequest) *provider.ResponseRequest {
+	messages := req.InputMessages()
 	return &provider.ResponseRequest{
 		Model:           req.Model,
-		Input:           req.InputMessages(),
-		Messages:        req.InputMessages(),
+		Input:           messages,
+		Messages:        messages,
 		Stream:          req.Stream,
 		MaxOutputTokens: req.MaxOutputTokens,
 		MaxTokens:       req.MaxTokens,
 		Tools:           req.Tools,
+		OutputFormat:    cloneOutputFormat(req.OutputFormat),
+		Extra:           cloneStringAnyMap(req.Extra),
 	}
+}
+
+func cloneOutputFormat(value *provider.OutputFormat) *provider.OutputFormat {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	cloned.Schema = cloneStringAnyMap(value.Schema)
+	cloned.Raw = cloneStringAnyMap(value.Raw)
+	return &cloned
+}
+
+func cloneStringAnyMap(value map[string]any) map[string]any {
+	if len(value) == 0 {
+		return nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		cloned := make(map[string]any, len(value))
+		for key, item := range value {
+			cloned[key] = item
+		}
+		return cloned
+	}
+	var cloned map[string]any
+	if err := json.Unmarshal(raw, &cloned); err != nil {
+		fallback := make(map[string]any, len(value))
+		for key, item := range value {
+			fallback[key] = item
+		}
+		return fallback
+	}
+	return cloned
 }
 
 func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*Stream, error) {
 	req.Normalize()
 
-	candidates := s.getCandidateProviders(ctx, identity, sessionID, req.Model)
+	candidates := s.getCandidateProviders(ctx, identity, sessionID, req)
 	if len(candidates) == 0 {
 		return nil, ErrNoProvider
 	}
@@ -276,7 +319,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 		// 只在第一次真正开始流式响应时发送 response.created
 		if !firstResponseSent {
 			out <- provider.ResponseEvent{
-				Type: "response.created",
+				Type: provider.EventResponseStarted,
 				Response: &provider.Response{
 					ID:      responseID,
 					Object:  "response",
@@ -320,6 +363,17 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 					finalResponse = s.recoverStreamResponse(ctx, identity, fallbackExec, assistantText, streamedOutputs, finalResponse, hasSentPayload)
 					applyRecoveredStreamUsage(finalResponse, streamUsage)
 					latencyMs := time.Since(startedAt).Milliseconds()
+					if budgetErr := validateVisibleOutputBudget(fallbackExec, finalResponse); budgetErr != nil && !hasSentPayload {
+						_ = s.recordOutputBudgetError(ctx, identity, fallbackExec, finalResponse, latencyMs, providerName)
+						s.providerMgr.Stats.RecordRequest(providerName, true, finalResponse.Usage.TotalTokens, latencyMs)
+						s.router.DecLoad(providerName)
+						s.providerMgr.Stats.DecrementLoad(providerName)
+						if s.circuitBreaker != nil {
+							s.circuitBreaker.RecordSuccess(tenantID, providerName)
+						}
+						errCh <- budgetErr
+						return
+					}
 					s.finalizeStream(ctx, identity, responseID, providerName, req.Model, finalResponse, latencyMs, out, !hasSentPayload)
 					s.router.DecLoad(providerName)
 					s.providerMgr.Stats.DecrementLoad(providerName)
@@ -330,7 +384,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 				}
 
 				switch event.Type {
-				case "response.output_text.delta", "chat.delta":
+				case provider.EventContentDelta:
 					if event.Usage != nil {
 						usageCopy := *event.Usage
 						streamUsage = &usageCopy
@@ -344,11 +398,11 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 						assistantText += event.Delta
 						out <- event
 					}
-				case "response.output_item.done":
+				case provider.EventToolCallDone:
 					hasSentPayload = true
 					streamedOutputs = appendStreamOutput(streamedOutputs, event.Output)
 					out <- event
-				case "response.completed":
+				case provider.EventResponseCompleted:
 					finalResponse = event.Response
 				}
 			case err := <-upstreamErrCh:
@@ -416,6 +470,17 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 						finalResponse = s.recoverStreamResponse(ctx, identity, fallbackExec, assistantText, streamedOutputs, finalResponse, hasSentPayload)
 						applyRecoveredStreamUsage(finalResponse, streamUsage)
 						latencyMs := time.Since(startedAt).Milliseconds()
+						if budgetErr := validateVisibleOutputBudget(fallbackExec, finalResponse); budgetErr != nil && !hasSentPayload {
+							_ = s.recordOutputBudgetError(ctx, identity, fallbackExec, finalResponse, latencyMs, providerName)
+							s.providerMgr.Stats.RecordRequest(providerName, true, finalResponse.Usage.TotalTokens, latencyMs)
+							s.router.DecLoad(providerName)
+							s.providerMgr.Stats.DecrementLoad(providerName)
+							if s.circuitBreaker != nil {
+								s.circuitBreaker.RecordSuccess(tenantID, providerName)
+							}
+							errCh <- budgetErr
+							return
+						}
 						s.finalizeStream(ctx, identity, responseID, providerName, req.Model, finalResponse, latencyMs, out, !hasSentPayload)
 						s.router.DecLoad(providerName)
 						s.providerMgr.Stats.DecrementLoad(providerName)
@@ -426,7 +491,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 					}
 
 					switch event.Type {
-					case "response.output_text.delta", "chat.delta":
+					case provider.EventContentDelta:
 						if event.Usage != nil {
 							usageCopy := *event.Usage
 							streamUsage = &usageCopy
@@ -440,11 +505,11 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 							assistantText += event.Delta
 							out <- event
 						}
-					case "response.output_item.done":
+					case provider.EventToolCallDone:
 						hasSentPayload = true
 						streamedOutputs = appendStreamOutput(streamedOutputs, event.Output)
 						out <- event
-					case "response.completed":
+					case provider.EventResponseCompleted:
 						finalResponse = event.Response
 					}
 				case err := <-upstreamErrCh:
@@ -516,7 +581,7 @@ func (s *Service) finalizeStream(ctx context.Context, identity *repository.AuthI
 	if emitOutputs {
 		s.emitStreamPayloadFromResponse(out, resp)
 	}
-	out <- provider.ResponseEvent{Type: "response.completed", Response: resp}
+	out <- provider.ResponseEvent{Type: provider.EventResponseCompleted, Response: resp}
 }
 
 func (s *Service) recoverStreamResponse(ctx context.Context, identity *repository.AuthIdentity, exec *execution, assistantText string, streamedOutputs []provider.ResponseOutput, finalResponse *provider.Response, hasSentPayload bool) *provider.Response {
@@ -548,14 +613,14 @@ func (s *Service) emitStreamPayloadFromResponse(out chan<- provider.ResponseEven
 					continue
 				}
 				out <- provider.ResponseEvent{
-					Type:  "response.output_text.delta",
+					Type:  provider.EventContentDelta,
 					Delta: content.Text,
 				}
 			}
 		case "function_call":
 			item := output
 			out <- provider.ResponseEvent{
-				Type:   "response.output_item.done",
+				Type:   provider.EventToolCallDone,
 				Output: &item,
 			}
 		}
@@ -697,7 +762,7 @@ func (s *Service) handleStreamError(ctx context.Context, identity *repository.Au
 }
 
 func (s *Service) prepare(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*execution, error) {
-	selected, err := s.selectProvider(ctx, identity, sessionID, req.Model)
+	selected, err := s.selectProvider(ctx, identity, sessionID, req)
 	if err != nil {
 		return nil, err
 	}
@@ -757,7 +822,7 @@ func (s *Service) runStream(ctx context.Context, identity *repository.AuthIdenti
 	}()
 
 	out <- provider.ResponseEvent{
-		Type: "response.created",
+		Type: provider.EventResponseStarted,
 		Response: &provider.Response{
 			ID:      exec.responseID,
 			Object:  "response",
@@ -789,12 +854,12 @@ func (s *Service) runStream(ctx context.Context, identity *repository.AuthIdenti
 				if !hasSentPayload {
 					s.emitStreamPayloadFromResponse(out, finalResponse)
 				}
-				out <- provider.ResponseEvent{Type: "response.completed", Response: finalResponse}
+				out <- provider.ResponseEvent{Type: provider.EventResponseCompleted, Response: finalResponse}
 				return
 			}
 
 			switch event.Type {
-			case "response.output_text.delta", "chat.delta":
+			case provider.EventContentDelta:
 				if event.Usage != nil {
 					usageCopy := *event.Usage
 					streamUsage = &usageCopy
@@ -807,11 +872,11 @@ func (s *Service) runStream(ctx context.Context, identity *repository.AuthIdenti
 					assistantText += event.Delta
 					out <- event
 				}
-			case "response.output_item.done":
+			case provider.EventToolCallDone:
 				hasSentPayload = true
 				streamedOutputs = appendStreamOutput(streamedOutputs, event.Output)
 				out <- event
-			case "response.completed":
+			case provider.EventResponseCompleted:
 				finalResponse = event.Response
 			}
 		case err := <-upstreamErrCh:
@@ -930,6 +995,38 @@ func (s *Service) markErrorWithProvider(ctx context.Context, identity *repositor
 	return s.auth.RecordUsage(ctx, identity, providerName, exec.requestedModel, 0, 0, 0, 0, latencyMs, "error", "upstream_error")
 }
 
+func (s *Service) recordOutputBudgetError(ctx context.Context, identity *repository.AuthIdentity, exec *execution, resp *provider.Response, latencyMs int64, providerName string) error {
+	var body []byte
+	if resp != nil {
+		body, _ = json.Marshal(resp)
+	}
+	_ = s.store.UpdateResponse(ctx, repository.ResponseRecord{
+		ID:           exec.responseID,
+		TenantID:     identity.TenantID,
+		ProviderName: providerName,
+		Model:        exec.requestedModel,
+		Status:       "error",
+		ResponseBody: body,
+	})
+	if resp == nil {
+		return s.auth.RecordUsage(ctx, identity, providerName, exec.requestedModel, 0, 0, 0, 0, latencyMs, "error", "output_budget_too_low")
+	}
+	cost := exec.provider.Cost(resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
+	return s.auth.RecordUsage(
+		ctx,
+		identity,
+		providerName,
+		exec.requestedModel,
+		resp.Usage.PromptTokens,
+		resp.Usage.CompletionTokens,
+		resp.Usage.TotalTokens,
+		cost,
+		latencyMs,
+		"error",
+		"output_budget_too_low",
+	)
+}
+
 func (s *Service) normalizeResponse(exec *execution, resp *provider.Response) *provider.Response {
 	if resp == nil {
 		resp = provider.NewTextResponse(exec.responseID, exec.requestedModel, "", provider.Usage{})
@@ -961,12 +1058,85 @@ func (s *Service) normalizeResponse(exec *execution, resp *provider.Response) *p
 	return resp
 }
 
-func (s *Service) selectProvider(ctx context.Context, identity *repository.AuthIdentity, sessionID string, model string) (provider.Provider, error) {
+func validateVisibleOutputBudget(exec *execution, resp *provider.Response) error {
+	if exec == nil || exec.upstreamRequest == nil || resp == nil {
+		return nil
+	}
+	requested := exec.upstreamRequest.RequestedMaxTokens()
+	if requested <= 0 {
+		return nil
+	}
+	if hasVisibleOutput(resp) {
+		return nil
+	}
+	if !thinkingOnlyResponse(resp) {
+		if requested > 128 {
+			return nil
+		}
+		return fmt.Errorf(
+			"%w: upstream produced no visible output; requested_tokens=%d completion_tokens=%d; increase max_tokens/max_output_tokens",
+			ErrOutputBudgetTooLow,
+			requested,
+			resp.Usage.CompletionTokens,
+		)
+	}
+	if !nearOutputBudgetLimit(resp.Usage.CompletionTokens, requested) {
+		return nil
+	}
+	return fmt.Errorf(
+		"%w: upstream produced only thinking blocks and no visible output; requested_tokens=%d completion_tokens=%d; increase max_tokens/max_output_tokens",
+		ErrOutputBudgetTooLow,
+		requested,
+		resp.Usage.CompletionTokens,
+	)
+}
+
+func hasVisibleOutput(resp *provider.Response) bool {
+	if resp == nil {
+		return false
+	}
+	return resp.OutputText() != "" || len(resp.OutputToolCalls()) > 0
+}
+
+func thinkingOnlyResponse(resp *provider.Response) bool {
+	if resp == nil {
+		return false
+	}
+	hasThinking := false
+	for _, output := range resp.Output {
+		if output.Type == "function_call" {
+			return false
+		}
+		for _, content := range output.Content {
+			if content.Text != "" || content.Refusal != "" {
+				return false
+			}
+			if content.Thinking != "" {
+				hasThinking = true
+			}
+		}
+	}
+	return hasThinking
+}
+
+func nearOutputBudgetLimit(actual, requested int) bool {
+	if actual <= 0 || requested <= 0 {
+		return false
+	}
+	threshold := int(math.Ceil(float64(requested) * 0.9))
+	if threshold < 1 {
+		threshold = 1
+	}
+	return actual >= threshold
+}
+
+func (s *Service) selectProvider(ctx context.Context, identity *repository.AuthIdentity, sessionID string, req *provider.ResponseRequest) (provider.Provider, error) {
 	providerNames, err := s.store.ListTenantProviders(ctx, identity.TenantID)
 	if err != nil {
 		return nil, err
 	}
-	return s.router.SelectFromWithModel(s.providerMgr.ListByNames(providerNames), sessionID, model), nil
+	routeCtx := buildRouteContext(req, sessionID)
+	return s.router.SelectFromWithContext(s.providerMgr.ListByNames(providerNames), routeCtx), nil
 }
 
 func isRetryable(err error) bool {
@@ -1035,7 +1205,7 @@ func (s *Service) callWithRetry(ctx context.Context, identity *repository.AuthId
 	return nil, retryCount, fmt.Errorf("all retries exhausted")
 }
 
-func (s *Service) getCandidateProviders(ctx context.Context, identity *repository.AuthIdentity, sessionID string, model string) []provider.Provider {
+func (s *Service) getCandidateProviders(ctx context.Context, identity *repository.AuthIdentity, sessionID string, req *provider.ResponseRequest) []provider.Provider {
 	providerNames, err := s.store.ListTenantProviders(ctx, identity.TenantID)
 	if err != nil {
 		return nil
@@ -1044,62 +1214,27 @@ func (s *Service) getCandidateProviders(ctx context.Context, identity *repositor
 	if len(candidates) == 0 {
 		return nil
 	}
-	// 使用 router 策略排序候选 providers
 	if s.router != nil {
-		return s.sortCandidatesByStrategy(candidates, sessionID, model)
+		return s.router.OrderCandidates(candidates, buildRouteContext(req, sessionID))
 	}
 	return candidates
 }
 
-func (s *Service) sortCandidatesByStrategy(candidates []provider.Provider, sessionID string, model string) []provider.Provider {
-	if len(candidates) <= 1 {
-		return candidates
+func buildRouteContext(req *provider.ResponseRequest, sessionID string) router.RouteContext {
+	if req == nil {
+		return router.RouteContext{SessionID: sessionID}
 	}
-
-	// 复制一份避免修改原列表
-	result := make([]provider.Provider, len(candidates))
-	copy(result, candidates)
-
-	// 使用 router 的策略来排序
-	// 先按 router 策略选出主 provider，然后按优先级排序
-	switch s.router.Strategy() {
-	case "round_robin":
-		// round_robin 已经通过 index 维护，直接按原始顺序
-		return result
-	case "least_load":
-		// 按负载升序排序
-		sort.Slice(result, func(i, j int) bool {
-			loadI := s.router.Load(result[i].Name())
-			loadJ := s.router.Load(result[j].Name())
-			return loadI < loadJ
-		})
-	case "cost_based":
-		// 按成本升序排序
-		sort.Slice(result, func(i, j int) bool {
-			return result[i].UnitCost() < result[j].UnitCost()
-		})
-	case "sticky":
-		// 按 session 哈希排序
-		if sessionID != "" {
-			hash := 0
-			for _, ch := range sessionID {
-				hash = hash*31 + int(ch)
-			}
-			// 让同一个 session 映射到固定的顺序
-			sort.Slice(result, func(i, j int) bool {
-				return (hash+i)%len(result) < (hash+j)%len(result)
-			})
-		}
-	case "random":
-		// 随机打乱
-		rand.Shuffle(len(result), func(i, j int) {
-			result[i], result[j] = result[j], result[i]
-		})
-	default:
-		// 默认 round_robin，保持原顺序
+	req.Normalize()
+	return router.RouteContext{
+		Model:               req.Model,
+		SessionID:           sessionID,
+		InputText:           req.InputText(),
+		PromptTokens:        req.EstimatePromptTokens(),
+		Stream:              req.Stream,
+		HasTools:            req.HasToolsRequested(),
+		HasImages:           req.HasImageInput(),
+		HasStructuredOutput: req.HasStructuredOutputRequest(),
 	}
-
-	return result
 }
 
 func WrapError(err error) ginError {
@@ -1108,6 +1243,8 @@ func WrapError(err error) ginError {
 		return ginError{Status: 403, Message: err.Error(), Type: "invalid_request_error"}
 	case errors.Is(err, auth.ErrQuotaExceeded):
 		return ginError{Status: 429, Message: err.Error(), Type: "rate_limit_error"}
+	case errors.Is(err, ErrOutputBudgetTooLow):
+		return ginError{Status: 400, Message: err.Error(), Type: "invalid_request_error"}
 	case errors.Is(err, ErrNoProvider):
 		return ginError{Status: 503, Message: err.Error(), Type: "internal_error"}
 	default:

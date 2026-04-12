@@ -35,8 +35,15 @@ func TestInferHTTPStatusAndRenderServiceError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	h.renderServiceError(c, "gpt-test", errors.New("429 rate_limit exceeded"))
+	h.renderServiceError(c, metricsSurfaceChatCompletions, "", errors.New("429 rate_limit exceeded"))
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("renderServiceError() status = %d, want %d: %s", rec.Code, http.StatusTooManyRequests, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(rec)
+	h.renderServiceError(c, metricsSurfaceChatCompletions, "", responseSvc.ErrOutputBudgetTooLow)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("renderServiceError(output budget) status = %d, want %d: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 }

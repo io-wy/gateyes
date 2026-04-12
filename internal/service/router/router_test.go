@@ -18,8 +18,8 @@ type mockProvider struct {
 
 func (m *mockProvider) Name() string      { return m.name }
 func (m *mockProvider) Type() string      { return "mock" }
-func (m *mockProvider) BaseURL() string  { return "http://test.com" }
-func (m *mockProvider) Model() string      { return m.model }
+func (m *mockProvider) BaseURL() string   { return "http://test.com" }
+func (m *mockProvider) Model() string     { return m.model }
 func (m *mockProvider) UnitCost() float64 { return m.cost }
 func (m *mockProvider) Cost(prompt, completion int) float64 {
 	return float64(prompt+completion) * m.cost
@@ -122,9 +122,9 @@ func TestRouter_CostBased(t *testing.T) {
 	r := NewRouter(cfg)
 
 	providers := []provider.Provider{
-		&mockProvider{name: "p1", model: "m1", cost: 1.0},  // 最贵
+		&mockProvider{name: "p1", model: "m1", cost: 1.0}, // 最贵
 		&mockProvider{name: "p2", model: "m2", cost: 0.5}, // 中等
-		&mockProvider{name: "p3", model: "m3", cost: 0.1},  // 最便宜
+		&mockProvider{name: "p3", model: "m3", cost: 0.1}, // 最便宜
 	}
 	r.SetProviders(providers)
 
@@ -242,4 +242,137 @@ func TestRouter_LoadManagement(t *testing.T) {
 
 	// 验证负载不会变负（通过 least_load 验证）
 	// 如果负载变成负数，least_load 会出问题
+}
+
+func TestRouter_OrderCandidatesRuleEngineFiltersProviders(t *testing.T) {
+	cfg := config.RouterConfig{
+		Strategy: "least_load",
+		RuleEngine: config.RuleEngineConfig{
+			Enabled: true,
+			Rules: []config.RouteRuleConfig{{
+				Name: "long-context-tools",
+				Match: config.RouteMatchConfig{
+					MinPromptTokens: 100,
+					HasTools:        boolPtr(true),
+				},
+				Action: config.RouteActionConfig{
+					Providers: []string{"p2", "p3"},
+				},
+			}},
+		},
+	}
+	r := NewRouter(cfg)
+	r.SetProviders([]provider.Provider{
+		&mockProvider{name: "p1", model: "m1", cost: 1.0},
+		&mockProvider{name: "p2", model: "m2", cost: 0.5},
+		&mockProvider{name: "p3", model: "m3", cost: 0.7},
+	})
+
+	ordered := r.OrderCandidates(r.List(), RouteContext{
+		PromptTokens: 150,
+		HasTools:     true,
+	})
+	if len(ordered) != 2 || ordered[0].Name() != "p2" || ordered[1].Name() != "p3" {
+		t.Fatalf("OrderCandidates(rule engine) = %v, want [p2 p3]", providerNames(ordered))
+	}
+}
+
+func TestRouter_OrderCandidatesRuleEngineRegexMatch(t *testing.T) {
+	cfg := config.RouterConfig{
+		Strategy: "round_robin",
+		RuleEngine: config.RuleEngineConfig{
+			Enabled: true,
+			Rules: []config.RouteRuleConfig{{
+				Name: "code-traffic",
+				Match: config.RouteMatchConfig{
+					AnyRegex: []string{`(?i)stack trace`, `(?i)golang`},
+				},
+				Action: config.RouteActionConfig{
+					Providers: []string{"coder"},
+				},
+			}},
+		},
+	}
+	r := NewRouter(cfg)
+	r.SetProviders([]provider.Provider{
+		&mockProvider{name: "general", model: "m1", cost: 1.0},
+		&mockProvider{name: "coder", model: "m2", cost: 1.0},
+	})
+
+	ordered := r.OrderCandidates(r.List(), RouteContext{
+		InputText: "Please debug this Go stack trace for me.",
+	})
+	if len(ordered) != 1 || ordered[0].Name() != "coder" {
+		t.Fatalf("OrderCandidates(regex rule) = %v, want [coder]", providerNames(ordered))
+	}
+}
+
+func TestRouter_OrderCandidatesRuleEngineStructuredOutput(t *testing.T) {
+	cfg := config.RouterConfig{
+		Strategy: "round_robin",
+		RuleEngine: config.RuleEngineConfig{
+			Enabled: true,
+			Rules: []config.RouteRuleConfig{{
+				Name: "structured-output",
+				Match: config.RouteMatchConfig{
+					HasStructuredOutput: boolPtr(true),
+				},
+				Action: config.RouteActionConfig{
+					Providers: []string{"json-safe"},
+				},
+			}},
+		},
+	}
+	r := NewRouter(cfg)
+	r.SetProviders([]provider.Provider{
+		&mockProvider{name: "general", model: "m1", cost: 1.0},
+		&mockProvider{name: "json-safe", model: "m2", cost: 1.0},
+	})
+
+	ordered := r.OrderCandidates(r.List(), RouteContext{
+		HasStructuredOutput: true,
+	})
+	if len(ordered) != 1 || ordered[0].Name() != "json-safe" {
+		t.Fatalf("OrderCandidates(structured rule) = %v, want [json-safe]", providerNames(ordered))
+	}
+}
+
+func TestRouter_OrderCandidatesMLRankPlaceholderIsNoop(t *testing.T) {
+	cfg := config.RouterConfig{
+		Strategy: "round_robin",
+		Ranker: config.RankerConfig{
+			Enabled: true,
+			Method:  "ml_rank",
+		},
+	}
+	r := NewRouter(cfg)
+	r.SetProviders([]provider.Provider{
+		&mockProvider{name: "p1", model: "m1", cost: 1.0},
+		&mockProvider{name: "p2", model: "m2", cost: 1.0},
+	})
+
+	ordered := r.OrderCandidates(r.List(), RouteContext{})
+	if len(ordered) != 2 || ordered[0].Name() != "p1" || ordered[1].Name() != "p2" {
+		t.Fatalf("OrderCandidates(ml_rank placeholder) = %v, want [p1 p2]", providerNames(ordered))
+	}
+}
+
+func (r *Router) List() []provider.Provider {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	result := make([]provider.Provider, len(r.providers))
+	copy(result, r.providers)
+	return result
+}
+
+func providerNames(providers []provider.Provider) []string {
+	result := make([]string, 0, len(providers))
+	for _, p := range providers {
+		result = append(result, p.Name())
+	}
+	return result
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }

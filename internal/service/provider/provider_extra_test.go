@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 
@@ -137,7 +138,7 @@ func TestResponseRequestAndResponseHelpers(t *testing.T) {
 func TestChatCompatibilityHelpers(t *testing.T) {
 	chatReq := &ChatCompletionRequest{
 		Model: "gpt-test",
-		Messages: []Message{{
+		Messages: []ChatMessage{{
 			Role:    "user",
 			Content: "hello",
 		}},
@@ -166,12 +167,12 @@ func TestChatCompatibilityHelpers(t *testing.T) {
 		t.Fatal("ConvertChatRequest(nil) or ConvertResponseToChat(nil) returned non-nil")
 	}
 
-	chunk := ConvertEventToChatChunk("resp-1", "gpt-test", ResponseEvent{Type: "response.output_text.delta", Delta: "he"})
+	chunk := ConvertEventToChatChunk("resp-1", "gpt-test", ResponseEvent{Type: EventContentDelta, Delta: "he"})
 	if chunk == nil || chunk.Choices[0].Delta.Content != "he" {
 		t.Fatalf("ConvertEventToChatChunk(text) = %+v, want delta content", chunk)
 	}
 	chunk = ConvertEventToChatChunk("resp-1", "gpt-test", ResponseEvent{
-		Type: "response.output_item.done",
+		Type: EventToolCallDone,
 		Output: &ResponseOutput{
 			ID:   "call-1",
 			Type: "function_call",
@@ -183,7 +184,7 @@ func TestChatCompatibilityHelpers(t *testing.T) {
 		t.Fatalf("ConvertEventToChatChunk(tool) = %+v, want tool call chunk", chunk)
 	}
 	chunk = ConvertEventToChatChunk("resp-1", "gpt-test", ResponseEvent{
-		Type:     "response.completed",
+		Type:     EventResponseCompleted,
 		Response: &Response{Output: []ResponseOutput{{ID: "call-1", Type: "function_call", Name: "lookup"}}, Usage: Usage{TotalTokens: 5}},
 	})
 	if chunk == nil || chunk.Choices[0].FinishReason != "tool_calls" || chunk.Usage == nil {
@@ -232,8 +233,8 @@ func TestNormalizeHelpersAndMessageSignature(t *testing.T) {
 	if got := normalizeContent(map[string]any{"type": "text", "text": "hello"}); got == nil {
 		t.Fatal("normalizeContent(map) = nil, want non-nil")
 	}
-	if got := normalizeContent(""); got != nil {
-		t.Fatalf("normalizeContent(empty string) = %#v, want nil", got)
+	if got := normalizeContent(""); len(got.([]ContentBlock)) != 0 {
+		t.Fatalf("normalizeContent(empty string) = %#v, want empty content blocks", got)
 	}
 	if got := normalizeToolCalls("bad"); got != nil {
 		t.Fatalf("normalizeToolCalls(non-slice) = %+v, want nil", got)
@@ -243,6 +244,28 @@ func TestNormalizeHelpersAndMessageSignature(t *testing.T) {
 	}
 	if stringValue(123) != "" || firstNonEmpty("", "b", "c") != "b" {
 		t.Fatal("stringValue() or firstNonEmpty() returned unexpected result")
+	}
+
+	content := NormalizeMessageContent([]any{
+		map[string]any{"type": "thinking", "thinking": "chain"},
+		map[string]any{"type": "refusal", "refusal": "denied"},
+		map[string]any{"type": "structured_output", "data": map[string]any{"ok": true}},
+		map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://example.com/cat.png", "detail": "high"}},
+	})
+	if len(content) != 4 {
+		t.Fatalf("NormalizeMessageContent() length = %d, want %d", len(content), 4)
+	}
+	if content[0].Type != "thinking" || content[0].Thinking != "chain" {
+		t.Fatalf("thinking block = %+v, want thinking block", content[0])
+	}
+	if content[1].Type != "refusal" || content[1].Refusal != "denied" {
+		t.Fatalf("refusal block = %+v, want refusal block", content[1])
+	}
+	if content[2].Type != "structured_output" || content[2].Structured == nil || content[2].Structured.Data["ok"] != true {
+		t.Fatalf("structured block = %+v, want structured_output block", content[2])
+	}
+	if content[3].Type != "image" || content[3].Image == nil || content[3].Image.URL != "https://example.com/cat.png" {
+		t.Fatalf("image block = %+v, want image block", content[3])
 	}
 }
 
@@ -269,7 +292,7 @@ func TestOpenAIProviderHelpersAndParsers(t *testing.T) {
 		t.Fatalf("openAIProvider.Cost() = %v, want %v", got, want)
 	}
 
-	req := &ResponseRequest{Model: "public-model", Input: []Message{{Role: "user", Content: []any{"hello", map[string]any{"type": "text", "text": " world"}}}}, MaxTokens: 12}
+	req := &ResponseRequest{Model: "public-model", Input: []Message{{Role: "user", Content: []ContentBlock{{Type: "text", Text: "hello"}, {Type: "text", Text: " world"}}}}, MaxTokens: 12}
 	httpReq, err := p.newRequest(context.Background(), req, true)
 	if err != nil {
 		t.Fatalf("openAIProvider.newRequest(responses) error: %v", err)
@@ -298,17 +321,20 @@ func TestOpenAIProviderHelpersAndParsers(t *testing.T) {
 		t.Fatalf("openAIProvider.newRequest(chat with /v1 base) URL = %q, want %q", got, want)
 	}
 
-	if msgs := buildChatCompletionMessages([]Message{{Role: "user", Content: "hello"}}); len(msgs) != 1 || msgs[0]["content"] != "hello" {
+	if msgs := buildChatCompletionMessages([]Message{{Role: "user", Content: TextBlocks("hello")}}); len(msgs) != 1 || msgs[0]["content"] != "hello" {
 		t.Fatalf("buildChatCompletionMessages() = %+v, want one simple chat message", msgs)
 	}
-	if parts := buildOpenAIMessageContent([]any{map[string]any{"type": "output_text", "text": "hello"}}); len(parts) != 1 || parts[0]["type"] != "input_text" {
+	if parts := buildOpenAIMessageContent([]ContentBlock{{Type: "output_text", Text: "hello"}}); len(parts) != 1 || parts[0]["type"] != "input_text" {
 		t.Fatalf("buildOpenAIMessageContent() = %+v, want normalized input_text block", parts)
 	}
-	if part, ok := buildOpenAIContentPart(1234); !ok || part["text"] != "1234" {
-		t.Fatalf("buildOpenAIContentPart(1234) = (%+v,%v), want text part", part, ok)
+	if part, ok := buildOpenAIContentPart(ContentBlock{Type: "text", Text: "1234"}); !ok || part["text"] != "1234" {
+		t.Fatalf("buildOpenAIContentPart(text block) = (%+v,%v), want text part", part, ok)
 	}
 	if got := normalizeOpenAITextType("output_text"); got != "input_text" {
 		t.Fatalf("normalizeOpenAITextType(output_text) = %q, want %q", got, "input_text")
+	}
+	if parts := buildOpenAIMessageContent([]ContentBlock{{Type: "image", Image: &ContentImage{URL: "https://example.com/cat.png"}}}); len(parts) != 1 || parts[0]["type"] != "input_image" {
+		t.Fatalf("buildOpenAIMessageContent(image) = %+v, want input_image block", parts)
 	}
 
 	delta, err := parseOpenAIResponseEvent(`{"type":"response.output_text.delta","delta":"hi"}`, "public-model")
@@ -327,8 +353,8 @@ func TestOpenAIProviderHelpersAndParsers(t *testing.T) {
 		t.Fatal("parseOpenAIResponseEvent(failed) error = nil, want non-nil")
 	}
 	chatEvent, err := parseOpenAIResponseEvent(`{"id":"chat-1","object":"chat.completion.chunk","created":1,"model":"provider-model","choices":[{"delta":{"content":"hello","tool_calls":[{"id":"call-1","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`, "public-model")
-	if err != nil || chatEvent == nil || chatEvent.Type != "chat.delta" || len(chatEvent.ToolCalls) != 1 || chatEvent.Usage == nil {
-		t.Fatalf("parseOpenAIResponseEvent(chat chunk) = (%+v,%v), want chat.delta with tool calls and usage", chatEvent, err)
+	if err != nil || chatEvent == nil || chatEvent.Type != EventContentDelta || len(chatEvent.ToolCalls) != 1 || chatEvent.Usage == nil {
+		t.Fatalf("parseOpenAIResponseEvent(chat chunk) = (%+v,%v), want content_delta with tool calls and usage", chatEvent, err)
 	}
 	chatEvent, err = parseOpenAIResponseEvent(`{"id":"chat-2","object":"chat.completion.chunk","created":1,"model":"provider-model","choices":[{"delta":{"content":[{"type":"text","text":"hello"},{"type":"text","text":" world"}]}}]}`, "public-model")
 	if err != nil || chatEvent == nil || chatEvent.Delta != "hello world" {
@@ -372,6 +398,18 @@ func TestOpenAIProviderHelpersAndParsers(t *testing.T) {
 	if converted.Model != "public-model" || converted.OutputText() != "hello" {
 		t.Fatalf("convertChatCompletionResponse() = %+v, want normalized response", converted)
 	}
+
+	format := normalizeOutputFormatValue(map[string]any{
+		"type": "json_schema",
+		"json_schema": map[string]any{
+			"name":   "Weather",
+			"strict": true,
+			"schema": map[string]any{"type": "object"},
+		},
+	})
+	if format == nil || format.Type != "json_schema" || format.Name != "Weather" || !format.Strict {
+		t.Fatalf("normalizeOutputFormatValue() = %+v, want json_schema format", format)
+	}
 }
 
 func TestAnthropicProviderHelpers(t *testing.T) {
@@ -396,7 +434,7 @@ func TestAnthropicProviderHelpers(t *testing.T) {
 
 	msg := Message{
 		Role:    "assistant",
-		Content: []any{map[string]any{"type": "text", "text": "hello"}},
+		Content: TextBlocks("hello"),
 		ToolCalls: []ToolCall{{
 			ID:   "call-1",
 			Type: "function",
@@ -410,8 +448,8 @@ func TestAnthropicProviderHelpers(t *testing.T) {
 	if len(blocks) != 2 || blocks[0].Type != "text" || blocks[1].Type != "tool_use" {
 		t.Fatalf("buildAnthropicBlocks() = %+v, want text block and tool_use block", blocks)
 	}
-	if block, ok := buildAnthropicTextBlock(123); !ok || block.Text != "123" {
-		t.Fatalf("buildAnthropicTextBlock(123) = (%+v,%v), want text block", block, ok)
+	if block, ok := buildAnthropicTextBlock(ContentBlock{Type: "text", Text: "123"}); !ok || block.Text != "123" {
+		t.Fatalf("buildAnthropicTextBlock(text block) = (%+v,%v), want text block", block, ok)
 	}
 	if string(marshalRawJSON(`{"ok":true}`)) != `{"ok":true}` {
 		t.Fatalf("marshalRawJSON(valid json) = %q, want %q", string(marshalRawJSON(`{"ok":true}`)), `{"ok":true}`)
@@ -434,5 +472,165 @@ func TestAnthropicProviderHelpers(t *testing.T) {
 	})
 	if len(outputs) != 2 || outputs[1].Type != "function_call" {
 		t.Fatalf("convertAnthropicOutputs() = %+v, want text and function_call outputs", outputs)
+	}
+}
+
+func TestOpenAIProviderNewRequestEncodesImageInputAndJSONSchema(t *testing.T) {
+	formatRaw := map[string]any{
+		"type": "json_schema",
+		"json_schema": map[string]any{
+			"name":   "VisionAnswer",
+			"strict": true,
+			"schema": map[string]any{"type": "object"},
+		},
+	}
+	req := &ResponseRequest{
+		Model: "public-model",
+		Messages: []Message{{
+			Role: "user",
+			Content: []ContentBlock{
+				{Type: "text", Text: "look"},
+				{Type: "image", Image: &ContentImage{URL: "https://example.com/cat.png", Detail: "high"}},
+			},
+		}},
+		OutputFormat: &OutputFormat{
+			Type:   "json_schema",
+			Name:   "VisionAnswer",
+			Strict: true,
+			Schema: map[string]any{"type": "object"},
+			Raw:    formatRaw,
+		},
+	}
+	cfg := config.ProviderConfig{
+		Name:     "openai-a",
+		Type:     "openai",
+		BaseURL:  "https://openai.example",
+		APIKey:   "test-key",
+		Timeout:  5,
+		Endpoint: "chat",
+	}
+	p := NewOpenAIProvider(cfg).(*openAIProvider)
+
+	t.Run("chat", func(t *testing.T) {
+		httpReq, err := p.newRequest(context.Background(), req, false)
+		if err != nil {
+			t.Fatalf("openAIProvider.newRequest(chat) error: %v", err)
+		}
+		var payload map[string]any
+		body, _ := io.ReadAll(httpReq.Body)
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("json.Unmarshal(chat payload) error: %v", err)
+		}
+		if _, ok := payload["response_format"].(map[string]any); !ok {
+			t.Fatalf("chat payload response_format = %#v, want raw response_format", payload["response_format"])
+		}
+		messages, ok := payload["messages"].([]any)
+		if !ok || len(messages) != 1 {
+			t.Fatalf("chat payload messages = %#v, want one message", payload["messages"])
+		}
+		message, _ := messages[0].(map[string]any)
+		content, ok := message["content"].([]any)
+		if !ok || len(content) != 2 {
+			t.Fatalf("chat message content = %#v, want text + image", message["content"])
+		}
+		imagePart, _ := content[1].(map[string]any)
+		if imagePart["type"] != "image_url" {
+			t.Fatalf("chat image part type = %#v, want image_url", imagePart["type"])
+		}
+		imageURL, _ := imagePart["image_url"].(map[string]any)
+		if imageURL["url"] != "https://example.com/cat.png" || imageURL["detail"] != "high" {
+			t.Fatalf("chat image_url = %#v, want url/detail", imageURL)
+		}
+	})
+
+	t.Run("responses", func(t *testing.T) {
+		p.cfg.Endpoint = "responses"
+		httpReq, err := p.newRequest(context.Background(), req, false)
+		if err != nil {
+			t.Fatalf("openAIProvider.newRequest(responses) error: %v", err)
+		}
+		var payload map[string]any
+		body, _ := io.ReadAll(httpReq.Body)
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("json.Unmarshal(responses payload) error: %v", err)
+		}
+		if _, ok := payload["response_format"].(map[string]any); !ok {
+			t.Fatalf("responses payload response_format = %#v, want raw response_format", payload["response_format"])
+		}
+		input, ok := payload["input"].([]any)
+		if !ok || len(input) != 1 {
+			t.Fatalf("responses payload input = %#v, want one item", payload["input"])
+		}
+		item, _ := input[0].(map[string]any)
+		content, ok := item["content"].([]any)
+		if !ok || len(content) != 2 {
+			t.Fatalf("responses input content = %#v, want input_text + input_image", item["content"])
+		}
+		imagePart, _ := content[1].(map[string]any)
+		if imagePart["type"] != "input_image" || imagePart["image_url"] != "https://example.com/cat.png" {
+			t.Fatalf("responses image part = %#v, want input_image with URL", imagePart)
+		}
+	})
+}
+
+func TestConvertOpenAIResponsePreservesRefusalBlock(t *testing.T) {
+	resp := convertOpenAIResponse(openAIResponsePayload{
+		ID:        "resp-1",
+		CreatedAt: 1,
+		Model:     "provider-model",
+		Status:    "completed",
+		Output: []openAIOutputItem{{
+			ID:     "msg-1",
+			Type:   "message",
+			Role:   "assistant",
+			Status: "completed",
+			Content: []struct {
+				Type      string `json:"type"`
+				Text      string `json:"text"`
+				Thinking  string `json:"thinking"`
+				Signature string `json:"signature"`
+				Refusal   string `json:"refusal"`
+			}{
+				{Type: "refusal", Refusal: "blocked"},
+			},
+		}},
+	}, "public-model")
+
+	if len(resp.Output) != 1 || len(resp.Output[0].Content) != 1 {
+		t.Fatalf("convertOpenAIResponse() = %+v, want one refusal message", resp)
+	}
+	if resp.Output[0].Content[0].Type != "refusal" || resp.Output[0].Content[0].Refusal != "blocked" {
+		t.Fatalf("convertOpenAIResponse() refusal block = %+v, want refusal block", resp.Output[0].Content[0])
+	}
+}
+
+func TestConvertAnthropicResponsePreservesThinkingBlock(t *testing.T) {
+	resp := convertAnthropicResponse(anthropicResponse{
+		ID:    "resp-1",
+		Model: "claude-provider",
+		Role:  "assistant",
+		Content: []struct {
+			Type      string           `json:"type"`
+			Text      string           `json:"text"`
+			ID        string           `json:"id"`
+			Name      string           `json:"name"`
+			Input     json.RawMessage  `json:"input"`
+			Source    *AnthropicSource `json:"source"`
+			Thinking  string           `json:"thinking"`
+			Signature string           `json:"signature"`
+		}{
+			{Type: "thinking", Thinking: "chain", Signature: "sig-1"},
+			{Type: "text", Text: "done"},
+		},
+	}, "claude-public")
+
+	if len(resp.Output) != 1 || len(resp.Output[0].Content) != 2 {
+		t.Fatalf("convertAnthropicResponse() = %+v, want one message with thinking + text", resp)
+	}
+	if resp.Output[0].Content[0].Type != "thinking" || resp.Output[0].Content[0].Thinking != "chain" || resp.Output[0].Content[0].Signature != "sig-1" {
+		t.Fatalf("convertAnthropicResponse() thinking block = %+v, want thinking block", resp.Output[0].Content[0])
+	}
+	if resp.Output[0].Content[1].Type != "output_text" || resp.Output[0].Content[1].Text != "done" {
+		t.Fatalf("convertAnthropicResponse() text block = %+v, want output_text block", resp.Output[0].Content[1])
 	}
 }

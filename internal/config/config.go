@@ -8,17 +8,17 @@ import (
 )
 
 type Config struct {
-	Server        ServerConfig           `yaml:"server"`
-	Database      DatabaseConfig         `yaml:"database"`
-	Metrics       MetricsConfig          `yaml:"metrics"`
-	Router        RouterConfig           `yaml:"router"`
-	Limiter       LimiterConfig          `yaml:"limiter"`
-	Alert         AlertConfig            `yaml:"alert"`
-	Retry         RetryConfig            `yaml:"retry"`
-	CircuitBreaker CircuitBreakerConfig  `yaml:"circuitBreaker"`
-	Providers     []ProviderConfig       `yaml:"providers"`
-	APIKeys       []APIKeyConfig         `yaml:"apiKeys"`
-	Admin         AdminConfig            `yaml:"admin"`
+	Server         ServerConfig         `yaml:"server"`
+	Database       DatabaseConfig       `yaml:"database"`
+	Metrics        MetricsConfig        `yaml:"metrics"`
+	Router         RouterConfig         `yaml:"router"`
+	Limiter        LimiterConfig        `yaml:"limiter"`
+	Alert          AlertConfig          `yaml:"alert"`
+	Retry          RetryConfig          `yaml:"retry"`
+	CircuitBreaker CircuitBreakerConfig `yaml:"circuitBreaker"`
+	Providers      []ProviderConfig     `yaml:"providers"`
+	APIKeys        []APIKeyConfig       `yaml:"apiKeys"`
+	Admin          AdminConfig          `yaml:"admin"`
 }
 
 type ServerConfig struct {
@@ -38,18 +38,52 @@ type DatabaseConfig struct {
 
 type MetricsConfig struct {
 	Namespace string `yaml:"namespace"`
+	Enabled   bool   `yaml:"enabled"`
 }
 
 type RouterConfig struct {
-	Strategy string `yaml:"strategy"`
+	Strategy   string           `yaml:"strategy"`
+	Ranker     RankerConfig     `yaml:"ranker"`
+	RuleEngine RuleEngineConfig `yaml:"ruleEngine"`
+}
+
+type RankerConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Method  string `yaml:"method"`
+}
+
+type RuleEngineConfig struct {
+	Enabled bool              `yaml:"enabled"`
+	Rules   []RouteRuleConfig `yaml:"rules"`
+}
+
+type RouteRuleConfig struct {
+	Name   string            `yaml:"name"`
+	Match  RouteMatchConfig  `yaml:"match"`
+	Action RouteActionConfig `yaml:"action"`
+}
+
+type RouteMatchConfig struct {
+	Models              []string `yaml:"models"`
+	MinPromptTokens     int      `yaml:"minPromptTokens"`
+	MaxPromptTokens     int      `yaml:"maxPromptTokens"`
+	HasTools            *bool    `yaml:"hasTools"`
+	HasImages           *bool    `yaml:"hasImages"`
+	HasStructuredOutput *bool    `yaml:"hasStructuredOutput"`
+	Stream              *bool    `yaml:"stream"`
+	AnyRegex            []string `yaml:"anyRegex"`
+}
+
+type RouteActionConfig struct {
+	Providers []string `yaml:"providers"`
 }
 
 type LimiterConfig struct {
-	GlobalQPS          int `yaml:"globalQPS"`          // 全局默认 QPS
-	GlobalTPM          int `yaml:"globalTPM"`          // 全局每分钟 token 上限
-	GlobalTokenBurst   int `yaml:"globalTokenBurst"`  // 全局 token 桶突发容量
+	GlobalQPS           int `yaml:"globalQPS"`           // 全局默认 QPS
+	GlobalTPM           int `yaml:"globalTPM"`           // 全局每分钟 token 上限
+	GlobalTokenBurst    int `yaml:"globalTokenBurst"`    // 全局 token 桶突发容量
 	PerUserRequestBurst int `yaml:"perUserRequestBurst"` // 每用户请求突发容量
-	QueueSize          int `yaml:"queueSize"`         // 队列大小
+	QueueSize           int `yaml:"queueSize"`           // 队列大小
 }
 
 type ProviderConfig struct {
@@ -81,22 +115,22 @@ type AdminConfig struct {
 }
 
 type AlertConfig struct {
-	Enabled        bool     `yaml:"enabled"`
-	QuotaThreshold float64  `yaml:"quotaThreshold"` // 0.8 = 80%
-	WebhookURL     string   `yaml:"webhookURL"`
-	WebhookSecret  string   `yaml:"webhookSecret"`
+	Enabled        bool    `yaml:"enabled"`
+	QuotaThreshold float64 `yaml:"quotaThreshold"` // 0.8 = 80%
+	WebhookURL     string  `yaml:"webhookURL"`
+	WebhookSecret  string  `yaml:"webhookSecret"`
 }
 
 type RetryConfig struct {
-	MaxRetries     int     `yaml:"maxRetries"`      // 最大重试次数
-	InitialDelayMs int     `yaml:"initialDelayMs"`  // 初始退避延迟 ms
-	MaxDelayMs     int     `yaml:"maxDelayMs"`      // 最大退避延迟 ms
-	BackoffFactor  float64 `yaml:"backoffFactor"`   // 退避系数
+	MaxRetries     int     `yaml:"maxRetries"`     // 最大重试次数
+	InitialDelayMs int     `yaml:"initialDelayMs"` // 初始退避延迟 ms
+	MaxDelayMs     int     `yaml:"maxDelayMs"`     // 最大退避延迟 ms
+	BackoffFactor  float64 `yaml:"backoffFactor"`  // 退避系数
 }
 
 type CircuitBreakerConfig struct {
-	FailureThreshold   int `yaml:"failureThreshold"`   // 连续失败 N 次后熔断
-	RecoveryTimeout    int `yaml:"recoveryTimeout"`    // 熔断后恢复尝试间隔秒
+	FailureThreshold    int `yaml:"failureThreshold"`    // 连续失败 N 次后熔断
+	RecoveryTimeout     int `yaml:"recoveryTimeout"`     // 熔断后恢复尝试间隔秒
 	HalfOpenMaxRequests int `yaml:"halfOpenMaxRequests"` // half-open 状态下最大并发探测请求数
 }
 
@@ -144,16 +178,24 @@ func DefaultConfig() *Config {
 		},
 		Metrics: MetricsConfig{
 			Namespace: "gateway",
+			Enabled:   true,
 		},
 		Router: RouterConfig{
 			Strategy: "round_robin",
+			Ranker: RankerConfig{
+				Enabled: false,
+				Method:  "",
+			},
+			RuleEngine: RuleEngineConfig{
+				Enabled: false,
+			},
 		},
 		Limiter: LimiterConfig{
-			GlobalQPS:          1000,
-			GlobalTPM:          1000000,
-			GlobalTokenBurst:   100000,
+			GlobalQPS:           1000,
+			GlobalTPM:           1000000,
+			GlobalTokenBurst:    100000,
 			PerUserRequestBurst: 100,
-			QueueSize:          1000,
+			QueueSize:           1000,
 		},
 		Retry: RetryConfig{
 			MaxRetries:     2,
@@ -162,8 +204,8 @@ func DefaultConfig() *Config {
 			BackoffFactor:  2.0,
 		},
 		CircuitBreaker: CircuitBreakerConfig{
-			FailureThreshold:   5,
-			RecoveryTimeout:    60,
+			FailureThreshold:    5,
+			RecoveryTimeout:     60,
 			HalfOpenMaxRequests: 1,
 		},
 		Admin: AdminConfig{

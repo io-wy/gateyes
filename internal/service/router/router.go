@@ -1,8 +1,8 @@
 package router
 
 import (
-	"math"
 	"math/rand"
+	"sort"
 	"sync"
 
 	"github.com/gateyes/gateway/internal/config"
@@ -31,18 +31,39 @@ func (r *Router) SetProviders(providers []provider.Provider) {
 }
 
 func (r *Router) Select(model, sessionID string) provider.Provider {
-	return r.SelectFrom(r.providers, sessionID)
+	return r.SelectFromWithContext(r.providers, RouteContext{
+		Model:     model,
+		SessionID: sessionID,
+	})
 }
 
 func (r *Router) SelectFrom(candidates []provider.Provider, sessionID string) provider.Provider {
-	return r.selectFromWithModel(candidates, sessionID, "")
+	return r.SelectFromWithContext(candidates, RouteContext{SessionID: sessionID})
 }
 
 func (r *Router) SelectFromWithModel(candidates []provider.Provider, sessionID string, model string) provider.Provider {
-	return r.selectFromWithModel(candidates, sessionID, model)
+	return r.SelectFromWithContext(candidates, RouteContext{
+		Model:     model,
+		SessionID: sessionID,
+	})
 }
 
-func (r *Router) selectFromWithModel(candidates []provider.Provider, sessionID string, model string) provider.Provider {
+func (r *Router) SelectFromWithContext(candidates []provider.Provider, ctx RouteContext) provider.Provider {
+	ordered := r.OrderCandidates(candidates, ctx)
+	if len(ordered) == 0 {
+		return nil
+	}
+	if ctx.Model != "" {
+		for _, candidate := range ordered {
+			if candidate.Model() == ctx.Model {
+				return candidate
+			}
+		}
+	}
+	return ordered[0]
+}
+
+func (r *Router) OrderCandidates(candidates []provider.Provider, ctx RouteContext) []provider.Provider {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -50,26 +71,74 @@ func (r *Router) selectFromWithModel(candidates []provider.Provider, sessionID s
 		return nil
 	}
 
-	// 如果指定了模型，优先选择支持该模型的 provider
-	if model != "" {
-		for _, p := range candidates {
-			if p.Model() == model {
-				return p
-			}
-		}
+	ordered := make([]provider.Provider, len(candidates))
+	copy(ordered, candidates)
+
+	ordered = r.applyRuleEngineLocked(ordered, ctx)
+	ordered = r.applyRankerLocked(ordered, ctx)
+	ordered = r.orderByStrategyLocked(ordered, ctx.SessionID)
+	if len(ordered) == 0 {
+		return nil
+	}
+	return ordered
+}
+
+func (r *Router) orderByStrategyLocked(candidates []provider.Provider, sessionID string) []provider.Provider {
+	if len(candidates) <= 1 {
+		return candidates
 	}
 
+	ordered := make([]provider.Provider, len(candidates))
+	copy(ordered, candidates)
+
 	switch r.cfg.Strategy {
-	case "random":
-		return candidates[rand.Intn(len(candidates))]
+	case "round_robin":
+		start := r.index % len(ordered)
+		result := append([]provider.Provider(nil), ordered[start:]...)
+		result = append(result, ordered[:start]...)
+		r.index = (r.index + 1) % len(ordered)
+		return result
 	case "least_load":
-		return r.leastLoadLocked(candidates)
+		sort.SliceStable(ordered, func(i, j int) bool {
+			loadI := r.loads[ordered[i].Name()]
+			loadJ := r.loads[ordered[j].Name()]
+			return loadI < loadJ
+		})
+		return ordered
 	case "cost_based":
-		return r.costBasedLocked(candidates)
+		sort.SliceStable(ordered, func(i, j int) bool {
+			return ordered[i].UnitCost() < ordered[j].UnitCost()
+		})
+		return ordered
 	case "sticky":
-		return r.stickyLocked(sessionID, candidates)
+		if sessionID == "" {
+			start := r.index % len(ordered)
+			result := append([]provider.Provider(nil), ordered[start:]...)
+			result = append(result, ordered[:start]...)
+			r.index = (r.index + 1) % len(ordered)
+			return result
+		}
+		hash := 0
+		for _, ch := range sessionID {
+			hash = hash*31 + int(ch)
+		}
+		start := hash % len(ordered)
+		if start < 0 {
+			start = -start
+		}
+		result := append([]provider.Provider(nil), ordered[start:]...)
+		result = append(result, ordered[:start]...)
+		return result
+	case "random":
+		rand.Shuffle(len(ordered), func(i, j int) {
+			ordered[i], ordered[j] = ordered[j], ordered[i]
+		})
+		return ordered
+	case "ml_rank":
+		// TODO(io-wy): once ranker is implemented, let strategy delegate to it or remove this alias.
+		return ordered
 	default:
-		return r.roundRobinLocked(candidates)
+		return ordered
 	}
 }
 
@@ -95,52 +164,4 @@ func (r *Router) Load(name string) int64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.loads[name]
-}
-
-func (r *Router) roundRobinLocked(candidates []provider.Provider) provider.Provider {
-	selected := candidates[r.index%len(candidates)]
-	r.index = (r.index + 1) % len(candidates)
-	return selected
-}
-
-func (r *Router) leastLoadLocked(candidates []provider.Provider) provider.Provider {
-	var selected provider.Provider
-	minLoad := int64(math.MaxInt64)
-	for _, p := range candidates {
-		load := r.loads[p.Name()]
-		if load < minLoad {
-			minLoad = load
-			selected = p
-		}
-	}
-	return selected
-}
-
-func (r *Router) costBasedLocked(candidates []provider.Provider) provider.Provider {
-	var selected provider.Provider
-	minCost := math.MaxFloat64
-	for _, p := range candidates {
-		if p.UnitCost() < minCost {
-			minCost = p.UnitCost()
-			selected = p
-		}
-	}
-	return selected
-}
-
-func (r *Router) stickyLocked(sessionID string, candidates []provider.Provider) provider.Provider {
-	if sessionID == "" {
-		return r.roundRobinLocked(candidates)
-	}
-
-	hash := 0
-	for _, ch := range sessionID {
-		hash = hash*31 + int(ch)
-	}
-
-	index := hash % len(candidates)
-	if index < 0 {
-		index = -index
-	}
-	return candidates[index]
 }

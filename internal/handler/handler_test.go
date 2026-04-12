@@ -184,9 +184,10 @@ func TestResponsesEndpointStreamReturnsSSE(t *testing.T) {
 }
 
 type handlerTestEnv struct {
-	server      *Server
-	store       *sqlstore.Store
-	providerMgr *provider.Manager
+	server           *Server
+	store            *sqlstore.Store
+	providerMgr      *provider.Manager
+	metricsNamespace string
 }
 
 type handlerTestEnvConfig struct {
@@ -255,6 +256,12 @@ func newHandlerTestEnv(t *testing.T, cfg handlerTestEnvConfig) *handlerTestEnv {
 		Router: config.RouterConfig{
 			Strategy: "round_robin",
 		},
+		Retry: config.RetryConfig{
+			MaxRetries:     2,
+			InitialDelayMs: 1,
+			MaxDelayMs:     1,
+			BackoffFactor:  1,
+		},
 		Providers: []config.ProviderConfig{{
 			Name:      "test-openai",
 			Type:      "openai",
@@ -283,7 +290,7 @@ func newHandlerTestEnv(t *testing.T, cfg handlerTestEnvConfig) *handlerTestEnv {
 		QueueSize:           128,
 	})
 	t.Cleanup(limiterSvc.Stop)
-	mw := middleware.New(store, limiterSvc)
+	mw := middleware.New(store, limiterSvc, metrics)
 	responseService := responseSvc.New(&responseSvc.Dependencies{
 		Config:      cfgObj,
 		Store:       store,
@@ -302,8 +309,9 @@ func newHandlerTestEnv(t *testing.T, cfg handlerTestEnvConfig) *handlerTestEnv {
 	adminHandler := NewAdminHandler(store, providerMgr)
 
 	return &handlerTestEnv{
-		server:      NewServer(cfgObj.Server, h, adminHandler, mw),
-		store:       store,
-		providerMgr: providerMgr,
+		server:           NewServer(cfgObj.Server, h, adminHandler, mw),
+		store:            store,
+		providerMgr:      providerMgr,
+		metricsNamespace: cfgObj.Metrics.Namespace,
 	}
 }

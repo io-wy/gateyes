@@ -79,7 +79,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	metrics := handler.NewMetrics(cfg.Metrics.Namespace)
+	metrics := handler.NewMetricsFromConfig(cfg.Metrics)
 	providerMgr, err := provider.NewManager(cfg.Providers)
 	if err != nil {
 		slog.Error("failed to initialize providers", "error", err)
@@ -93,7 +93,7 @@ func main() {
 	// 初始化配额预警服务
 	alertSvc := alert.NewAlertService(cfg.Alert, store)
 
-	httpMiddleware := middleware.New(store, limiterSvc)
+	httpMiddleware := middleware.New(store, limiterSvc, metrics)
 	responsesService := responseSvc.New(&responseSvc.Dependencies{
 		Config:      cfg,
 		Store:       store,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -116,7 +117,7 @@ func TestCreateStreamPersistsCompletedResponse(t *testing.T) {
 	if streamErr != nil {
 		t.Fatalf("unexpected stream error: %v", streamErr)
 	}
-	if len(eventTypes) < 2 || eventTypes[0] != "response.created" || eventTypes[len(eventTypes)-1] != "response.completed" {
+	if len(eventTypes) < 2 || eventTypes[0] != provider.EventResponseStarted || eventTypes[len(eventTypes)-1] != provider.EventResponseCompleted {
 		t.Fatalf("unexpected event sequence: %v", eventTypes)
 	}
 
@@ -200,7 +201,7 @@ func TestCreateStreamEmitsPayloadFromFinalResponseWithoutDelta(t *testing.T) {
 	if streamErr != nil {
 		t.Fatalf("unexpected stream error: %v", streamErr)
 	}
-	if len(eventTypes) < 3 || eventTypes[0] != "response.created" || eventTypes[1] != "response.output_text.delta" || eventTypes[len(eventTypes)-1] != "response.completed" {
+	if len(eventTypes) < 3 || eventTypes[0] != provider.EventResponseStarted || eventTypes[1] != provider.EventContentDelta || eventTypes[len(eventTypes)-1] != provider.EventResponseCompleted {
 		t.Fatalf("unexpected event sequence: %v", eventTypes)
 	}
 	if strings.Join(deltas, "") != "final hello" {
@@ -288,11 +289,127 @@ func TestCreateStreamFallsBackToNonStreamResponseWhenStreamHasNoRenderablePayloa
 	if streamErr != nil {
 		t.Fatalf("unexpected stream error: %v", streamErr)
 	}
-	if len(eventTypes) < 3 || eventTypes[0] != "response.created" || eventTypes[1] != "response.output_text.delta" || eventTypes[len(eventTypes)-1] != "response.completed" {
+	if len(eventTypes) < 3 || eventTypes[0] != provider.EventResponseStarted || eventTypes[1] != provider.EventContentDelta || eventTypes[len(eventTypes)-1] != provider.EventResponseCompleted {
 		t.Fatalf("unexpected event sequence: %v", eventTypes)
 	}
 	if strings.Join(deltas, "") != "fallback hello" {
 		t.Fatalf("unexpected deltas: %v", deltas)
+	}
+}
+
+func TestCreateStreamReturnsOutputBudgetTooLowWhenOnlyThinkingIsProduced(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_up\",\"created_at\":1700000000,\"model\":\"provider-model\",\"status\":\"completed\",\"output\":[{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"internal reasoning\",\"signature\":\"sig-1\"}]}],\"usage\":{\"input_tokens\":3,\"output_tokens\":60,\"total_tokens\":63}}}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		upstreamURL: upstream.URL,
+		endpoint:    "responses",
+		providers:   []string{"test-openai"},
+	})
+
+	stream, err := env.service.CreateStream(context.Background(), env.identity, &provider.ResponseRequest{
+		Model:           "public-model",
+		Input:           "hello",
+		Stream:          true,
+		MaxOutputTokens: 64,
+	}, "session-thinking-only")
+	if err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+
+	var (
+		eventTypes []string
+		streamErr  error
+	)
+	eventsCh := stream.Events
+	errCh := stream.Errors
+	for eventsCh != nil || errCh != nil {
+		select {
+		case event, ok := <-eventsCh:
+			if !ok {
+				eventsCh = nil
+				continue
+			}
+			eventTypes = append(eventTypes, event.Type)
+		case err, ok := <-errCh:
+			if !ok {
+				errCh = nil
+				continue
+			}
+			if err != nil {
+				streamErr = err
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("timed out waiting for stream")
+		}
+	}
+
+	if !errors.Is(streamErr, ErrOutputBudgetTooLow) {
+		t.Fatalf("unexpected stream error: %v, want %v", streamErr, ErrOutputBudgetTooLow)
+	}
+	if len(eventTypes) != 1 || eventTypes[0] != provider.EventResponseStarted {
+		t.Fatalf("unexpected event sequence before budget error: %v", eventTypes)
+	}
+}
+
+func TestCreateStreamReturnsOutputBudgetTooLowWhenLowBudgetProducesNoVisibleOutput(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_up\",\"created_at\":1700000000,\"model\":\"provider-model\",\"status\":\"completed\",\"output\":[{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[]}],\"usage\":{\"input_tokens\":3,\"output_tokens\":0,\"total_tokens\":3}}}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		upstreamURL: upstream.URL,
+		endpoint:    "responses",
+		providers:   []string{"test-openai"},
+	})
+
+	stream, err := env.service.CreateStream(context.Background(), env.identity, &provider.ResponseRequest{
+		Model:           "public-model",
+		Input:           "hello",
+		Stream:          true,
+		MaxOutputTokens: 64,
+	}, "session-no-visible-output")
+	if err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+
+	var streamErr error
+	eventsCh := stream.Events
+	errCh := stream.Errors
+	for eventsCh != nil || errCh != nil {
+		select {
+		case _, ok := <-eventsCh:
+			if !ok {
+				eventsCh = nil
+			}
+		case err, ok := <-errCh:
+			if !ok {
+				errCh = nil
+				continue
+			}
+			if err != nil {
+				streamErr = err
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("timed out waiting for stream")
+		}
+	}
+
+	if !errors.Is(streamErr, ErrOutputBudgetTooLow) {
+		t.Fatalf("unexpected stream error: %v, want %v", streamErr, ErrOutputBudgetTooLow)
 	}
 }
 
@@ -375,7 +492,7 @@ func TestCreateStreamRecoversChatPayloadFromFinishOnlyStream(t *testing.T) {
 	if streamErr != nil {
 		t.Fatalf("unexpected stream error: %v", streamErr)
 	}
-	if len(eventTypes) < 3 || eventTypes[0] != "response.created" || eventTypes[1] != "response.output_text.delta" || eventTypes[len(eventTypes)-1] != "response.completed" {
+	if len(eventTypes) < 3 || eventTypes[0] != provider.EventResponseStarted || eventTypes[1] != provider.EventContentDelta || eventTypes[len(eventTypes)-1] != provider.EventResponseCompleted {
 		t.Fatalf("unexpected event sequence: %v", eventTypes)
 	}
 	if strings.Join(deltas, "") != "recovered hello" {
@@ -391,9 +508,11 @@ type responsesTestEnv struct {
 }
 
 type responsesTestEnvConfig struct {
-	upstreamURL string
-	endpoint    string
-	providers   []string
+	upstreamURL     string
+	endpoint        string
+	providers       []string
+	providerConfigs []config.ProviderConfig
+	routerConfig    config.RouterConfig
 }
 
 func newResponsesTestEnv(t *testing.T, cfg responsesTestEnvConfig) *responsesTestEnv {
@@ -451,22 +570,31 @@ func newResponsesTestEnv(t *testing.T, cfg responsesTestEnvConfig) *responsesTes
 		t.Fatalf("authenticate identity: %v", err)
 	}
 
-	providerMgr, err := provider.NewManager([]config.ProviderConfig{{
-		Name:      "test-openai",
-		Type:      "openai",
-		BaseURL:   cfg.upstreamURL,
-		Endpoint:  cfg.endpoint,
-		APIKey:    "upstream-key",
-		Model:     "provider-model",
-		Timeout:   5,
-		Enabled:   true,
-		MaxTokens: 256,
-	}})
+	providerCfgs := cfg.providerConfigs
+	if len(providerCfgs) == 0 {
+		providerCfgs = []config.ProviderConfig{{
+			Name:      "test-openai",
+			Type:      "openai",
+			BaseURL:   cfg.upstreamURL,
+			Endpoint:  cfg.endpoint,
+			APIKey:    "upstream-key",
+			Model:     "provider-model",
+			Timeout:   5,
+			Enabled:   true,
+			MaxTokens: 256,
+		}}
+	}
+
+	providerMgr, err := provider.NewManager(providerCfgs)
 	if err != nil {
 		t.Fatalf("new provider manager: %v", err)
 	}
 
-	routerSvc := router.NewRouter(config.RouterConfig{Strategy: "round_robin"})
+	routerCfg := cfg.routerConfig
+	if routerCfg.Strategy == "" {
+		routerCfg.Strategy = "round_robin"
+	}
+	routerSvc := router.NewRouter(routerCfg)
 	routerSvc.SetProviders(providerMgr.List())
 
 	service := New(&Dependencies{
@@ -493,4 +621,53 @@ func queryResponseStatus(ctx context.Context, conn *sql.DB) (int, string, error)
 SELECT COUNT(1), MAX(status)
 FROM responses`).Scan(&count, &status)
 	return count, status, err
+}
+
+func TestBuildUpstreamRequestPreservesOutputFormatAndExtra(t *testing.T) {
+	req := &provider.ResponseRequest{
+		Model: "public-model",
+		Messages: []provider.Message{{
+			Role:    "user",
+			Content: provider.TextBlocks("hello"),
+		}},
+		OutputFormat: &provider.OutputFormat{
+			Type:   "json_schema",
+			Name:   "Answer",
+			Strict: true,
+			Schema: map[string]any{"type": "object"},
+			Raw: map[string]any{
+				"type": "json_schema",
+				"json_schema": map[string]any{
+					"name":   "Answer",
+					"strict": true,
+					"schema": map[string]any{"type": "object"},
+				},
+			},
+		},
+		Extra: map[string]any{
+			"system": "be concise",
+			"thinking": map[string]any{
+				"type":          "enabled",
+				"budget_tokens": float64(64),
+			},
+		},
+	}
+
+	upstream := buildUpstreamRequest(req)
+	if upstream.OutputFormat == nil || upstream.OutputFormat.Type != "json_schema" || upstream.OutputFormat.Name != "Answer" || !upstream.OutputFormat.Strict {
+		t.Fatalf("buildUpstreamRequest() output format = %+v, want preserved output format", upstream.OutputFormat)
+	}
+	if upstream.Extra["system"] != "be concise" {
+		t.Fatalf("buildUpstreamRequest() system extra = %#v, want preserved system", upstream.Extra["system"])
+	}
+	thinking, ok := upstream.Extra["thinking"].(map[string]any)
+	if !ok || thinking["type"] != "enabled" || thinking["budget_tokens"] != float64(64) {
+		t.Fatalf("buildUpstreamRequest() thinking extra = %#v, want preserved thinking config", upstream.Extra["thinking"])
+	}
+
+	req.OutputFormat.Name = "Mutated"
+	req.Extra["system"] = "changed"
+	if upstream.OutputFormat.Name != "Answer" || upstream.Extra["system"] != "be concise" {
+		t.Fatalf("buildUpstreamRequest() should clone output format and extra, got format=%+v extra=%+v", upstream.OutputFormat, upstream.Extra)
+	}
 }

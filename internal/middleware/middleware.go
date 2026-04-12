@@ -8,17 +8,21 @@ import (
 	"github.com/gateyes/gateway/internal/service/limiter"
 )
 
+type MetricsRecorder interface {
+	RecordError(surface, providerName, result, errorClass string)
+}
+
 // Middleware composes auth and guard middleware behind the legacy API.
 type Middleware struct {
 	auth  *AuthMiddleware
 	guard *GuardMiddleware
 }
 
-func New(store repository.Store, limiterSvc *limiter.Limiter) *Middleware {
-	authMW := NewAuthMiddleware(store)
+func New(store repository.Store, limiterSvc *limiter.Limiter, metrics MetricsRecorder) *Middleware {
+	authMW := NewAuthMiddleware(store, metrics)
 	return &Middleware{
 		auth:  authMW,
-		guard: NewGuardMiddleware(authMW.Service(), limiterSvc),
+		guard: NewGuardMiddleware(authMW.Service(), limiterSvc, metrics),
 	}
 }
 

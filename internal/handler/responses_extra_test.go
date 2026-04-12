@@ -8,7 +8,7 @@ import (
 
 func TestNormalizeResponsesStreamEventRewritesChatDelta(t *testing.T) {
 	events := normalizeResponsesStreamEvent(provider.ResponseEvent{
-		Type:  "chat.delta",
+		Type:  provider.EventContentDelta,
 		Delta: "hello",
 		ToolCalls: []provider.ToolCall{{
 			ID: "call-1",
@@ -32,7 +32,7 @@ func TestNormalizeResponsesStreamEventRewritesChatDelta(t *testing.T) {
 
 func TestNormalizeResponsesStreamEventDropsFinishOnlyChatDelta(t *testing.T) {
 	events := normalizeResponsesStreamEvent(provider.ResponseEvent{
-		Type:         "chat.delta",
+		Type:         provider.EventContentDelta,
 		FinishReason: "stop",
 		Usage:        &provider.Usage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3},
 	})

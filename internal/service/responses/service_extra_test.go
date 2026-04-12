@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/gateyes/gateway/internal/config"
 	"github.com/gateyes/gateway/internal/service/auth"
 	"github.com/gateyes/gateway/internal/service/provider"
 )
@@ -18,9 +19,9 @@ func TestCreateReturnsQuotaExceededAfterUpstreamSuccess(t *testing.T) {
 	defer upstream.Close()
 
 	env := newResponsesTestEnv(t, responsesTestEnvConfig{
-		upstreamURL:  upstream.URL,
-		endpoint:     "chat",
-		providers:    []string{"test-openai"},
+		upstreamURL: upstream.URL,
+		endpoint:    "chat",
+		providers:   []string{"test-openai"},
 	})
 	env.identity.Quota = 1
 	env.identity.Used = 0
@@ -34,6 +35,28 @@ func TestCreateReturnsQuotaExceededAfterUpstreamSuccess(t *testing.T) {
 	}
 }
 
+func TestCreateReturnsOutputBudgetTooLowWhenOnlyThinkingIsProduced(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"resp-upstream","created_at":1700000000,"model":"provider-model","status":"completed","output":[{"id":"msg-1","type":"message","role":"assistant","status":"completed","content":[{"type":"thinking","thinking":"internal reasoning","signature":"sig-1"}]}],"usage":{"input_tokens":3,"output_tokens":60,"total_tokens":63}}`))
+	}))
+	defer upstream.Close()
+
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		upstreamURL: upstream.URL,
+		endpoint:    "responses",
+		providers:   []string{"test-openai"},
+	})
+
+	_, err := env.service.Create(context.Background(), env.identity, &provider.ResponseRequest{
+		Model:           "public-model",
+		Input:           "hello",
+		MaxOutputTokens: 64,
+	}, "")
+	if !errors.Is(err, ErrOutputBudgetTooLow) {
+		t.Fatalf("Service.Create(only thinking) error = %v, want %v", err, ErrOutputBudgetTooLow)
+	}
+}
+
 func TestWrapErrorAndGinError(t *testing.T) {
 	tests := []struct {
 		err        error
@@ -42,6 +65,7 @@ func TestWrapErrorAndGinError(t *testing.T) {
 	}{
 		{err: auth.ErrModelNotAllowed, wantStatus: 403, wantType: "invalid_request_error"},
 		{err: auth.ErrQuotaExceeded, wantStatus: 429, wantType: "rate_limit_error"},
+		{err: ErrOutputBudgetTooLow, wantStatus: 400, wantType: "invalid_request_error"},
 		{err: ErrNoProvider, wantStatus: 503, wantType: "internal_error"},
 		{err: errors.New("boom"), wantStatus: 500, wantType: "internal_error"},
 	}
@@ -55,4 +79,106 @@ func TestWrapErrorAndGinError(t *testing.T) {
 			t.Fatalf("WrapError(%v).Error() = empty, want non-empty", tt.err)
 		}
 	}
+}
+
+func TestBuildRouteContextExtractsRoutingFeatures(t *testing.T) {
+	req := &provider.ResponseRequest{
+		Model: "public-model",
+		Messages: []provider.Message{{
+			Role: "user",
+			Content: []provider.ContentBlock{
+				{Type: "text", Text: "Please debug this Go stack trace"},
+				{Type: "image", Image: &provider.ContentImage{URL: "https://example.com/a.png"}},
+			},
+		}},
+		Stream: true,
+		Tools:  []any{map[string]any{"type": "function"}},
+		OutputFormat: &provider.OutputFormat{
+			Type: "json_schema",
+		},
+	}
+
+	ctx := buildRouteContext(req, "session-1")
+	if ctx.Model != "public-model" || ctx.SessionID != "session-1" || !ctx.Stream {
+		t.Fatalf("buildRouteContext() basic fields = %+v, want model/session/stream", ctx)
+	}
+	if !ctx.HasTools || !ctx.HasImages || !ctx.HasStructuredOutput {
+		t.Fatalf("buildRouteContext() feature flags = %+v, want tools/images/structured_output", ctx)
+	}
+	if ctx.InputText == "" || ctx.PromptTokens <= 0 {
+		t.Fatalf("buildRouteContext() text/tokens = %+v, want non-empty text and prompt tokens", ctx)
+	}
+}
+
+func TestGetCandidateProvidersAppliesRuleEngine(t *testing.T) {
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		upstreamURL: "https://openai.example",
+		providers:   []string{"general", "coder"},
+		providerConfigs: []config.ProviderConfig{
+			{
+				Name:      "general",
+				Type:      "openai",
+				BaseURL:   "https://openai.example",
+				Endpoint:  "chat",
+				APIKey:    "upstream-key",
+				Model:     "general-model",
+				Timeout:   5,
+				Enabled:   true,
+				MaxTokens: 256,
+			},
+			{
+				Name:      "coder",
+				Type:      "openai",
+				BaseURL:   "https://openai.example",
+				Endpoint:  "chat",
+				APIKey:    "upstream-key",
+				Model:     "coder-model",
+				Timeout:   5,
+				Enabled:   true,
+				MaxTokens: 256,
+			},
+		},
+		routerConfig: config.RouterConfig{
+			Strategy: "least_load",
+			RuleEngine: config.RuleEngineConfig{
+				Enabled: true,
+				Rules: []config.RouteRuleConfig{{
+					Name: "code-traffic",
+					Match: config.RouteMatchConfig{
+						HasTools: boolPtr(true),
+						AnyRegex: []string{`(?i)stack trace`, `(?i)golang`},
+					},
+					Action: config.RouteActionConfig{
+						Providers: []string{"coder"},
+					},
+				}},
+			},
+		},
+	})
+
+	req := &provider.ResponseRequest{
+		Model: "public-model",
+		Messages: []provider.Message{{
+			Role:    "user",
+			Content: provider.TextBlocks("Please debug this Go stack trace"),
+		}},
+		Tools: []any{map[string]any{"type": "function"}},
+	}
+
+	candidates := env.service.getCandidateProviders(context.Background(), env.identity, "session-1", req)
+	if len(candidates) != 1 || candidates[0].Name() != "coder" {
+		t.Fatalf("getCandidateProviders() = %v, want [coder]", providerNames(candidates))
+	}
+}
+
+func boolPtr(v bool) *bool {
+	return &v
+}
+
+func providerNames(providers []provider.Provider) []string {
+	result := make([]string, 0, len(providers))
+	for _, p := range providers {
+		result = append(result, p.Name())
+	}
+	return result
 }

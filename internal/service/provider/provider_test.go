@@ -89,9 +89,9 @@ func TestBuildOpenAIInputSupportsToolCallsAndToolResults(t *testing.T) {
 	messages := []Message{
 		{
 			Role: "user",
-			Content: []any{
-				map[string]any{"type": "text", "text": "hello"},
-				map[string]any{"type": "output_text", "text": " world"},
+			Content: []ContentBlock{
+				{Type: "text", Text: "hello"},
+				{Type: "output_text", Text: " world"},
 			},
 		},
 		{
@@ -108,7 +108,7 @@ func TestBuildOpenAIInputSupportsToolCallsAndToolResults(t *testing.T) {
 		{
 			Role:       "tool",
 			ToolCallID: "call_1",
-			Content:    "{\"ok\":true}",
+			Content:    TextBlocks("{\"ok\":true}"),
 		},
 	}
 
@@ -144,8 +144,11 @@ func TestConvertOpenAIResponseSupportsFunctionCallOutputs(t *testing.T) {
 				Role:   "assistant",
 				Status: "completed",
 				Content: []struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
+					Type      string `json:"type"`
+					Text      string `json:"text"`
+					Thinking  string `json:"thinking"`
+					Signature string `json:"signature"`
+					Refusal   string `json:"refusal"`
 				}{
 					{Type: "output_text", Text: "hello"},
 				},
@@ -220,11 +223,14 @@ func TestAnthropicBuildRequestAndConvertResponseSupportToolUse(t *testing.T) {
 		Model: "claude-test",
 		Role:  "assistant",
 		Content: []struct {
-			Type  string          `json:"type"`
-			Text  string          `json:"text"`
-			ID    string          `json:"id"`
-			Name  string          `json:"name"`
-			Input json.RawMessage `json:"input"`
+			Type      string           `json:"type"`
+			Text      string           `json:"text"`
+			ID        string           `json:"id"`
+			Name      string           `json:"name"`
+			Input     json.RawMessage  `json:"input"`
+			Source    *AnthropicSource `json:"source"`
+			Thinking  string           `json:"thinking"`
+			Signature string           `json:"signature"`
 		}{
 			{Type: "text", Text: "need tool"},
 			{Type: "tool_use", ID: "call_1", Name: "lookup_weather", Input: json.RawMessage(`{"city":"shanghai"}`)},

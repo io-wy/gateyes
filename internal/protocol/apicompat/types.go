@@ -8,11 +8,12 @@ import (
 )
 
 type ChatCompletionRequest struct {
-	Model     string             `json:"model"`
-	Messages  []provider.Message `json:"messages"`
-	Stream    bool               `json:"stream,omitempty"`
-	MaxTokens int                `json:"max_tokens,omitempty"`
-	Tools     []any              `json:"tools,omitempty"`
+	Model          string                 `json:"model"`
+	Messages       []provider.ChatMessage `json:"messages"`
+	Stream         bool                   `json:"stream,omitempty"`
+	MaxTokens      int                    `json:"max_tokens,omitempty"`
+	Tools          []any                  `json:"tools,omitempty"`
+	ResponseFormat any                    `json:"response_format,omitempty"`
 }
 
 type ChatCompletionResponse struct {
@@ -25,9 +26,9 @@ type ChatCompletionResponse struct {
 }
 
 type ChatCompletionChoice struct {
-	Index        int              `json:"index,omitempty"`
-	Message      provider.Message `json:"message"`
-	FinishReason string           `json:"finish_reason,omitempty"`
+	Index        int                  `json:"index,omitempty"`
+	Message      provider.ChatMessage `json:"message"`
+	FinishReason string               `json:"finish_reason,omitempty"`
 }
 
 type ChatCompletionChunk struct {
@@ -123,6 +124,8 @@ type AnthropicContentBlock struct {
 	ID        string           `json:"id,omitempty"`
 	Name      string           `json:"name,omitempty"`
 	Input     json.RawMessage  `json:"input,omitempty"`
+	ToolUseID string           `json:"tool_use_id,omitempty"`
+	Content   string           `json:"content,omitempty"`
 	Source    *AnthropicSource `json:"source,omitempty"`
 	Thinking  string           `json:"thinking,omitempty"`
 	Signature string           `json:"signature,omitempty"`
@@ -165,11 +168,11 @@ type AnthropicEvent struct {
 	Message *AnthropicMessagesResponse `json:"message,omitempty"`
 }
 
-func cloneMessages(messages []provider.Message) []provider.Message {
+func cloneMessages(messages []provider.ChatMessage) []provider.ChatMessage {
 	if len(messages) == 0 {
 		return nil
 	}
-	cloned := make([]provider.Message, len(messages))
+	cloned := make([]provider.ChatMessage, len(messages))
 	for i, message := range messages {
 		cloned[i] = message
 		cloned[i].Content = cloneAny(message.Content)

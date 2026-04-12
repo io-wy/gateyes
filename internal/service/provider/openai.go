@@ -267,7 +267,7 @@ func parseOpenAIStreamEvent(data string, requestedModel string) (*ResponseEvent,
 			return nil, err
 		}
 		return &ResponseEvent{
-			Type:  payload.Type,
+			Type:  EventContentDelta,
 			Delta: payload.Delta,
 		}, nil
 	case "response.output_item.done":
@@ -288,7 +288,7 @@ func parseOpenAIStreamEvent(data string, requestedModel string) (*ResponseEvent,
 			return nil, nil
 		}
 		return &ResponseEvent{
-			Type:   payload.Type,
+			Type:   EventToolCallDone,
 			Output: output,
 		}, nil
 	case "response.completed":
@@ -301,7 +301,7 @@ func parseOpenAIStreamEvent(data string, requestedModel string) (*ResponseEvent,
 		}
 		resp := convertOpenAIResponse(payload.Response, requestedModel)
 		return &ResponseEvent{
-			Type:     payload.Type,
+			Type:     EventResponseCompleted,
 			Response: resp,
 		}, nil
 	case "response.failed":
@@ -346,6 +346,12 @@ func (p *openAIProvider) newRequest(ctx context.Context, req *ResponseRequest, s
 		if maxTokens := req.RequestedMaxTokens(); maxTokens > 0 {
 			payload["max_output_tokens"] = maxTokens
 		}
+		if len(req.Tools) > 0 {
+			payload["tools"] = req.Tools
+		}
+		if req.OutputFormat != nil && len(req.OutputFormat.Raw) > 0 {
+			payload["response_format"] = req.OutputFormat.Raw
+		}
 	case "chat":
 		{
 			path = "/v1/chat/completions"
@@ -359,6 +365,9 @@ func (p *openAIProvider) newRequest(ctx context.Context, req *ResponseRequest, s
 			}
 			if len(req.Tools) > 0 {
 				payload["tools"] = req.Tools
+			}
+			if req.OutputFormat != nil && len(req.OutputFormat.Raw) > 0 {
+				payload["response_format"] = req.OutputFormat.Raw
 			}
 		}
 	default:
@@ -374,6 +383,9 @@ func (p *openAIProvider) newRequest(ctx context.Context, req *ResponseRequest, s
 		}
 		if len(req.Tools) > 0 {
 			payload["tools"] = req.Tools
+		}
+		if req.OutputFormat != nil && len(req.OutputFormat.Raw) > 0 {
+			payload["response_format"] = req.OutputFormat.Raw
 		}
 	}
 
@@ -440,76 +452,93 @@ func buildChatCompletionMessages(messages []Message) []map[string]any {
 		if role == "" {
 			role = "user"
 		}
-		content := collectText(msg.Content)
-		result = append(result, map[string]any{
+		content := buildChatCompletionMessageContent(msg.Content)
+		if content == nil {
+			continue
+		}
+		entry := map[string]any{
 			"role":    role,
 			"content": content,
-		})
+		}
+		if msg.ToolCallID != "" {
+			entry["tool_call_id"] = msg.ToolCallID
+		}
+		if len(msg.ToolCalls) > 0 {
+			entry["tool_calls"] = msg.ToolCalls
+		}
+		result = append(result, entry)
 	}
 	return result
 }
 
-func buildOpenAIMessageContent(content any) []map[string]any {
-	switch current := content.(type) {
-	case nil:
-		return nil
-	case string:
-		if current == "" {
-			return nil
+func buildOpenAIMessageContent(content []ContentBlock) []map[string]any {
+	parts := make([]map[string]any, 0, len(content))
+	for _, item := range content {
+		part, ok := buildOpenAIContentPart(item)
+		if ok {
+			parts = append(parts, part)
 		}
-		return []map[string]any{{
-			"type": "input_text",
-			"text": current,
-		}}
-	case []any:
-		parts := make([]map[string]any, 0, len(current))
-		for _, item := range current {
-			part, ok := buildOpenAIContentPart(item)
+	}
+	return parts
+}
+
+func buildChatCompletionMessageContent(content []ContentBlock) any {
+	if len(content) == 0 {
+		return ""
+	}
+	if hasImageBlocks(content) {
+		parts := make([]map[string]any, 0, len(content))
+		for _, block := range content {
+			part, ok := buildChatCompletionContentPart(block)
 			if ok {
 				parts = append(parts, part)
 			}
 		}
 		return parts
-	case map[string]any:
-		part, ok := buildOpenAIContentPart(current)
-		if !ok {
-			return nil
-		}
-		return []map[string]any{part}
-	default:
-		text := collectText(current)
-		if text == "" {
-			return nil
-		}
-		return []map[string]any{{
-			"type": "input_text",
-			"text": text,
-		}}
 	}
+	return collectText(content)
 }
 
-func buildOpenAIContentPart(value any) (map[string]any, bool) {
-	current, ok := value.(map[string]any)
-	if !ok {
-		text := collectText(value)
-		if text == "" {
+func buildOpenAIContentPart(value ContentBlock) (map[string]any, bool) {
+	switch value.Type {
+	case "text", "output_text":
+		if value.Text == "" {
 			return nil, false
 		}
-		return map[string]any{
-			"type": "input_text",
-			"text": text,
-		}, true
+		return map[string]any{"type": "input_text", "text": value.Text}, true
+	case "thinking":
+		if value.Thinking == "" {
+			return nil, false
+		}
+		return map[string]any{"type": "input_text", "text": value.Thinking}, true
+	case "refusal":
+		if value.Refusal == "" {
+			return nil, false
+		}
+		return map[string]any{"type": "input_text", "text": value.Refusal}, true
+	case "image":
+		if value.Image == nil {
+			return nil, false
+		}
+		if value.Image.URL != "" {
+			return map[string]any{
+				"type":      "input_image",
+				"image_url": value.Image.URL,
+			}, true
+		}
+		if value.Image.Data != "" {
+			return map[string]any{
+				"type":         "input_image",
+				"image_base64": value.Image.Data,
+			}, true
+		}
+	case "structured_output":
+		if value.Structured != nil && value.Structured.Data != nil {
+			raw, _ := json.Marshal(value.Structured.Data)
+			return map[string]any{"type": "input_text", "text": string(raw)}, true
+		}
 	}
-
-	typeName := firstNonEmpty(stringValue(current["type"]), "input_text")
-	text := collectText(current)
-	if text == "" {
-		return nil, false
-	}
-	return map[string]any{
-		"type": normalizeOpenAITextType(typeName),
-		"text": text,
-	}, true
+	return nil, false
 }
 
 func normalizeOpenAITextType(typeName string) string {
@@ -521,6 +550,36 @@ func normalizeOpenAITextType(typeName string) string {
 	}
 }
 
+func buildChatCompletionContentPart(value ContentBlock) (map[string]any, bool) {
+	switch value.Type {
+	case "text", "output_text":
+		if value.Text == "" {
+			return nil, false
+		}
+		return map[string]any{"type": "text", "text": value.Text}, true
+	case "image":
+		if value.Image == nil || value.Image.URL == "" {
+			return nil, false
+		}
+		imageURL := map[string]any{"url": value.Image.URL}
+		if value.Image.Detail != "" {
+			imageURL["detail"] = value.Image.Detail
+		}
+		return map[string]any{"type": "image_url", "image_url": imageURL}, true
+	default:
+		return nil, false
+	}
+}
+
+func hasImageBlocks(content []ContentBlock) bool {
+	for _, block := range content {
+		if block.Type == "image" {
+			return true
+		}
+	}
+	return false
+}
+
 type openAIResponsePayload struct {
 	ID        string             `json:"id"`
 	Object    string             `json:"object"`
@@ -530,6 +589,7 @@ type openAIResponsePayload struct {
 	Output    []openAIOutputItem `json:"output"`
 	Usage     struct {
 		InputTokens  int `json:"input_tokens"`
+		CachedTokens int `json:"cached_tokens"`
 		OutputTokens int `json:"output_tokens"`
 		TotalTokens  int `json:"total_tokens"`
 	} `json:"usage"`
@@ -551,9 +611,12 @@ type chatCompletionResponse struct {
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
+		PromptTokens        int `json:"prompt_tokens"`
+		CompletionTokens    int `json:"completion_tokens"`
+		TotalTokens         int `json:"total_tokens"`
+		PromptTokensDetails struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
 }
 
@@ -566,8 +629,11 @@ type openAIOutputItem struct {
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
 	Content   []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type      string `json:"type"`
+		Text      string `json:"text"`
+		Thinking  string `json:"thinking"`
+		Signature string `json:"signature"`
+		Refusal   string `json:"refusal"`
 	} `json:"content"`
 }
 
@@ -692,7 +758,7 @@ func parseChatCompletionEvent(data string, requestedModel string) (*ResponseEven
 	}
 
 	event := ResponseEvent{
-		Type:  "chat.delta",
+		Type:  EventContentDelta,
 		Delta: text,
 	}
 
@@ -830,6 +896,7 @@ func convertOpenAIResponse(raw openAIResponsePayload, requestedModel string) *Re
 			PromptTokens:     raw.Usage.InputTokens,
 			CompletionTokens: raw.Usage.OutputTokens,
 			TotalTokens:      raw.Usage.TotalTokens,
+			CachedTokens:     raw.Usage.CachedTokens,
 		},
 	}
 }
@@ -839,13 +906,33 @@ func convertOpenAIOutputItem(item openAIOutputItem) *ResponseOutput {
 	case "message":
 		content := make([]ResponseContent, 0, len(item.Content))
 		for _, block := range item.Content {
-			if block.Text == "" {
-				continue
+			switch block.Type {
+			case "thinking":
+				if block.Thinking == "" {
+					continue
+				}
+				content = append(content, ResponseContent{
+					Type:      "thinking",
+					Thinking:  block.Thinking,
+					Signature: block.Signature,
+				})
+			case "refusal":
+				if block.Refusal == "" {
+					continue
+				}
+				content = append(content, ResponseContent{
+					Type:    "refusal",
+					Refusal: block.Refusal,
+				})
+			default:
+				if block.Text == "" {
+					continue
+				}
+				content = append(content, ResponseContent{
+					Type: block.Type,
+					Text: block.Text,
+				})
 			}
-			content = append(content, ResponseContent{
-				Type: block.Type,
-				Text: block.Text,
-			})
 		}
 		return &ResponseOutput{
 			ID:      item.ID,
@@ -911,6 +998,7 @@ func convertChatCompletionResponse(raw chatCompletionResponse, requestedModel st
 			PromptTokens:     raw.Usage.PromptTokens,
 			CompletionTokens: raw.Usage.CompletionTokens,
 			TotalTokens:      raw.Usage.TotalTokens,
+			CachedTokens:     raw.Usage.PromptTokensDetails.CachedTokens,
 		},
 	}
 }

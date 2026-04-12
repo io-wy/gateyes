@@ -39,13 +39,11 @@ func (h *Handler) GetResponse(c *gin.Context) {
 
 func (h *Handler) handleResponsesCreate(c *gin.Context) {
 	start := time.Now()
-	h.metrics.inflightRequests.Inc()
-	defer h.metrics.inflightRequests.Dec()
+	defer h.metrics.TrackInFlight(metricsSurfaceResponses)()
 
 	var req provider.ResponseRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		h.metrics.errors.WithLabelValues(req.Model, "invalid_request").Inc()
-		h.metrics.modelFailures.WithLabelValues(req.Model).Inc()
+		h.metrics.RecordError(metricsSurfaceResponses, "", metricsResultClientError, "invalid_request")
 		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": err.Error(), "type": "invalid_request_error"}})
 		return
 	}
@@ -53,6 +51,7 @@ func (h *Handler) handleResponsesCreate(c *gin.Context) {
 
 	identity, ok := middleware.Identity(c)
 	if !ok {
+		h.metrics.RecordError(metricsSurfaceResponses, "", metricsResultAuthError, "invalid_api_key")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"message": "invalid API key", "type": "invalid_request_error"}})
 		return
 	}
@@ -60,7 +59,7 @@ func (h *Handler) handleResponsesCreate(c *gin.Context) {
 	if req.Stream {
 		stream, err := h.responses.CreateStream(c.Request.Context(), identity, &req, c.GetHeader("X-Session-ID"))
 		if err != nil {
-			h.renderServiceError(c, req.Model, err)
+			h.renderServiceError(c, metricsSurfaceResponses, "", err)
 			return
 		}
 		h.streamResponses(c, stream, req.Model, start)
@@ -69,19 +68,18 @@ func (h *Handler) handleResponsesCreate(c *gin.Context) {
 
 	result, err := h.responses.Create(c.Request.Context(), identity, &req, c.GetHeader("X-Session-ID"))
 	if err != nil {
-		h.renderServiceError(c, req.Model, err)
+		h.renderServiceError(c, metricsSurfaceResponses, "", err)
 		return
 	}
 
 	// upstreamLatency = total latency - (retry delays)
 	upstreamLatency := time.Duration(result.LatencyMs) * time.Millisecond
-	h.observeResponseWithUpstream(req.Model, result.ProviderName, result.Response.Usage, time.Since(start), upstreamLatency, result.Retries, result.Fallback)
+	h.observeResponseWithUpstream(metricsSurfaceResponses, result.ProviderName, result.Response.Usage, time.Since(start), upstreamLatency, result.Retries, result.Fallback)
 	c.JSON(http.StatusOK, result.Response)
 }
 
 func (h *Handler) streamResponses(c *gin.Context, stream *responseSvc.Stream, requestedModel string, start time.Time) {
-	h.metrics.activeStreams.Inc()
-	defer h.metrics.activeStreams.Dec()
+	defer h.metrics.TrackStream(metricsSurfaceResponses)()
 
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -95,17 +93,13 @@ func (h *Handler) streamResponses(c *gin.Context, stream *responseSvc.Stream, re
 	}
 
 	firstTokenRecorded := false
-	modelLabel := requestedModel
-	if stream.ProviderName != "" {
-		modelLabel = stream.ProviderName
-	}
 
 	for {
 		select {
 		case event, ok := <-stream.Events:
 			if !ok {
 				// Stream ended
-				h.metrics.streamDuration.WithLabelValues(modelLabel).Observe(time.Since(start).Seconds())
+				h.metrics.ObserveStreamDuration(metricsSurfaceResponses, stream.ProviderName, metricsResultSuccess, time.Since(start))
 				writeSSEDone(c)
 				flusher.Flush()
 				return
@@ -113,8 +107,8 @@ func (h *Handler) streamResponses(c *gin.Context, stream *responseSvc.Stream, re
 
 			normalizedEvents := normalizeResponsesStreamEvent(event)
 			for _, normalized := range normalizedEvents {
-				if !firstTokenRecorded && normalized.Type == "response.output_text.delta" {
-					h.metrics.timeToFirstToken.WithLabelValues(modelLabel).Observe(time.Since(start).Seconds())
+				if !firstTokenRecorded && normalizedEventType(normalized) == "response.output_text.delta" {
+					h.metrics.ObserveTTFT(metricsSurfaceResponses, stream.ProviderName, time.Since(start))
 					firstTokenRecorded = true
 				}
 				if err := writeSSE(c, normalized); err != nil {
@@ -122,14 +116,14 @@ func (h *Handler) streamResponses(c *gin.Context, stream *responseSvc.Stream, re
 				}
 				flusher.Flush()
 			}
-			if event.Type == "response.completed" && event.Response != nil {
-				h.observeResponse(requestedModel, stream.ProviderName, event.Response.Usage, time.Since(start))
+			if event.Type == provider.EventResponseCompleted && event.Response != nil {
+				h.observeResponse(metricsSurfaceResponses, stream.ProviderName, event.Response.Usage, time.Since(start))
 			}
 		case err, ok := <-stream.Errors:
 			if ok && err != nil {
-				// 记录错误
-				h.metrics.errors.WithLabelValues(requestedModel, "stream_error").Inc()
-				h.metrics.modelFailures.WithLabelValues(requestedModel).Inc()
+				result, errorClass := classifyMetricsError(err, "internal_error")
+				h.metrics.RecordError(metricsSurfaceResponses, stream.ProviderName, result, errorClass)
+				h.metrics.ObserveStreamDuration(metricsSurfaceResponses, stream.ProviderName, result, time.Since(start))
 				_ = writeSSE(c, gin.H{"type": "error", "message": err.Error()})
 				writeSSEDone(c)
 				flusher.Flush()
@@ -143,7 +137,7 @@ func (h *Handler) streamResponses(c *gin.Context, stream *responseSvc.Stream, re
 
 func normalizeResponsesStreamEvent(event provider.ResponseEvent) []provider.ResponseEvent {
 	switch event.Type {
-	case "chat.delta":
+	case provider.EventContentDelta:
 		var normalized []provider.ResponseEvent
 		if event.Delta != "" {
 			textEvent := event
@@ -166,14 +160,29 @@ func normalizeResponsesStreamEvent(event provider.ResponseEvent) []provider.Resp
 			})
 		}
 		return normalized
+	case provider.EventResponseStarted:
+		started := event
+		started.Type = "response.created"
+		return []provider.ResponseEvent{started}
+	case provider.EventResponseCompleted:
+		completed := event
+		completed.Type = "response.completed"
+		return []provider.ResponseEvent{completed}
+	case provider.EventToolCallDone:
+		done := event
+		done.Type = "response.output_item.done"
+		return []provider.ResponseEvent{done}
 	default:
 		return []provider.ResponseEvent{event}
 	}
 }
 
+func normalizedEventType(event provider.ResponseEvent) string {
+	return event.Type
+}
+
 func (h *Handler) streamChatCompatibility(c *gin.Context, stream *responseSvc.Stream, model string, start time.Time) {
-	h.metrics.activeStreams.Inc()
-	defer h.metrics.activeStreams.Dec()
+	defer h.metrics.TrackStream(metricsSurfaceChatCompletions)()
 
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -187,10 +196,6 @@ func (h *Handler) streamChatCompatibility(c *gin.Context, stream *responseSvc.St
 	}
 
 	firstTokenRecorded := false
-	modelLabel := model
-	if stream.ProviderName != "" {
-		modelLabel = stream.ProviderName
-	}
 	encoder := apicompat.NewChatStreamEncoder(stream.ResponseID, model)
 
 	for {
@@ -198,15 +203,15 @@ func (h *Handler) streamChatCompatibility(c *gin.Context, stream *responseSvc.St
 		case event, ok := <-stream.Events:
 			if !ok {
 				// Stream ended
-				h.metrics.streamDuration.WithLabelValues(modelLabel).Observe(time.Since(start).Seconds())
+				h.metrics.ObserveStreamDuration(metricsSurfaceChatCompletions, stream.ProviderName, metricsResultSuccess, time.Since(start))
 				writeSSEDone(c)
 				flusher.Flush()
 				return
 			}
 
 			// 记录首个 token 延迟
-			if !firstTokenRecorded && (event.Type == "response.output_text.delta" || event.Type == "chat.delta" || event.Type == "chat.completion.chunk") {
-				h.metrics.timeToFirstToken.WithLabelValues(modelLabel).Observe(time.Since(start).Seconds())
+			if !firstTokenRecorded && event.Type == provider.EventContentDelta {
+				h.metrics.ObserveTTFT(metricsSurfaceChatCompletions, stream.ProviderName, time.Since(start))
 				firstTokenRecorded = true
 			}
 
@@ -216,14 +221,14 @@ func (h *Handler) streamChatCompatibility(c *gin.Context, stream *responseSvc.St
 				}
 				flusher.Flush()
 			}
-			if event.Type == "response.completed" && event.Response != nil {
-				h.observeResponse(model, stream.ProviderName, event.Response.Usage, time.Since(start))
+			if event.Type == provider.EventResponseCompleted && event.Response != nil {
+				h.observeResponse(metricsSurfaceChatCompletions, stream.ProviderName, event.Response.Usage, time.Since(start))
 			}
 		case err, ok := <-stream.Errors:
 			if ok && err != nil {
-				// 记录错误
-				h.metrics.errors.WithLabelValues(model, "stream_error").Inc()
-				h.metrics.modelFailures.WithLabelValues(model).Inc()
+				result, errorClass := classifyMetricsError(err, "internal_error")
+				h.metrics.RecordError(metricsSurfaceChatCompletions, stream.ProviderName, result, errorClass)
+				h.metrics.ObserveStreamDuration(metricsSurfaceChatCompletions, stream.ProviderName, result, time.Since(start))
 				_ = writeSSE(c, gin.H{"error": gin.H{"message": err.Error(), "type": "internal_error"}})
 				writeSSEDone(c)
 				flusher.Flush()
@@ -236,8 +241,7 @@ func (h *Handler) streamChatCompatibility(c *gin.Context, stream *responseSvc.St
 }
 
 func (h *Handler) streamAnthropicMessages(c *gin.Context, stream *responseSvc.Stream, model string, start time.Time) {
-	h.metrics.activeStreams.Inc()
-	defer h.metrics.activeStreams.Dec()
+	defer h.metrics.TrackStream(metricsSurfaceMessages)()
 
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -251,10 +255,6 @@ func (h *Handler) streamAnthropicMessages(c *gin.Context, stream *responseSvc.St
 	}
 
 	firstTokenRecorded := false
-	modelLabel := model
-	if stream.ProviderName != "" {
-		modelLabel = stream.ProviderName
-	}
 	encoder := apicompat.NewAnthropicStreamEncoder(stream.ResponseID, model)
 
 	for {
@@ -262,15 +262,15 @@ func (h *Handler) streamAnthropicMessages(c *gin.Context, stream *responseSvc.St
 		case event, ok := <-stream.Events:
 			if !ok {
 				// Stream ended
-				h.metrics.streamDuration.WithLabelValues(modelLabel).Observe(time.Since(start).Seconds())
+				h.metrics.ObserveStreamDuration(metricsSurfaceMessages, stream.ProviderName, metricsResultSuccess, time.Since(start))
 				writeSSEDone(c)
 				flusher.Flush()
 				return
 			}
 
 			// 记录首个 token 延迟
-			if !firstTokenRecorded && (event.Type == "response.output_text.delta" || event.Type == "chat.delta") {
-				h.metrics.timeToFirstToken.WithLabelValues(modelLabel).Observe(time.Since(start).Seconds())
+			if !firstTokenRecorded && event.Type == provider.EventContentDelta {
+				h.metrics.ObserveTTFT(metricsSurfaceMessages, stream.ProviderName, time.Since(start))
 				firstTokenRecorded = true
 			}
 
@@ -280,14 +280,14 @@ func (h *Handler) streamAnthropicMessages(c *gin.Context, stream *responseSvc.St
 				}
 				flusher.Flush()
 			}
-			if event.Type == "response.completed" && event.Response != nil {
-				h.observeResponse(model, stream.ProviderName, event.Response.Usage, time.Since(start))
+			if event.Type == provider.EventResponseCompleted && event.Response != nil {
+				h.observeResponse(metricsSurfaceMessages, stream.ProviderName, event.Response.Usage, time.Since(start))
 			}
 		case err, ok := <-stream.Errors:
 			if ok && err != nil {
-				// 记录错误
-				h.metrics.errors.WithLabelValues(model, "stream_error").Inc()
-				h.metrics.modelFailures.WithLabelValues(model).Inc()
+				result, errorClass := classifyMetricsError(err, "internal_error")
+				h.metrics.RecordError(metricsSurfaceMessages, stream.ProviderName, result, errorClass)
+				h.metrics.ObserveStreamDuration(metricsSurfaceMessages, stream.ProviderName, result, time.Since(start))
 				_ = writeSSE(c, gin.H{"error": gin.H{"message": err.Error(), "type": "internal_error"}})
 				writeSSEDone(c)
 				flusher.Flush()

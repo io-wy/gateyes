@@ -16,12 +16,14 @@ import (
 type GuardMiddleware struct {
 	auth    *auth.Auth
 	limiter *limiter.Limiter
+	metrics MetricsRecorder
 }
 
-func NewGuardMiddleware(authSvc *auth.Auth, limiterSvc *limiter.Limiter) *GuardMiddleware {
+func NewGuardMiddleware(authSvc *auth.Auth, limiterSvc *limiter.Limiter, metrics MetricsRecorder) *GuardMiddleware {
 	return &GuardMiddleware{
 		auth:    authSvc,
 		limiter: limiterSvc,
+		metrics: metrics,
 	}
 }
 
@@ -30,6 +32,7 @@ func (m *GuardMiddleware) GuardLLMRequest() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		identity, ok := Identity(c)
 		if !ok {
+			recordMiddlewareError(m.metrics, c, metricsResultAuthError, "invalid_api_key")
 			c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"message": "invalid API key", "type": "invalid_request_error"}})
 			c.Abort()
 			return
@@ -37,6 +40,7 @@ func (m *GuardMiddleware) GuardLLMRequest() gin.HandlerFunc {
 
 		meta, err := extractRequestMeta(c)
 		if err != nil {
+			recordMiddlewareError(m.metrics, c, metricsResultClientError, "invalid_request")
 			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": err.Error(), "type": "invalid_request_error"}})
 			c.Abort()
 			return
@@ -44,6 +48,7 @@ func (m *GuardMiddleware) GuardLLMRequest() gin.HandlerFunc {
 
 		// 模型白名单检查
 		if !m.auth.CheckModel(identity, meta.Model) {
+			recordMiddlewareError(m.metrics, c, metricsResultAuthError, "model_not_allowed")
 			c.JSON(http.StatusForbidden, gin.H{"error": gin.H{"message": auth.ErrModelNotAllowed.Error(), "type": "invalid_request_error"}})
 			c.Abort()
 			return
@@ -51,6 +56,7 @@ func (m *GuardMiddleware) GuardLLMRequest() gin.HandlerFunc {
 
 		// 配额检查
 		if !m.auth.HasQuota(identity, meta.EstimatedTokens) {
+			recordMiddlewareError(m.metrics, c, metricsResultRateLimited, "quota_exceeded")
 			c.JSON(http.StatusTooManyRequests, gin.H{"error": gin.H{"message": auth.ErrQuotaExceeded.Error(), "type": "rate_limit_error"}})
 			c.Abort()
 			return
@@ -60,6 +66,7 @@ func (m *GuardMiddleware) GuardLLMRequest() gin.HandlerFunc {
 		// P0 fix: 传入 identity.QPS，让用户配置的 QPS 生效
 		// P3 fix: 使用 EstimateAdmissionTokens 替代 EstimatePromptTokens，将 output token 也纳入限流
 		if m.limiter != nil && !m.limiter.Allow(c.Request.Context(), identity.APIKey, identity.QPS, meta.EstimatedTokens) {
+			recordMiddlewareError(m.metrics, c, metricsResultRateLimited, "rate_limited")
 			c.JSON(http.StatusTooManyRequests, gin.H{"error": gin.H{"message": "rate limit exceeded", "type": "rate_limit_error"}})
 			c.Abort()
 			return
@@ -84,7 +91,7 @@ func extractRequestMeta(c *gin.Context) (*RequestMeta, error) {
 	req.Normalize()
 
 	return &RequestMeta{
-		Model:            req.Model,
-		EstimatedTokens:  req.EstimateAdmissionTokens(),
+		Model:           req.Model,
+		EstimatedTokens: req.EstimateAdmissionTokens(),
 	}, nil
 }

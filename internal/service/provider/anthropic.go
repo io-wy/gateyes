@@ -138,7 +138,7 @@ func (p *anthropicProvider) parseStream(body io.Reader, result chan<- ResponseEv
 					result <- *event
 				}
 				if !state.completed {
-					result <- ResponseEvent{Type: "response.completed", Response: state.response()}
+					result <- ResponseEvent{Type: EventResponseCompleted, Response: state.response()}
 				}
 				break
 			}
@@ -208,8 +208,9 @@ func parseAnthropicStreamEvent(eventName, data string, state *anthropicStreamSta
 				ID      string                  `json:"id"`
 				Content []AnthropicContentBlock `json:"content"`
 				Usage   struct {
-					InputTokens  int `json:"input_tokens"`
-					OutputTokens int `json:"output_tokens"`
+					InputTokens         int `json:"input_tokens"`
+					OutputTokens        int `json:"output_tokens"`
+					CacheHitInputTokens int `json:"cache_hit_input_tokens"`
 				} `json:"usage"`
 			} `json:"message"`
 		}
@@ -220,6 +221,7 @@ func parseAnthropicStreamEvent(eventName, data string, state *anthropicStreamSta
 			state.responseID = payload.Message.ID
 		}
 		state.promptTokens = payload.Message.Usage.InputTokens
+		state.cachedTokens = payload.Message.Usage.CacheHitInputTokens
 		for _, block := range payload.Message.Content {
 			state.applyContentBlock(block)
 		}
@@ -237,7 +239,11 @@ func parseAnthropicStreamEvent(eventName, data string, state *anthropicStreamSta
 		case "text":
 			if payload.ContentBlock.Text != "" {
 				state.appendText(payload.ContentBlock.Text)
-				return &ResponseEvent{Type: "response.output_text.delta", Delta: payload.ContentBlock.Text}
+				return &ResponseEvent{Type: EventContentDelta, Delta: payload.ContentBlock.Text}
+			}
+		case "thinking":
+			if payload.ContentBlock.Thinking != "" {
+				state.appendThinking(payload.ContentBlock.Thinking, payload.ContentBlock.Signature)
 			}
 		case "tool_use":
 			args := strings.TrimSpace(string(payload.ContentBlock.Input))
@@ -269,12 +275,15 @@ func parseAnthropicStreamEvent(eventName, data string, state *anthropicStreamSta
 			if deltaType, _ := deltaMap["type"].(string); deltaType == "text_delta" {
 				if text, _ := deltaMap["text"].(string); text != "" {
 					state.appendText(text)
-					return &ResponseEvent{Type: "response.output_text.delta", Delta: text}
+					return &ResponseEvent{Type: EventContentDelta, Delta: text}
 				}
 			}
 			if text, _ := deltaMap["text"].(string); text != "" {
 				state.appendText(text)
-				return &ResponseEvent{Type: "response.output_text.delta", Delta: text}
+				return &ResponseEvent{Type: EventContentDelta, Delta: text}
+			}
+			if thinking, _ := deltaMap["thinking"].(string); thinking != "" {
+				state.appendThinking(thinking, "")
 			}
 			if partial, _ := deltaMap["partial_json"].(string); partial != "" && state.activeTool != nil {
 				state.activeTool.Args += partial
@@ -289,7 +298,7 @@ func parseAnthropicStreamEvent(eventName, data string, state *anthropicStreamSta
 		output := *state.activeTool
 		state.outputs = append(state.outputs, output)
 		state.activeTool = nil
-		return &ResponseEvent{Type: "response.output_item.done", Output: &output}
+		return &ResponseEvent{Type: EventToolCallDone, Output: &output}
 
 	case "message_delta":
 		// 扩展：支持更多第三方 provider 的 message_delta 变体
@@ -307,13 +316,13 @@ func parseAnthropicStreamEvent(eventName, data string, state *anthropicStreamSta
 		if deltaMap, ok := payload.Delta.(map[string]any); ok {
 			if text, _ := deltaMap["text"].(string); text != "" {
 				state.appendText(text)
-				return &ResponseEvent{Type: "response.output_text.delta", Delta: text}
+				return &ResponseEvent{Type: EventContentDelta, Delta: text}
 			}
 		}
 		// 如果有 content 字段（某些 provider 变体）
 		if payload.Content != "" {
 			state.appendText(payload.Content)
-			return &ResponseEvent{Type: "response.output_text.delta", Delta: payload.Content}
+			return &ResponseEvent{Type: EventContentDelta, Delta: payload.Content}
 		}
 		if payload.Usage.OutputTokens > 0 {
 			state.completionTokens = payload.Usage.OutputTokens
@@ -322,7 +331,7 @@ func parseAnthropicStreamEvent(eventName, data string, state *anthropicStreamSta
 
 	case "message_stop":
 		state.completed = true
-		return &ResponseEvent{Type: "response.completed", Response: state.response()}
+		return &ResponseEvent{Type: EventResponseCompleted, Response: state.response()}
 
 	case "ping":
 		return nil
@@ -334,7 +343,7 @@ func parseAnthropicStreamEvent(eventName, data string, state *anthropicStreamSta
 		}
 		if json.Unmarshal([]byte(data), &payload) == nil && payload.Text != "" {
 			state.appendText(payload.Text)
-			return &ResponseEvent{Type: "response.output_text.delta", Delta: payload.Text}
+			return &ResponseEvent{Type: EventContentDelta, Delta: payload.Text}
 		}
 		return nil
 	}
@@ -347,6 +356,7 @@ type anthropicStreamState struct {
 	model            string
 	promptTokens     int
 	completionTokens int
+	cachedTokens     int
 	outputs          []ResponseOutput
 	activeTool       *ResponseOutput
 	completed        bool
@@ -370,10 +380,31 @@ func (s *anthropicStreamState) appendText(text string) {
 	})
 }
 
+func (s *anthropicStreamState) appendThinking(thinking, signature string) {
+	if thinking == "" {
+		return
+	}
+	if len(s.outputs) == 0 || s.outputs[len(s.outputs)-1].Type != "message" {
+		s.outputs = append(s.outputs, ResponseOutput{
+			Type:   "message",
+			Role:   "assistant",
+			Status: "completed",
+		})
+	}
+	index := len(s.outputs) - 1
+	s.outputs[index].Content = append(s.outputs[index].Content, ResponseContent{
+		Type:      "thinking",
+		Thinking:  thinking,
+		Signature: signature,
+	})
+}
+
 func (s *anthropicStreamState) applyContentBlock(block AnthropicContentBlock) {
 	switch block.Type {
 	case "text":
 		s.appendText(block.Text)
+	case "thinking":
+		s.appendThinking(block.Thinking, block.Signature)
 	case "tool_use":
 		args := strings.TrimSpace(string(block.Input))
 		if args == "" {
@@ -402,6 +433,7 @@ func (s *anthropicStreamState) response() *Response {
 			PromptTokens:     s.promptTokens,
 			CompletionTokens: s.completionTokens,
 			TotalTokens:      s.promptTokens + s.completionTokens,
+			CachedTokens:     s.cachedTokens,
 		},
 	}
 }
@@ -468,6 +500,7 @@ func (p *anthropicProvider) buildMessages(msgs []Message) ([]map[string]any, str
 
 	for _, msg := range msgs {
 		text := collectText(msg.Content)
+		blocks := buildAnthropicBlocks(msg)
 		switch msg.Role {
 		case "system", "developer":
 			if text != "" {
@@ -475,19 +508,9 @@ func (p *anthropicProvider) buildMessages(msgs []Message) ([]map[string]any, str
 			}
 		case "assistant":
 			// 处理 assistant 消息（含工具调用）
-			var content []map[string]any
-			if text != "" {
-				content = append(content, map[string]any{"type": "text", "text": text})
-			}
-			for _, tc := range msg.ToolCalls {
-				// 直接使用原始参数，Anthropic 格式的 input 是对象
-				inputMap := mustUnmarshalJSON(tc.Function.Arguments)
-				content = append(content, map[string]any{
-					"type":  "tool_use",
-					"id":    tc.ID,
-					"name":  tc.Function.Name,
-					"input": inputMap,
-				})
+			content := make([]map[string]any, 0, len(blocks))
+			for _, block := range blocks {
+				content = append(content, anthropicBlockToMap(block))
 			}
 			if len(content) > 0 {
 				messages = append(messages, map[string]any{"role": "assistant", "content": content})
@@ -507,23 +530,56 @@ func (p *anthropicProvider) buildMessages(msgs []Message) ([]map[string]any, str
 				},
 			})
 		case "user":
-			if text != "" {
+			if len(blocks) > 0 {
+				content := make([]map[string]any, 0, len(blocks))
+				for _, block := range blocks {
+					content = append(content, anthropicBlockToMap(block))
+				}
 				messages = append(messages, map[string]any{
 					"role":    "user",
-					"content": text,
+					"content": content,
 				})
 			}
 		default:
-			if text != "" {
+			if len(blocks) > 0 {
+				content := make([]map[string]any, 0, len(blocks))
+				for _, block := range blocks {
+					content = append(content, anthropicBlockToMap(block))
+				}
 				messages = append(messages, map[string]any{
 					"role":    "user",
-					"content": text,
+					"content": content,
 				})
 			}
 		}
 	}
 
 	return messages, strings.Join(systemParts, "\n\n"), nil
+}
+
+func anthropicBlockToMap(block anthropicContentBlock) map[string]any {
+	switch block.Type {
+	case "text":
+		return map[string]any{"type": "text", "text": block.Text}
+	case "thinking":
+		return map[string]any{"type": "text", "text": block.Text}
+	case "image":
+		var source map[string]any
+		_ = json.Unmarshal(block.Input, &source)
+		return map[string]any{
+			"type":   "image",
+			"source": source,
+		}
+	case "tool_use":
+		return map[string]any{
+			"type":  "tool_use",
+			"id":    block.ID,
+			"name":  block.Name,
+			"input": mustUnmarshalJSON(string(block.Input)),
+		}
+	default:
+		return map[string]any{"type": "text", "text": block.Text}
+	}
 }
 
 // 辅助函数
@@ -554,26 +610,10 @@ type anthropicContentBlock struct {
 // buildAnthropicBlocks creates content blocks for Anthropic messages
 func buildAnthropicBlocks(message Message) []anthropicContentBlock {
 	blocks := make([]anthropicContentBlock, 0, len(message.ToolCalls)+1)
-	switch current := message.Content.(type) {
-	case string:
-		if current != "" {
-			blocks = append(blocks, anthropicContentBlock{Type: "text", Text: current})
-		}
-	case []any:
-		for _, item := range current {
-			block, ok := buildAnthropicTextBlock(item)
-			if ok {
-				blocks = append(blocks, block)
-			}
-		}
-	case map[string]any:
-		block, ok := buildAnthropicTextBlock(current)
+	for _, item := range message.Content {
+		block, ok := buildAnthropicTextBlock(item)
 		if ok {
 			blocks = append(blocks, block)
-		}
-	default:
-		if text := collectText(current); text != "" {
-			blocks = append(blocks, anthropicContentBlock{Type: "text", Text: text})
 		}
 	}
 
@@ -589,20 +629,55 @@ func buildAnthropicBlocks(message Message) []anthropicContentBlock {
 }
 
 // buildAnthropicTextBlock converts a message content item to an Anthropic text block
-func buildAnthropicTextBlock(value any) (anthropicContentBlock, bool) {
-	current, ok := value.(map[string]any)
-	if !ok {
-		text := collectText(value)
-		if text == "" {
+func buildAnthropicTextBlock(value ContentBlock) (anthropicContentBlock, bool) {
+	switch value.Type {
+	case "text", "output_text":
+		if value.Text == "" {
 			return anthropicContentBlock{}, false
 		}
-		return anthropicContentBlock{Type: "text", Text: text}, true
-	}
-	text := collectText(current)
-	if text == "" {
+		return anthropicContentBlock{Type: "text", Text: value.Text}, true
+	case "thinking":
+		if value.Thinking == "" {
+			return anthropicContentBlock{}, false
+		}
+		return anthropicContentBlock{Type: "thinking", Text: value.Thinking}, true
+	case "image":
+		if value.Image == nil {
+			return anthropicContentBlock{}, false
+		}
+		source := map[string]any{
+			"type":       firstNonEmpty(value.Image.SourceType, "base64"),
+			"media_type": value.Image.MediaType,
+			"data":       value.Image.Data,
+		}
+		if value.Image.URL != "" {
+			source = map[string]any{
+				"type": "url",
+				"url":  value.Image.URL,
+			}
+		}
+		raw, _ := json.Marshal(source)
+		return anthropicContentBlock{Type: "image", Input: raw}, true
+	case "refusal":
+		if value.Refusal == "" {
+			return anthropicContentBlock{}, false
+		}
+		return anthropicContentBlock{Type: "text", Text: value.Refusal}, true
+	case "structured_output":
+		if value.Structured == nil {
+			return anthropicContentBlock{}, false
+		}
+		if len(value.Structured.Raw) > 0 {
+			return anthropicContentBlock{Type: "text", Text: string(value.Structured.Raw)}, true
+		}
+		if value.Structured.Data != nil {
+			raw, _ := json.Marshal(value.Structured.Data)
+			return anthropicContentBlock{Type: "text", Text: string(raw)}, true
+		}
+		return anthropicContentBlock{}, false
+	default:
 		return anthropicContentBlock{}, false
 	}
-	return anthropicContentBlock{Type: "text", Text: text}, true
 }
 
 // marshalRawJSON ensures JSON is properly formatted
@@ -635,6 +710,7 @@ func buildAnthropicStreamResponse(id, model string, outputs []ResponseOutput, pr
 			PromptTokens:     promptTokens,
 			CompletionTokens: completionTokens,
 			TotalTokens:      promptTokens + completionTokens,
+			CachedTokens:     0,
 		},
 	}
 }
@@ -711,15 +787,19 @@ type anthropicResponse struct {
 	Role       string `json:"role"`
 	StopReason string `json:"stop_reason"`
 	Content    []struct {
-		Type  string          `json:"type"`
-		Text  string          `json:"text"`
-		ID    string          `json:"id"`
-		Name  string          `json:"name"`
-		Input json.RawMessage `json:"input"`
+		Type      string           `json:"type"`
+		Text      string           `json:"text"`
+		ID        string           `json:"id"`
+		Name      string           `json:"name"`
+		Input     json.RawMessage  `json:"input"`
+		Source    *AnthropicSource `json:"source"`
+		Thinking  string           `json:"thinking"`
+		Signature string           `json:"signature"`
 	} `json:"content"`
 	Usage struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
+		InputTokens         int `json:"input_tokens"`
+		OutputTokens        int `json:"output_tokens"`
+		CacheHitInputTokens int `json:"cache_hit_input_tokens"`
 	} `json:"usage"`
 }
 
@@ -735,11 +815,14 @@ func convertAnthropicResponse(raw anthropicResponse, requestedModel string) *Res
 	newContent := make([]AnthropicContentBlock, len(oldContent))
 	for i, c := range oldContent {
 		newContent[i] = AnthropicContentBlock{
-			Type:  c.Type,
-			Text:  c.Text,
-			ID:    c.ID,
-			Name:  c.Name,
-			Input: c.Input,
+			Type:      c.Type,
+			Text:      c.Text,
+			ID:        c.ID,
+			Name:      c.Name,
+			Input:     c.Input,
+			Source:    c.Source,
+			Thinking:  c.Thinking,
+			Signature: c.Signature,
 		}
 	}
 
@@ -754,6 +837,7 @@ func convertAnthropicResponse(raw anthropicResponse, requestedModel string) *Res
 			PromptTokens:     raw.Usage.InputTokens,
 			CompletionTokens: raw.Usage.OutputTokens,
 			TotalTokens:      raw.Usage.InputTokens + raw.Usage.OutputTokens,
+			CachedTokens:     raw.Usage.CacheHitInputTokens,
 		},
 	}
 }
