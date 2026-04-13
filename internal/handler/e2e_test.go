@@ -38,10 +38,15 @@ func TestGatewayE2E(t *testing.T) {
 	superToken := "e2e-super-admin:super-admin-secret"
 
 	t.Run("health ready and invalid auth", func(t *testing.T) {
-		resp, body := doRequest(t, client, http.MethodGet, env.server.URL+"/health", nil, nil)
+		resp, body := doRequest(t, client, http.MethodGet, env.server.URL+"/health", map[string]string{
+			"X-Request-ID": "e2e-request-1",
+		}, nil)
 		assertStatus(t, resp, http.StatusOK, body)
 		if !strings.Contains(string(body), `"status":"ok"`) {
 			t.Fatalf("GET /health body = %s, want ok status", body)
+		}
+		if resp.Header.Get("X-Request-ID") != "e2e-request-1" || resp.Header.Get("traceparent") == "" {
+			t.Fatalf("GET /health headers = %#v, want request-id echo and traceparent", resp.Header)
 		}
 
 		resp, body = doRequest(t, client, http.MethodGet, env.server.URL+"/ready", nil, nil)
@@ -392,11 +397,13 @@ func TestGatewayE2E(t *testing.T) {
 type gatewayE2EEnv struct {
 	handlerEnv *handlerTestEnv
 	server     *httptest.Server
+	cfg        *config.Config
+	tenantID   string
 }
 
 func (e *gatewayE2EEnv) setTenantProviders(t *testing.T, names ...string) {
 	t.Helper()
-	if err := e.handlerEnv.store.ReplaceTenantProviders(context.Background(), "tenant-a", names); err != nil {
+	if err := e.handlerEnv.store.ReplaceTenantProviders(context.Background(), e.tenantID, names); err != nil {
 		t.Fatalf("ReplaceTenantProviders(%v): %v", names, err)
 	}
 }
@@ -504,6 +511,8 @@ func newGatewayE2EEnv(t *testing.T) *gatewayE2EEnv {
 	env := &gatewayE2EEnv{
 		handlerEnv: handlerEnv,
 		server:     httptest.NewServer(handlerEnv.server.engine),
+		cfg:        cfgObj,
+		tenantID:   tenant.ID,
 	}
 	t.Cleanup(env.server.Close)
 	return env
