@@ -51,6 +51,7 @@ providers:
 
   - name: minimax
     type: anthropic
+    vendor: minimax
     baseURL: https://api.minimaxi.com/anthropic
     apiKey: sk-cp-9RiBlO0zc3d84nXjf8bid8OF1RQPBw_TaYTqDBoWVmGHlgZPTg6BZpPpUL8DyG3TUrVHGabnZCQF7H5lwokwyzuKUyil3hfY9sfwf89JGb45IpMVEkzOFig
     model: MiniMax-M2.5

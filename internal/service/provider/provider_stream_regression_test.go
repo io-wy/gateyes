@@ -1,6 +1,11 @@
 package provider
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/gateyes/gateway/internal/config"
@@ -101,5 +106,126 @@ func TestParseAnthropicStreamEventEmitsThinkingDelta(t *testing.T) {
 	}
 	if event.Type != EventThinkingDelta || event.ThinkingDelta != "step by step" {
 		t.Fatalf("parseAnthropicStreamEvent(thinking_delta) = %+v, want thinking_delta payload", event)
+	}
+}
+
+func TestOpenAIProviderNewRequestAppliesVendorProfileHeadersAndExtraBody(t *testing.T) {
+	p := NewOpenAIProvider(config.ProviderConfig{
+		Name:     "openai-vllm",
+		Type:     "openai",
+		Vendor:   "vllm",
+		BaseURL:  "https://openai.example/v1",
+		Endpoint: "chat",
+		APIKey:   "test-key",
+		Model:    "qwen-public",
+		Timeout:  5,
+		Headers: map[string]string{
+			"X-Custom-Provider": "gateyes",
+		},
+		ExtraBody: map[string]any{
+			"temperature": 0.25,
+		},
+	}).(*openAIProvider)
+
+	httpReq, err := p.newRequest(context.Background(), &ResponseRequest{
+		Model: "qwen-public",
+		Messages: []Message{{
+			Role:    "user",
+			Content: TextBlocks("hello"),
+		}},
+	}, false)
+	if err != nil {
+		t.Fatalf("newRequest() error: %v", err)
+	}
+
+	if got := httpReq.Header.Get("Authorization"); got != "Bearer test-key" {
+		t.Fatalf("Authorization header = %q, want Bearer token", got)
+	}
+	if got := httpReq.Header.Get("X-Custom-Provider"); got != "gateyes" {
+		t.Fatalf("custom header = %q, want gateyes", got)
+	}
+	if got := httpReq.Header.Get("X-Gateyes-Vendor"); got != "vllm" {
+		t.Fatalf("vendor header = %q, want vllm", got)
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(httpReq.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if payload["temperature"] != 0.25 {
+		t.Fatalf("extra body temperature = %#v, want 0.25", payload["temperature"])
+	}
+	if payload["top_k"] != float64(-1) {
+		t.Fatalf("vendor profile top_k = %#v, want -1 for vllm", payload["top_k"])
+	}
+}
+
+func TestAnthropicBuildParamsAppliesVendorProfileAndExtraBody(t *testing.T) {
+	p := NewAnthropicProvider(config.ProviderConfig{
+		Name:      "anthropic-minimax",
+		Type:      "anthropic",
+		Vendor:    "minimax",
+		BaseURL:   "https://anthropic.example",
+		APIKey:    "anthropic-key",
+		Model:     "MiniMax-M2.5",
+		Timeout:   5,
+		MaxTokens: 256,
+		ExtraBody: map[string]any{
+			"temperature": 0.7,
+		},
+	}).(*anthropicProvider)
+
+	params, err := p.buildParams(&ResponseRequest{
+		Model: "MiniMax-M2.5",
+		Messages: []Message{{
+			Role:    "user",
+			Content: TextBlocks("hello"),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildParams() error: %v", err)
+	}
+	if params["temperature"] != 0.7 {
+		t.Fatalf("extra body temperature = %#v, want 0.7", params["temperature"])
+	}
+	if params["stream_options"] == nil {
+		t.Fatalf("vendor profile stream_options = nil, want minimax-specific default")
+	}
+}
+
+func TestAnthropicProviderCreateResponseAppliesConfiguredHeaders(t *testing.T) {
+	var gotHeader http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"hello"}],"usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	defer server.Close()
+
+	p := NewAnthropicProvider(config.ProviderConfig{
+		Name:      "anthropic-a",
+		Type:      "anthropic",
+		BaseURL:   server.URL,
+		APIKey:    "anthropic-key",
+		Model:     "claude-test",
+		Timeout:   5,
+		MaxTokens: 128,
+		Headers: map[string]string{
+			"Anthropic-Beta": "tools-2024-04-04",
+		},
+	}).(*anthropicProvider)
+
+	_, err := p.CreateResponse(context.Background(), &ResponseRequest{
+		Model: "claude-test",
+		Messages: []Message{{
+			Role:    "user",
+			Content: TextBlocks("hello"),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateResponse() error: %v", err)
+	}
+	if got := gotHeader.Get("Anthropic-Beta"); got != "tools-2024-04-04" {
+		t.Fatalf("Anthropic-Beta header = %q, want configured header", got)
 	}
 }

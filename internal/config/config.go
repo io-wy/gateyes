@@ -89,17 +89,20 @@ type LimiterConfig struct {
 }
 
 type ProviderConfig struct {
-	Name        string  `yaml:"name"`
-	Type        string  `yaml:"type"`
-	BaseURL     string  `yaml:"baseURL"`
-	Endpoint    string  `yaml:"endpoint"` // "chat" or "responses", default "chat"
-	APIKey      string  `yaml:"apiKey"`
-	Model       string  `yaml:"model"`
-	PriceInput  float64 `yaml:"priceInput"`
-	PriceOutput float64 `yaml:"priceOutput"`
-	MaxTokens   int     `yaml:"maxTokens"`
-	Timeout     int     `yaml:"timeout"`
-	Enabled     bool    `yaml:"enabled"`
+	Name        string            `yaml:"name"`
+	Type        string            `yaml:"type"`
+	Vendor      string            `yaml:"vendor"`
+	BaseURL     string            `yaml:"baseURL"`
+	Endpoint    string            `yaml:"endpoint"` // "chat" or "responses", default "chat"
+	APIKey      string            `yaml:"apiKey"`
+	Model       string            `yaml:"model"`
+	PriceInput  float64           `yaml:"priceInput"`
+	PriceOutput float64           `yaml:"priceOutput"`
+	MaxTokens   int               `yaml:"maxTokens"`
+	Timeout     int               `yaml:"timeout"`
+	Enabled     bool              `yaml:"enabled"`
+	Headers     map[string]string `yaml:"headers"`
+	ExtraBody   map[string]any    `yaml:"extraBody"`
 }
 
 type APIKeyConfig struct {

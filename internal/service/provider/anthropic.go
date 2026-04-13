@@ -59,6 +59,10 @@ func (p *anthropicProvider) CreateResponse(ctx context.Context, req *ResponseReq
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-api-key", p.cfg.APIKey)
 	httpReq.Header.Set("anthropic-version", anthropicVersion)
+	applyProviderProfile(p.cfg, params, httpReq.Header)
+	body, _ = json.Marshal(params)
+	httpReq.Body = io.NopCloser(bytes.NewReader(body))
+	httpReq.ContentLength = int64(len(body))
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
@@ -104,6 +108,10 @@ func (p *anthropicProvider) StreamResponse(ctx context.Context, req *ResponseReq
 		httpReq.Header.Set("x-api-key", p.cfg.APIKey)
 		httpReq.Header.Set("anthropic-version", anthropicVersion)
 		httpReq.Header.Set("Accept", "text/event-stream")
+		applyProviderProfile(p.cfg, params, httpReq.Header)
+		body, _ = json.Marshal(params)
+		httpReq.Body = io.NopCloser(bytes.NewReader(body))
+		httpReq.ContentLength = int64(len(body))
 
 		resp, err := p.client.Do(httpReq)
 		if err != nil {
@@ -517,6 +525,8 @@ func (p *anthropicProvider) buildParams(req *ResponseRequest) (map[string]any, e
 			params["tools"] = tools
 		}
 	}
+
+	applyProviderPayloadProfile(p.cfg, params)
 
 	return params, nil
 }

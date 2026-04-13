@@ -402,6 +402,11 @@ func (p *openAIProvider) newRequest(ctx context.Context, req *ResponseRequest, s
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
+	applyProviderProfile(p.cfg, payload, httpReq.Header)
+
+	body, _ = json.Marshal(payload)
+	httpReq.Body = io.NopCloser(bytes.NewReader(body))
+	httpReq.ContentLength = int64(len(body))
 	return httpReq, nil
 }
 
