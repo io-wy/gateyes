@@ -59,6 +59,58 @@ func TestAuthMiddlewareRejectsInvalidSecret(t *testing.T) {
 	}
 }
 
+func TestCorrelationMiddlewarePropagatesRequestContextAndHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	engine := gin.New()
+	engine.Use(Correlation())
+	engine.GET("/context", func(c *gin.Context) {
+		requestCtx, ok := GetRequestContext(c)
+		if !ok {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "missing request context"})
+			return
+		}
+		fromStdlib, ok := RequestContextFromContext(c.Request.Context())
+		if !ok {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "missing stdlib request context"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"request_id":         requestCtx.RequestID,
+			"trace_id":           requestCtx.TraceID,
+			"traceparent":        requestCtx.Traceparent,
+			"stdlib_request_id":  fromStdlib.RequestID,
+			"stdlib_traceparent": fromStdlib.Traceparent,
+		})
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/context", nil)
+	req.Header.Set(RequestIDHeader, "req-fixed")
+	req.Header.Set(TraceparentHeader, "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01")
+	engine.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload["request_id"] != "req-fixed" || payload["stdlib_request_id"] != "req-fixed" {
+		t.Fatalf("request context payload = %#v, want propagated request id", payload)
+	}
+	if payload["trace_id"] != "0123456789abcdef0123456789abcdef" || payload["stdlib_traceparent"] == "" {
+		t.Fatalf("request context payload = %#v, want propagated trace info", payload)
+	}
+	if got := rec.Header().Get(RequestIDHeader); got != "req-fixed" {
+		t.Fatalf("response X-Request-ID = %q, want req-fixed", got)
+	}
+	if got := rec.Header().Get(TraceparentHeader); got != "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01" {
+		t.Fatalf("response traceparent = %q, want forwarded traceparent", got)
+	}
+}
+
 func TestGuardLLMRequestRejectsDisallowedModel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

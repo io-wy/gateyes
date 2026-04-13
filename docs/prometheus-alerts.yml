@@ -1,0 +1,113 @@
+groups:
+  - name: gateyes-llm-baseline
+    interval: 30s
+    rules:
+      - alert: GateyesLLMErrorRateHigh
+        expr: |
+          (
+            sum by (surface, provider) (rate(gateway_llm_requests_total{result!="success"}[5m]))
+            /
+            clamp_min(sum by (surface, provider) (rate(gateway_llm_requests_total[5m])), 0.001)
+          ) > 0.10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gateyes LLM error rate is high"
+          description: "surface={{ $labels.surface }} provider={{ $labels.provider }} error rate > 10% for 10m"
+
+      - alert: GateyesLLMRequestLatencyP95High
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le, surface, provider) (
+              rate(gateway_llm_request_duration_seconds_bucket[5m])
+            )
+          ) > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gateyes request p95 latency is high"
+          description: "surface={{ $labels.surface }} provider={{ $labels.provider }} request p95 > 5s"
+
+      - alert: GateyesLLMUpstreamLatencyP95High
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le, surface, provider) (
+              rate(gateway_llm_upstream_duration_seconds_bucket[5m])
+            )
+          ) > 4
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gateyes upstream p95 latency is high"
+          description: "surface={{ $labels.surface }} provider={{ $labels.provider }} upstream p95 > 4s"
+
+      - alert: GateyesLLMTTFTP95High
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le, surface, provider) (
+              rate(gateway_llm_time_to_first_token_seconds_bucket[5m])
+            )
+          ) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gateyes TTFT p95 is high"
+          description: "surface={{ $labels.surface }} provider={{ $labels.provider }} TTFT p95 > 2s"
+
+      - alert: GateyesLLMStreamDurationP95High
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le, surface, provider) (
+              rate(gateway_llm_stream_duration_seconds_bucket[5m])
+            )
+          ) > 30
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gateyes stream duration p95 is high"
+          description: "surface={{ $labels.surface }} provider={{ $labels.provider }} stream duration p95 > 30s"
+
+      - alert: GateyesLLMActiveStreamsSustained
+        expr: avg_over_time(gateway_llm_active_streams[10m]) > 20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gateyes active streams remain high"
+          description: "surface={{ $labels.surface }} active streams average > 20 for 10m"
+
+      - alert: GateyesLLMRetryBurst
+        expr: increase(gateway_llm_retries_total[10m]) > 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gateyes retry burst detected"
+          description: "provider={{ $labels.provider }} retries > 20 in 10m"
+
+      - alert: GateyesLLMFallbackBurst
+        expr: increase(gateway_llm_fallbacks_total[10m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gateyes fallback burst detected"
+          description: "provider={{ $labels.provider }} fallbacks > 10 in 10m"
+
+      - alert: GateyesProviderCircuitOpen
+        expr: max_over_time(gateway_provider_circuit_state[5m]) >= 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Gateyes provider circuit is open"
+          description: "tenant={{ $labels.tenant_id }} provider={{ $labels.provider }} circuit breaker is open or half-open"

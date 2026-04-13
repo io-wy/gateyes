@@ -44,6 +44,38 @@ func NewHandler(deps *Dependencies) *Handler {
 	}
 }
 
+func (h *Handler) requestLogger(c *gin.Context) *slog.Logger {
+	logger := h.logger
+	if logger == nil {
+		logger = slog.Default().With("component", "handler")
+	}
+	if requestCtx, ok := middleware.GetRequestContext(c); ok && requestCtx != nil {
+		logger = logger.With(
+			"request_id", requestCtx.RequestID,
+			"trace_id", requestCtx.TraceID,
+		)
+	}
+	return logger
+}
+
+func (h *Handler) logRequestCompleted(c *gin.Context, surface, providerName string, status int, latency time.Duration) {
+	h.requestLogger(c).Info("request completed",
+		"surface", surface,
+		"provider", normalizeMetricsProvider(providerName),
+		"status", status,
+		"latency_ms", latency.Milliseconds(),
+	)
+}
+
+func (h *Handler) logRequestFailed(c *gin.Context, surface, providerName string, status int, err error) {
+	h.requestLogger(c).Error("request failed",
+		"surface", surface,
+		"provider", normalizeMetricsProvider(providerName),
+		"status", status,
+		"error", err,
+	)
+}
+
 func (h *Handler) Chat(c *gin.Context) {
 	start := time.Now()
 	defer h.metrics.TrackInFlight(metricsSurfaceChatCompletions)()
@@ -82,6 +114,7 @@ func (h *Handler) Chat(c *gin.Context) {
 	// upstreamLatency = total latency - (retry delays)
 	upstreamLatency := time.Duration(result.LatencyMs) * time.Millisecond
 	h.observeResponseWithUpstream(metricsSurfaceChatCompletions, result.ProviderName, result.Response.Usage, time.Since(start), upstreamLatency, result.Retries, result.Fallback)
+	h.logRequestCompleted(c, metricsSurfaceChatCompletions, result.ProviderName, http.StatusOK, time.Since(start))
 	c.JSON(http.StatusOK, apicompat.ConvertResponseToChat(result.Response))
 }
 
@@ -127,6 +160,7 @@ func (h *Handler) AnthropicMessages(c *gin.Context) {
 	// upstreamLatency = total latency - (retry delays)
 	upstreamLatency := time.Duration(result.LatencyMs) * time.Millisecond
 	h.observeResponseWithUpstream(metricsSurfaceMessages, result.ProviderName, result.Response.Usage, time.Since(start), upstreamLatency, result.Retries, result.Fallback)
+	h.logRequestCompleted(c, metricsSurfaceMessages, result.ProviderName, http.StatusOK, time.Since(start))
 	c.JSON(http.StatusOK, apicompat.ConvertResponseToAnthropic(result.Response))
 }
 
@@ -189,6 +223,7 @@ func (h *Handler) renderServiceError(c *gin.Context, surface, providerName strin
 
 	result, errorClass := classifyMetricsError(err, httpErr.Type)
 	h.metrics.RecordError(surface, providerName, result, errorClass)
+	h.logRequestFailed(c, surface, providerName, status, err)
 
 	c.JSON(status, gin.H{"error": gin.H{"message": httpErr.Message, "type": httpErr.Type}})
 }

@@ -1,0 +1,181 @@
+{
+  "title": "Gateyes LLM Gateway Baseline",
+  "uid": "gateyes-llm-baseline",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "surface",
+        "type": "query",
+        "label": "Surface",
+        "query": "label_values(gateway_llm_requests_total, surface)",
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "provider",
+        "type": "query",
+        "label": "Provider",
+        "query": "label_values(gateway_llm_requests_total, provider)",
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "LLM Request Rate",
+      "gridPos": { "x": 0, "y": 0, "w": 8, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (surface, provider, result) (rate(gateway_llm_requests_total{surface=~\"$surface\",provider=~\"$provider\"}[5m]))",
+          "legendFormat": "{{surface}} {{provider}} {{result}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Error Rate",
+      "gridPos": { "x": 8, "y": 0, "w": 8, "h": 8 },
+      "targets": [
+        {
+          "expr": "(sum by (surface, provider) (rate(gateway_llm_requests_total{surface=~\"$surface\",provider=~\"$provider\",result!=\"success\"}[5m])))/(clamp_min(sum by (surface, provider) (rate(gateway_llm_requests_total{surface=~\"$surface\",provider=~\"$provider\"}[5m])), 0.001))",
+          "legendFormat": "{{surface}} {{provider}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Inflight Requests",
+      "gridPos": { "x": 16, "y": 0, "w": 8, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(gateway_llm_inflight_requests{surface=~\"$surface\"})",
+          "legendFormat": "inflight"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Request Latency p95",
+      "gridPos": { "x": 0, "y": 8, "w": 8, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, surface, provider) (rate(gateway_llm_request_duration_seconds_bucket{surface=~\"$surface\",provider=~\"$provider\"}[5m])))",
+          "legendFormat": "{{surface}} {{provider}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Upstream Latency p95",
+      "gridPos": { "x": 8, "y": 8, "w": 8, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, surface, provider) (rate(gateway_llm_upstream_duration_seconds_bucket{surface=~\"$surface\",provider=~\"$provider\"}[5m])))",
+          "legendFormat": "{{surface}} {{provider}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "TTFT p95",
+      "gridPos": { "x": 16, "y": 8, "w": 8, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, surface, provider) (rate(gateway_llm_time_to_first_token_seconds_bucket{surface=~\"$surface\",provider=~\"$provider\"}[5m])))",
+          "legendFormat": "{{surface}} {{provider}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Stream Duration p95",
+      "gridPos": { "x": 0, "y": 16, "w": 8, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, surface, provider) (rate(gateway_llm_stream_duration_seconds_bucket{surface=~\"$surface\",provider=~\"$provider\"}[5m])))",
+          "legendFormat": "{{surface}} {{provider}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Active Streams",
+      "gridPos": { "x": 8, "y": 16, "w": 8, "h": 8 },
+      "targets": [
+        {
+          "expr": "gateway_llm_active_streams{surface=~\"$surface\"}",
+          "legendFormat": "{{surface}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Token Throughput",
+      "gridPos": { "x": 16, "y": 16, "w": 8, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (provider, token_type) (rate(gateway_llm_tokens_total{provider=~\"$provider\"}[5m]))",
+          "legendFormat": "{{provider}} {{token_type}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Retries and Fallbacks",
+      "gridPos": { "x": 0, "y": 24, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "rate(gateway_llm_retries_total{provider=~\"$provider\"}[5m])",
+          "legendFormat": "retry {{provider}}"
+        },
+        {
+          "expr": "rate(gateway_llm_fallbacks_total{provider=~\"$provider\"}[5m])",
+          "legendFormat": "fallback {{provider}}"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Error Classes",
+      "gridPos": { "x": 12, "y": 24, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (surface, provider, error_class) (rate(gateway_llm_errors_total{surface=~\"$surface\",provider=~\"$provider\"}[5m]))",
+          "legendFormat": "{{surface}} {{provider}} {{error_class}}"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Provider Circuit State",
+      "gridPos": { "x": 0, "y": 32, "w": 24, "h": 8 },
+      "targets": [
+        {
+          "expr": "gateway_provider_circuit_state{provider=~\"$provider\"}",
+          "legendFormat": "{{tenant_id}} {{provider}}"
+        }
+      ]
+    }
+  ]
+}

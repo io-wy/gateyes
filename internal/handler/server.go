@@ -25,6 +25,7 @@ func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mw *mi
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
 	engine.Use(gin.Recovery())
+	engine.Use(middleware.Correlation())
 	engine.Use(gin.Logger())
 
 	engine.GET("/health", h.Health)

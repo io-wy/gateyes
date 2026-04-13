@@ -519,10 +519,10 @@ provider="none"
 
 当前监控仍然有几个已知边界：
 
-- 没有 tracing / span 体系
-- 没有 request-id 级别的 metrics/log correlation
+- 没有 OpenTelemetry tracing / span backend
+- 已补 `X-Request-ID` + `traceparent` 响应头与应用日志关联，但还不是完整 tracing 体系
 - `provider_circuit_state` 只有在显式同步时才会更新，不是后台定时采集
-- Prometheus alert rules 和 Grafana dashboard 只提供最小样例，不代表完整生产规则
+- 仓库内已提供 Prometheus / Grafana 基线资产，但阈值仍需按生产环境调优
 
 ## 路由
 

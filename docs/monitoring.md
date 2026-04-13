@@ -1,6 +1,6 @@
 # 监控与告警
 
-本文档描述 Gateyes 当前的监控出口、Prometheus 指标口径，以及最小的告警规则和 Grafana dashboard 样例。
+本文档描述 Gateyes 当前的监控出口、Prometheus 指标口径、request correlation，以及 Prometheus / Grafana 基线资产。
 
 当前实现只使用仓库内已有技术：
 
@@ -10,7 +10,7 @@
 - `promhttp`
 - `slog`
 
-不包含 OpenTelemetry、trace backend 或外部 APM SDK。
+不包含 OpenTelemetry trace backend 或外部 APM SDK。
 
 ## 1. 暴露方式
 
@@ -135,6 +135,7 @@ provider="none"
 - token 计数
 - retry/fallback
 - provider request
+- request-id / trace-id 关联日志
 
 ### Streaming
 
@@ -196,20 +197,24 @@ sum by (provider, token_type) (
 )
 ```
 
-## 5. 最小样例文件
+## 5. 监控资产
 
-仓库内已附带两个最小样例：
+完整基线文件：
+
+- [`docs/prometheus-alerts.yml`](./prometheus-alerts.yml)
+- [`docs/grafana-dashboard.json`](./grafana-dashboard.json)
+
+最小样例文件：
 
 - [`docs/prometheus-alerts.example.yml`](./prometheus-alerts.example.yml)
 - [`docs/grafana-dashboard.example.json`](./grafana-dashboard.example.json)
 
-这两个文件按默认 namespace `gateway` 编写。
+这些文件都按默认 namespace `gateway` 编写。
 
 如果你修改了 `metrics.namespace`，需要同步替换查询里的前缀。
 
 ## 6. 当前边界
 
-- 没有 tracing
-- 没有现成的 request-id / log correlation
+- 没有 OpenTelemetry span backend；当前是 `X-Request-ID` + `traceparent` 透传/生成 + slog 字段关联
 - `provider_circuit_state` 依赖显式同步，不是后台周期采集
-- 样例 dashboard / alert 规则只覆盖最小监控面，不等于完整生产告警体系
+- Prometheus rules / Grafana dashboard 已提供基线，但阈值与面板布局仍需按部署环境调优

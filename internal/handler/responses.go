@@ -75,6 +75,7 @@ func (h *Handler) handleResponsesCreate(c *gin.Context) {
 	// upstreamLatency = total latency - (retry delays)
 	upstreamLatency := time.Duration(result.LatencyMs) * time.Millisecond
 	h.observeResponseWithUpstream(metricsSurfaceResponses, result.ProviderName, result.Response.Usage, time.Since(start), upstreamLatency, result.Retries, result.Fallback)
+	h.logRequestCompleted(c, metricsSurfaceResponses, result.ProviderName, http.StatusOK, time.Since(start))
 	c.JSON(http.StatusOK, result.Response)
 }
 
@@ -100,6 +101,7 @@ func (h *Handler) streamResponses(c *gin.Context, stream *responseSvc.Stream, re
 			if !ok {
 				// Stream ended
 				h.metrics.ObserveStreamDuration(metricsSurfaceResponses, stream.ProviderName, metricsResultSuccess, time.Since(start))
+				h.logRequestCompleted(c, metricsSurfaceResponses, stream.ProviderName, http.StatusOK, time.Since(start))
 				writeSSEDone(c)
 				flusher.Flush()
 				return
@@ -124,6 +126,7 @@ func (h *Handler) streamResponses(c *gin.Context, stream *responseSvc.Stream, re
 				result, errorClass := classifyMetricsError(err, "internal_error")
 				h.metrics.RecordError(metricsSurfaceResponses, stream.ProviderName, result, errorClass)
 				h.metrics.ObserveStreamDuration(metricsSurfaceResponses, stream.ProviderName, result, time.Since(start))
+				h.logRequestFailed(c, metricsSurfaceResponses, stream.ProviderName, http.StatusBadGateway, err)
 				_ = writeSSE(c, gin.H{"type": "error", "message": err.Error()})
 				writeSSEDone(c)
 				flusher.Flush()
@@ -208,6 +211,7 @@ func (h *Handler) streamChatCompatibility(c *gin.Context, stream *responseSvc.St
 			if !ok {
 				// Stream ended
 				h.metrics.ObserveStreamDuration(metricsSurfaceChatCompletions, stream.ProviderName, metricsResultSuccess, time.Since(start))
+				h.logRequestCompleted(c, metricsSurfaceChatCompletions, stream.ProviderName, http.StatusOK, time.Since(start))
 				writeSSEDone(c)
 				flusher.Flush()
 				return
@@ -233,6 +237,7 @@ func (h *Handler) streamChatCompatibility(c *gin.Context, stream *responseSvc.St
 				result, errorClass := classifyMetricsError(err, "internal_error")
 				h.metrics.RecordError(metricsSurfaceChatCompletions, stream.ProviderName, result, errorClass)
 				h.metrics.ObserveStreamDuration(metricsSurfaceChatCompletions, stream.ProviderName, result, time.Since(start))
+				h.logRequestFailed(c, metricsSurfaceChatCompletions, stream.ProviderName, http.StatusBadGateway, err)
 				_ = writeSSE(c, gin.H{"error": gin.H{"message": err.Error(), "type": "internal_error"}})
 				writeSSEDone(c)
 				flusher.Flush()
@@ -267,6 +272,7 @@ func (h *Handler) streamAnthropicMessages(c *gin.Context, stream *responseSvc.St
 			if !ok {
 				// Stream ended
 				h.metrics.ObserveStreamDuration(metricsSurfaceMessages, stream.ProviderName, metricsResultSuccess, time.Since(start))
+				h.logRequestCompleted(c, metricsSurfaceMessages, stream.ProviderName, http.StatusOK, time.Since(start))
 				writeSSEDone(c)
 				flusher.Flush()
 				return
@@ -292,6 +298,7 @@ func (h *Handler) streamAnthropicMessages(c *gin.Context, stream *responseSvc.St
 				result, errorClass := classifyMetricsError(err, "internal_error")
 				h.metrics.RecordError(metricsSurfaceMessages, stream.ProviderName, result, errorClass)
 				h.metrics.ObserveStreamDuration(metricsSurfaceMessages, stream.ProviderName, result, time.Since(start))
+				h.logRequestFailed(c, metricsSurfaceMessages, stream.ProviderName, http.StatusBadGateway, err)
 				_ = writeSSE(c, gin.H{"error": gin.H{"message": err.Error(), "type": "internal_error"}})
 				writeSSEDone(c)
 				flusher.Flush()
