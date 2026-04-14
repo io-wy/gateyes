@@ -45,6 +45,8 @@ type Service struct {
 	circuitBreaker *CircuitBreaker
 }
 
+const terminalPersistenceTimeout = 5 * time.Second
+
 type CreateResult struct {
 	Response         *provider.Response
 	ProviderName     string
@@ -448,6 +450,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 				errCh <- err
 				return
 			case <-ctx.Done():
+				s.handleStreamCancellation(ctx, identity, req, responseID, p, finalResponse, assistantText, streamedOutputs, streamUsage, startedAt)
 				s.router.DecLoad(providerName)
 				s.providerMgr.Stats.DecrementLoad(providerName)
 				errCh <- ctx.Err()
@@ -535,6 +538,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 					errCh <- err
 					return
 				case <-ctx.Done():
+					s.handleStreamCancellation(ctx, identity, req, responseID, p, finalResponse, assistantText, streamedOutputs, streamUsage, startedAt)
 					s.router.DecLoad(providerName)
 					s.providerMgr.Stats.DecrementLoad(providerName)
 					errCh <- ctx.Err()
@@ -566,8 +570,11 @@ func (s *Service) finalizeStream(ctx context.Context, identity *repository.AuthI
 	resp.Created = time.Now().Unix()
 	resp.Status = "completed"
 
+	persistCtx, cancel := detachedPersistenceContext(ctx)
+	defer cancel()
+
 	body, _ := json.Marshal(resp)
-	_ = s.store.UpdateResponse(ctx, repository.ResponseRecord{
+	_ = s.store.UpdateResponse(persistCtx, repository.ResponseRecord{
 		ID:           responseID,
 		TenantID:     identity.TenantID,
 		ProviderName: providerName,
@@ -576,7 +583,7 @@ func (s *Service) finalizeStream(ctx context.Context, identity *repository.AuthI
 		ResponseBody: body,
 	})
 
-	_ = s.auth.RecordUsage(ctx, identity, providerName, model, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens, 0, latencyMs, "success", "")
+	_ = s.auth.RecordUsage(persistCtx, identity, providerName, model, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens, 0, latencyMs, "success", "")
 
 	s.providerMgr.Stats.RecordRequest(providerName, true, resp.Usage.TotalTokens, latencyMs)
 
@@ -753,14 +760,17 @@ func applyRecoveredStreamUsage(resp *provider.Response, usage *provider.Usage) {
 }
 
 func (s *Service) handleStreamError(ctx context.Context, identity *repository.AuthIdentity, responseID, providerName, model string, latencyMs int64, streamErr error) {
-	_ = s.store.UpdateResponse(ctx, repository.ResponseRecord{
+	persistCtx, cancel := detachedPersistenceContext(ctx)
+	defer cancel()
+
+	_ = s.store.UpdateResponse(persistCtx, repository.ResponseRecord{
 		ID:           responseID,
 		TenantID:     identity.TenantID,
 		ProviderName: providerName,
 		Model:        model,
 		Status:       "error",
 	})
-	_ = s.auth.RecordUsage(ctx, identity, providerName, model, 0, 0, 0, 0, latencyMs, "error", "upstream_error")
+	_ = s.auth.RecordUsage(persistCtx, identity, providerName, model, 0, 0, 0, 0, latencyMs, "error", "upstream_error")
 }
 
 func (s *Service) prepare(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*execution, error) {
@@ -893,9 +903,57 @@ func (s *Service) runStream(ctx context.Context, identity *repository.AuthIdenti
 			errCh <- err
 			return
 		case <-ctx.Done():
+			s.handleStreamCancellation(ctx, identity, exec.upstreamRequest, exec.responseID, exec.provider, finalResponse, assistantText, streamedOutputs, streamUsage, exec.startedAt)
 			return
 		}
 	}
+}
+
+func (s *Service) handleStreamCancellation(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, responseID string, currentProvider provider.Provider, finalResponse *provider.Response, assistantText string, streamedOutputs []provider.ResponseOutput, streamUsage *provider.Usage, startedAt time.Time) {
+	if identity == nil || req == nil || currentProvider == nil {
+		return
+	}
+
+	exec := &execution{
+		provider:              currentProvider,
+		requestedModel:        req.Model,
+		upstreamRequest:       buildUpstreamRequest(req),
+		responseID:            responseID,
+		tenantID:              identity.TenantID,
+		startedAt:             startedAt,
+		estimatedPromptTokens: req.EstimatePromptTokens(),
+	}
+
+	resp := finalResponse
+	if resp == nil || !hasRenderableStreamPayload(resp) {
+		resp = buildAccumulatedStreamResponse(responseID, req.Model, assistantText, streamedOutputs, exec.estimatedPromptTokens)
+	}
+	applyRecoveredStreamUsage(resp, streamUsage)
+	resp = s.normalizeResponse(exec, resp)
+	resp.Status = "cancelled"
+
+	latencyMs := time.Since(startedAt).Milliseconds()
+	cost := currentProvider.Cost(resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
+
+	persistCtx, cancel := detachedPersistenceContext(ctx)
+	defer cancel()
+
+	body, _ := json.Marshal(resp)
+	_ = s.store.UpdateResponse(persistCtx, repository.ResponseRecord{
+		ID:           responseID,
+		TenantID:     identity.TenantID,
+		ProviderName: currentProvider.Name(),
+		Model:        req.Model,
+		Status:       "cancelled",
+		ResponseBody: body,
+	})
+	_ = s.auth.RecordBillableUsage(persistCtx, identity, currentProvider.Name(), req.Model, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens, cost, latencyMs, "cancelled", "client_disconnect")
+	s.providerMgr.Stats.RecordRequest(currentProvider.Name(), false, resp.Usage.TotalTokens, latencyMs)
+}
+
+func detachedPersistenceContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	base := context.WithoutCancel(ctx)
+	return context.WithTimeout(base, terminalPersistenceTimeout)
 }
 
 func (s *Service) persistSuccess(ctx context.Context, identity *repository.AuthIdentity, exec *execution, resp *provider.Response, latencyMs int64) error {

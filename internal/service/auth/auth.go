@@ -88,11 +88,44 @@ func (a *Auth) RecordUsage(
 	status string,
 	errorType string,
 ) error {
+	return a.recordUsage(ctx, identity, providerName, model, promptTokens, completionTokens, totalTokens, cost, latencyMs, status, errorType, status == "success")
+}
+
+func (a *Auth) RecordBillableUsage(
+	ctx context.Context,
+	identity *repository.AuthIdentity,
+	providerName string,
+	model string,
+	promptTokens int,
+	completionTokens int,
+	totalTokens int,
+	cost float64,
+	latencyMs int64,
+	status string,
+	errorType string,
+) error {
+	return a.recordUsage(ctx, identity, providerName, model, promptTokens, completionTokens, totalTokens, cost, latencyMs, status, errorType, totalTokens > 0)
+}
+
+func (a *Auth) recordUsage(
+	ctx context.Context,
+	identity *repository.AuthIdentity,
+	providerName string,
+	model string,
+	promptTokens int,
+	completionTokens int,
+	totalTokens int,
+	cost float64,
+	latencyMs int64,
+	status string,
+	errorType string,
+	consumeQuota bool,
+) error {
 	if err := a.store.TouchAPIKey(ctx, identity.APIKeyID, time.Now().UTC()); err != nil {
 		return err
 	}
 
-	if status == "success" {
+	if consumeQuota {
 		ok, err := a.store.ConsumeQuota(ctx, identity.UserID, totalTokens)
 		if err != nil {
 			return err

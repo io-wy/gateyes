@@ -500,6 +500,109 @@ func TestCreateStreamRecoversChatPayloadFromFinishOnlyStream(t *testing.T) {
 	}
 }
 
+func TestCreateStreamMarksCancelledAndRecordsPartialUsageOnClientDisconnect(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("expected streaming response writer")
+		}
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial hello\"}\n\n")
+		flusher.Flush()
+		<-r.Context().Done()
+	}))
+	defer upstream.Close()
+
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		upstreamURL: upstream.URL,
+		endpoint:    "responses",
+		providers:   []string{"test-openai"},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stream, err := env.service.CreateStream(ctx, env.identity, &provider.ResponseRequest{
+		Model:  "public-model",
+		Input:  "hello",
+		Stream: true,
+	}, "session-client-cancel")
+	if err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+
+	var (
+		streamErr  error
+		sawStarted bool
+		sawDelta   bool
+	)
+	eventsCh := stream.Events
+	errCh := stream.Errors
+	cancelled := false
+
+	for eventsCh != nil || errCh != nil {
+		select {
+		case event, ok := <-eventsCh:
+			if !ok {
+				eventsCh = nil
+				continue
+			}
+			if event.Type == provider.EventResponseStarted {
+				sawStarted = true
+			}
+			if event.Type == provider.EventContentDelta && event.Text() == "partial hello" {
+				sawDelta = true
+				if !cancelled {
+					cancel()
+					cancelled = true
+				}
+			}
+		case err, ok := <-errCh:
+			if !ok {
+				errCh = nil
+				continue
+			}
+			if err != nil {
+				streamErr = err
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("timed out waiting for cancelled stream")
+		}
+	}
+
+	if !sawStarted || !sawDelta {
+		t.Fatalf("expected started and partial delta before cancellation, got started=%v delta=%v", sawStarted, sawDelta)
+	}
+	if !errors.Is(streamErr, context.Canceled) {
+		t.Fatalf("unexpected stream error: %v, want %v", streamErr, context.Canceled)
+	}
+
+	record := waitForResponseRecord(t, env.database.Conn, 3*time.Second)
+	if record.Status != "cancelled" {
+		t.Fatalf("response status = %q, want cancelled", record.Status)
+	}
+	if !strings.Contains(record.ResponseBody, "partial hello") {
+		t.Fatalf("response body = %q, want persisted partial output", record.ResponseBody)
+	}
+
+	usage := waitForUsageRecord(t, env.database.Conn, 3*time.Second)
+	if usage.Status != "cancelled" || usage.ErrorType != "client_disconnect" {
+		t.Fatalf("usage record = %+v, want cancelled/client_disconnect", usage)
+	}
+	if usage.TotalTokens <= 0 || usage.CompletionTokens <= 0 {
+		t.Fatalf("usage record = %+v, want positive partial token counts", usage)
+	}
+
+	refreshed, err := env.store.Authenticate(context.Background(), "test-key")
+	if err != nil {
+		t.Fatalf("refresh identity: %v", err)
+	}
+	if refreshed.Used != usage.TotalTokens {
+		t.Fatalf("user used = %d, want %d", refreshed.Used, usage.TotalTokens)
+	}
+}
+
 type responsesTestEnv struct {
 	database *db.DB
 	store    *sqlstore.Store
@@ -621,6 +724,68 @@ func queryResponseStatus(ctx context.Context, conn *sql.DB) (int, string, error)
 SELECT COUNT(1), MAX(status)
 FROM responses`).Scan(&count, &status)
 	return count, status, err
+}
+
+type responseSnapshot struct {
+	Status       string
+	ResponseBody string
+}
+
+func waitForResponseRecord(t *testing.T, conn *sql.DB, timeout time.Duration) responseSnapshot {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for {
+		var record responseSnapshot
+		err := conn.QueryRowContext(context.Background(), `
+SELECT status, response_body
+FROM responses
+LIMIT 1`).Scan(&record.Status, &record.ResponseBody)
+		if err == nil && record.Status != "" && record.Status != "in_progress" {
+			return record
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				t.Fatalf("query response record: %v", err)
+			}
+			t.Fatalf("timed out waiting for terminal response record, last status=%q", record.Status)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+type usageSnapshot struct {
+	Status           string
+	ErrorType        string
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+}
+
+func waitForUsageRecord(t *testing.T, conn *sql.DB, timeout time.Duration) usageSnapshot {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for {
+		var record usageSnapshot
+		err := conn.QueryRowContext(context.Background(), `
+SELECT status, error_type, prompt_tokens, completion_tokens, total_tokens
+FROM usage_records
+LIMIT 1`).Scan(
+			&record.Status,
+			&record.ErrorType,
+			&record.PromptTokens,
+			&record.CompletionTokens,
+			&record.TotalTokens,
+		)
+		if err == nil {
+			return record
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for usage record: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func TestBuildUpstreamRequestPreservesOutputFormatAndOptions(t *testing.T) {
