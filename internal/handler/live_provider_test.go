@@ -38,19 +38,51 @@ func TestLiveProviderCompatibility(t *testing.T) {
 		providerCfg := providerCfg
 		t.Run(providerCfg.Name, func(t *testing.T) {
 			env.setTenantProviders(t, providerCfg.Name)
-			runLiveResponsesText(t, client, env.server.URL, providerCfg)
-			runLiveResponsesStream(t, client, env.server.URL, providerCfg)
-			runLiveLongHistory(t, client, env.server.URL, providerCfg)
+			t.Run("models", func(t *testing.T) {
+				runLiveModelsList(t, client, env.server.URL, providerCfg)
+			})
+			t.Run("responses_text", func(t *testing.T) {
+				runLiveResponsesText(t, client, env.server.URL, providerCfg)
+			})
+			t.Run("responses_stream", func(t *testing.T) {
+				runLiveResponsesStream(t, client, env.server.URL, providerCfg)
+			})
+			t.Run("long_history", func(t *testing.T) {
+				runLiveLongHistory(t, client, env.server.URL, providerCfg)
+			})
 
 			switch strings.ToLower(providerCfg.Type) {
 			case "anthropic":
-				runLiveAnthropicToolCall(t, client, env.server.URL, providerCfg)
-				runLiveAnthropicStream(t, client, env.server.URL, providerCfg)
+				t.Run("anthropic_tool_call", func(t *testing.T) {
+					runLiveAnthropicToolCall(t, client, env.server.URL, providerCfg)
+				})
+				t.Run("anthropic_stream", func(t *testing.T) {
+					runLiveAnthropicStream(t, client, env.server.URL, providerCfg)
+				})
 			default:
-				runLiveChatToolCall(t, client, env.server.URL, providerCfg)
-				runLiveChatStream(t, client, env.server.URL, providerCfg)
+				t.Run("chat_tool_call", func(t *testing.T) {
+					runLiveChatToolCall(t, client, env.server.URL, providerCfg)
+				})
+				t.Run("chat_stream", func(t *testing.T) {
+					runLiveChatStream(t, client, env.server.URL, providerCfg)
+				})
 			}
 		})
+	}
+}
+
+func runLiveModelsList(t *testing.T, client *http.Client, baseURL string, providerCfg config.ProviderConfig) {
+	t.Helper()
+	resp, body := doRequest(t, client, http.MethodGet, baseURL+"/v1/models", authHeaders("live-test-key:live-test-secret"), nil)
+	assertStatus(t, resp, http.StatusOK, body)
+	payload := decodeJSONMap(t, body)
+	models, _ := payload["data"].([]any)
+	if len(models) != 1 {
+		t.Fatalf("models body = %s, want exactly one visible model", body)
+	}
+	model, _ := models[0].(map[string]any)
+	if model["id"] != providerCfg.Model || model["provider"] != providerCfg.Name || model["owned_by"] != providerCfg.Name {
+		t.Fatalf("models body = %s, want model=%q provider=%q", body, providerCfg.Model, providerCfg.Name)
 	}
 }
 
@@ -66,8 +98,26 @@ func runLiveResponsesText(t *testing.T, client *http.Client, baseURL string, pro
 	if payload["status"] != "completed" {
 		t.Fatalf("responses status = %#v, want completed", payload["status"])
 	}
-	if text := extractResponsesText(payload); strings.TrimSpace(text) == "" {
+	text := extractResponsesText(payload)
+	if strings.TrimSpace(text) == "" {
 		t.Fatalf("responses body = %s, want non-empty output text", body)
+	}
+	responseID, _ := payload["id"].(string)
+	if strings.TrimSpace(responseID) == "" {
+		t.Fatalf("responses body = %s, want non-empty response id", body)
+	}
+
+	resp, body = doRequest(t, client, http.MethodGet, baseURL+"/v1/responses/"+responseID, authHeaders("live-test-key:live-test-secret"), nil)
+	assertStatus(t, resp, http.StatusOK, body)
+	stored := decodeJSONMap(t, body)
+	if stored["id"] != responseID || stored["status"] != "completed" {
+		t.Fatalf("stored response body = %s, want matching completed response", body)
+	}
+	if stored["model"] != providerCfg.Model {
+		t.Fatalf("stored response body = %s, want model %q", body, providerCfg.Model)
+	}
+	if storedText := extractResponsesText(stored); strings.TrimSpace(storedText) == "" {
+		t.Fatalf("stored response body = %s, want non-empty output text", body)
 	}
 }
 
@@ -86,6 +136,13 @@ func runLiveResponsesStream(t *testing.T, client *http.Client, baseURL string, p
 	}
 	if containsSSEError(body) {
 		t.Fatalf("responses stream body = %s, want no SSE error event", body)
+	}
+	types := collectTypes(t, events[:len(events)-1])
+	if !contains(types, "response.completed") {
+		t.Fatalf("responses stream events = %v, want response.completed", events)
+	}
+	if !contains(types, "response.output_text.delta") && !contains(types, "response.output_item.done") {
+		t.Fatalf("responses stream events = %v, want visible text or tool output events", events)
 	}
 }
 
@@ -147,8 +204,16 @@ func runLiveChatToolCall(t *testing.T, client *http.Client, baseURL string, prov
 	choice := payload["choices"].([]any)[0].(map[string]any)
 	message := choice["message"].(map[string]any)
 	toolCalls, _ := message["tool_calls"].([]any)
-	if len(toolCalls) == 0 && choice["finish_reason"] != "tool_calls" {
+	if choice["finish_reason"] != "tool_calls" || len(toolCalls) == 0 {
 		t.Fatalf("chat tool call body = %s, want tool_calls output", body)
+	}
+	function, _ := toolCalls[0].(map[string]any)["function"].(map[string]any)
+	if function["name"] != "get_probe_status" {
+		t.Fatalf("chat tool call body = %s, want get_probe_status call", body)
+	}
+	arguments, _ := function["arguments"].(string)
+	if !strings.Contains(arguments, "topic") {
+		t.Fatalf("chat tool call body = %s, want tool arguments with topic", body)
 	}
 }
 
@@ -157,8 +222,25 @@ func runLiveChatStream(t *testing.T, client *http.Client, baseURL string, provid
 	resp, body := doRequest(t, client, http.MethodPost, baseURL+"/v1/chat/completions", authHeaders("live-test-key:live-test-secret"), map[string]any{
 		"model": providerCfg.Model,
 		"messages": []map[string]any{{
+			"role":    "system",
+			"content": "You must call the provided tool before answering.",
+		}, {
 			"role":    "user",
-			"content": "Stream a short gateway status sentence.",
+			"content": "Check gateway status.",
+		}},
+		"tools": []map[string]any{{
+			"type": "function",
+			"function": map[string]any{
+				"name":        "get_probe_status",
+				"description": "Return gateway probe status",
+				"parameters": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"topic": map[string]any{"type": "string"},
+					},
+					"required": []string{"topic"},
+				},
+			},
 		}},
 		"stream":     true,
 		"max_tokens": 512,
@@ -170,6 +252,10 @@ func runLiveChatStream(t *testing.T, client *http.Client, baseURL string, provid
 	}
 	if containsSSEError(body) {
 		t.Fatalf("chat stream body = %s, want no SSE error event", body)
+	}
+	snippets := bodyJSONSnippets(events[:len(events)-1])
+	if !contains(snippets, `"role":"assistant"`) || !contains(snippets, `"tool_calls"`) || !contains(snippets, `"finish_reason":"tool_calls"`) {
+		t.Fatalf("chat stream body = %s, want assistant role, tool_calls and tool_calls finish", body)
 	}
 }
 
@@ -201,6 +287,10 @@ func runLiveAnthropicToolCall(t *testing.T, client *http.Client, baseURL string,
 	if payload["stop_reason"] != "tool_use" {
 		t.Fatalf("anthropic tool call body = %s, want stop_reason tool_use", body)
 	}
+	content, _ := payload["content"].([]any)
+	if !containsAnthropicToolUse(content, "get_probe_status") {
+		t.Fatalf("anthropic tool call body = %s, want get_probe_status tool_use block", body)
+	}
 }
 
 func runLiveAnthropicStream(t *testing.T, client *http.Client, baseURL string, providerCfg config.ProviderConfig) {
@@ -211,7 +301,18 @@ func runLiveAnthropicStream(t *testing.T, client *http.Client, baseURL string, p
 		"model": providerCfg.Model,
 		"messages": []map[string]any{{
 			"role":    "user",
-			"content": "Stream a short gateway status sentence.",
+			"content": "You must call get_probe_status for topic gateway before answering.",
+		}},
+		"tools": []map[string]any{{
+			"name":        "get_probe_status",
+			"description": "Return gateway probe status",
+			"input_schema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"topic": map[string]any{"type": "string"},
+				},
+				"required": []string{"topic"},
+			},
 		}},
 		"max_tokens": 512,
 		"stream":     true,
@@ -223,6 +324,10 @@ func runLiveAnthropicStream(t *testing.T, client *http.Client, baseURL string, p
 	}
 	if containsSSEError(body) {
 		t.Fatalf("anthropic stream body = %s, want no SSE error event", body)
+	}
+	snippets := bodyJSONSnippets(events[:len(events)-1])
+	if !contains(snippets, `"type":"message_start"`) || !contains(snippets, `"type":"message_stop"`) || !contains(snippets, `"type":"tool_use"`) || !contains(snippets, `"stop_reason":"tool_use"`) {
+		t.Fatalf("anthropic stream body = %s, want message_start/message_stop/tool_use/stop_reason", body)
 	}
 }
 
@@ -381,4 +486,18 @@ func extractResponsesText(payload map[string]any) string {
 func containsSSEError(body []byte) bool {
 	text := string(body)
 	return strings.Contains(text, `"type":"error"`) || strings.Contains(text, `"error":`)
+}
+
+func containsAnthropicToolUse(content []any, wantName string) bool {
+	for _, block := range content {
+		blockMap, _ := block.(map[string]any)
+		if blockMap["type"] != "tool_use" {
+			continue
+		}
+		if wantName != "" && blockMap["name"] != wantName {
+			continue
+		}
+		return true
+	}
+	return false
 }

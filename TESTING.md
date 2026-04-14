@@ -31,8 +31,8 @@ go test ./internal/protocol/apicompat ./internal/service/provider ./internal/ser
 ### 3.1 运行条件
 
 - `configs/config.yaml` 中存在可用且 `enabled: true` 的 provider
-- provider 的 `apiKey` / `baseURL` 可真实访问
-- 允许测试机访问外网
+- provider 的 `apiKey` / `baseURL` 可以真实访问
+- 测试机允许访问外网
 
 ### 3.2 全量启用
 
@@ -45,7 +45,7 @@ go test ./internal/handler -run TestLiveProviderCompatibility -v
 
 ```bash
 $env:GATEYES_LIVE="1"
-$env:GATEYES_LIVE_PROVIDERS="minimax,codex for me"
+$env:GATEYES_LIVE_PROVIDERS="minimax,longcat-primary"
 go test ./internal/handler -run TestLiveProviderCompatibility -v
 ```
 
@@ -57,17 +57,48 @@ $env:GATEYES_LIVE_CONFIG="configs/config.yaml"
 go test ./internal/handler -run TestLiveProviderCompatibility -v
 ```
 
-### 3.5 覆盖的 live 场景
+### 3.5 当前 live 覆盖矩阵
 
-- `/v1/responses` 非流式文本
-- `/v1/responses` 流式 SSE
-- 长 history 回归
-- OpenAI-compatible provider:
-  - `/v1/chat/completions` tool call
-  - `/v1/chat/completions` stream
-- Anthropic-compatible provider:
-  - `/v1/messages` tool call
-  - `/v1/messages` stream
+每个选中的 provider 都会先把 tenant 可见 provider 收敛到单个目标 provider，然后执行：
+
+- `models`
+  - `GET /v1/models`
+  - 断言只暴露当前 tenant 可见模型
+  - 断言 `id/provider/owned_by` 与目标 provider 一致
+- `responses_text`
+  - `POST /v1/responses`
+  - 断言返回 `completed`、非空文本、非空 `response_id`
+  - 随后 `GET /v1/responses/:id`
+  - 断言持久化后的 response 可回读，且模型、状态、文本有效
+- `responses_stream`
+  - `POST /v1/responses` with `stream=true`
+  - 断言 SSE 以 `[DONE]` 结束
+  - 断言没有 error event
+  - 断言至少出现 `response.completed`
+  - 断言至少有可见输出事件：`response.output_text.delta` 或 `response.output_item.done`
+- `long_history`
+  - 上百轮上下文的长 history 请求
+  - 断言仍能返回非空输出
+- OpenAI-compatible provider
+  - `chat_tool_call`
+    - `POST /v1/chat/completions`
+    - 断言 `finish_reason=tool_calls`
+    - 断言返回 `get_probe_status` tool call
+  - `chat_stream`
+    - `POST /v1/chat/completions` with `stream=true`
+    - 断言 SSE 以 `[DONE]` 结束
+    - 断言没有 error event
+    - 断言流中出现 `assistant role`、`tool_calls`、`finish_reason=tool_calls`
+- Anthropic-compatible provider
+  - `anthropic_tool_call`
+    - `POST /v1/messages`
+    - 断言 `stop_reason=tool_use`
+    - 断言返回 `get_probe_status` tool_use block
+  - `anthropic_stream`
+    - `POST /v1/messages` with `stream=true`
+    - 断言 SSE 以 `[DONE]` 结束
+    - 断言没有 error event
+    - 断言流中出现 `message_start`、`message_stop`、`tool_use`、`stop_reason=tool_use`
 
 ## 4. Cherry Studio / SDK smoke check
 
