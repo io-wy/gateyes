@@ -174,7 +174,7 @@ func TestConvertOpenAIResponseSupportsFunctionCallOutputs(t *testing.T) {
 }
 
 func TestAnthropicBuildRequestAndConvertResponseSupportToolUse(t *testing.T) {
-	p := &anthropicProvider{cfg: config.ProviderConfig{MaxTokens: 256}}
+	p := &anthropicProvider{baseProvider: newBaseProvider(config.ProviderConfig{MaxTokens: 256})}
 	req := &ResponseRequest{
 		Model: "claude-test",
 		Input: []any{

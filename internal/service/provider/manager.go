@@ -1,10 +1,6 @@
 package provider
 
-import (
-	"fmt"
-
-	"github.com/gateyes/gateway/internal/config"
-)
+import "github.com/gateyes/gateway/internal/config"
 
 type Manager struct {
 	providers       map[string]Provider
@@ -78,12 +74,9 @@ func (m *Manager) CloseIdleConnections() {
 }
 
 func newProvider(cfg config.ProviderConfig) (Provider, error) {
-	switch cfg.Type {
-	case "openai", "azure", "":
-		return NewOpenAIProvider(cfg), nil
-	case "anthropic":
-		return NewAnthropicProvider(cfg), nil
-	default:
-		return nil, fmt.Errorf("unsupported provider type: %s", cfg.Type)
+	factory, err := resolveProviderFactory(cfg.Type)
+	if err != nil {
+		return nil, err
 	}
+	return factory(cfg), nil
 }

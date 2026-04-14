@@ -52,6 +52,29 @@ providers:
 	}
 }
 
+func TestLoadUsesViperEnvOverride(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	data := strings.TrimSpace(`
+server:
+  listenAddr: :8080
+metrics:
+  namespace: gateway
+`)
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatalf("os.WriteFile(%q) error: %v", path, err)
+	}
+
+	t.Setenv("GATEYES_SERVER_LISTENADDR", ":9191")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load(%q) error: %v", path, err)
+	}
+	if got, want := cfg.Server.ListenAddr, ":9191"; got != want {
+		t.Fatalf("Load(%q).Server.ListenAddr = %q, want %q", path, got, want)
+	}
+}
+
 func TestDefaultConfigHasExpectedDefaults(t *testing.T) {
 	cfg := DefaultConfig()
 

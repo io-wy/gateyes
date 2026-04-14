@@ -8,39 +8,6 @@ import (
 	"time"
 )
 
-// UpstreamError represents an error from the upstream provider
-type UpstreamError struct {
-	StatusCode int
-	Message    string
-}
-
-func (e *UpstreamError) Error() string {
-	return fmt.Sprintf("upstream error: %d %s", e.StatusCode, e.Message)
-}
-
-func (e *UpstreamError) IsRetryable() bool {
-	// 4xx 客户端错误中，只有 429 可以重试
-	// 401/403/400/422/404 不应该重试
-	if e.StatusCode >= 400 && e.StatusCode < 500 {
-		return e.StatusCode == 429 // Rate limit
-	}
-	// 5xx 服务端错误可以重试
-	return e.StatusCode >= 500
-}
-
-func (e *UpstreamError) IsTimeout() bool {
-	return e.StatusCode == 0 && strings.Contains(strings.ToLower(e.Message), "timeout")
-}
-
-func (e *UpstreamError) IsRateLimited() bool {
-	return e.StatusCode == 429
-}
-
-func (e *UpstreamError) IsUpstream() bool {
-	// 5xx errors are upstream errors
-	return e.StatusCode >= 500
-}
-
 type ContentBlock struct {
 	Type       string             `json:"type"`
 	Text       string             `json:"text,omitempty"`

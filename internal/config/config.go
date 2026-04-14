@@ -1,10 +1,12 @@
 package config
 
 import (
+	"bytes"
 	"os"
 	"regexp"
+	"strings"
 
-	"gopkg.in/yaml.v3"
+	"github.com/spf13/viper"
 )
 
 type Config struct {
@@ -158,8 +160,17 @@ func Load(path string) (*Config, error) {
 
 	data = replaceEnvVars(data)
 
+	v := viper.New()
+	v.SetConfigType("yaml")
+	v.SetEnvPrefix("GATEYES")
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.AutomaticEnv()
+	if err := v.ReadConfig(bytes.NewReader(data)); err != nil {
+		return nil, err
+	}
+
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, err
 	}
 
