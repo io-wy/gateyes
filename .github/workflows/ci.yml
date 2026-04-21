@@ -1,0 +1,81 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      OPENAI_BASE_URL: https://api.openai.com/v1
+      OPENAI_API_KEY: test-openai-key
+      OPENAI_MODEL: gpt-4o-mini
+      ANTHROPIC_BASE_URL: https://api.anthropic.com
+      ANTHROPIC_API_KEY: test-anthropic-key
+      ANTHROPIC_MODEL: claude-3-5-sonnet-latest
+      GATEYES_BOOTSTRAP_TEST_KEY: test-key-001
+      GATEYES_BOOTSTRAP_TEST_SECRET: test-secret
+      GATEYES_ADMIN_BOOTSTRAP_KEY: admin-key-001
+      GATEYES_ADMIN_BOOTSTRAP_SECRET: admin-secret-001
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        run: |
+          files="$(find . -name '*.go' -not -path './.gotools/*' -not -path './.gocache/*' -not -path './.gomodcache/*')"
+          test -z "$(gofmt -l $files)"
+
+      - name: Unit tests
+        run: go test ./...
+
+      - name: Race tests
+        run: go test -race ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: GolangCI-Lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64.8
+
+      - name: Staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          staticcheck ./...
+
+      - name: Govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      - name: Migration smoke test
+        run: go run ./cmd/migrate -config configs/config.example.yaml -action up
+
+      - name: OpenAPI smoke check
+        shell: pwsh
+        run: ./scripts/check-openapi.ps1
+
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: table
+          exit-code: 1
+          ignore-unfixed: true

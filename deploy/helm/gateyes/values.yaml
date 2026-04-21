@@ -1,0 +1,164 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/example/gateyes
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8083
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: gateyes.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+probes:
+  readiness:
+    path: /ready
+    initialDelaySeconds: 10
+    periodSeconds: 10
+  liveness:
+    path: /health
+    initialDelaySeconds: 15
+    periodSeconds: 15
+
+persistence:
+  enabled: true
+  size: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ""
+  mountPath: /app/data
+
+env:
+  OPENAI_BASE_URL: https://api.openai.com/v1
+  OPENAI_MODEL: gpt-4o-mini
+  ANTHROPIC_BASE_URL: https://api.anthropic.com
+  ANTHROPIC_MODEL: claude-3-5-sonnet-latest
+
+secrets:
+  create: true
+  name: ""
+  data:
+    OPENAI_API_KEY: replace-me
+    ANTHROPIC_API_KEY: replace-me
+    POSTGRES_DSN: postgres://gateyes:gateyes@postgres:5432/gateyes?sslmode=disable
+    GATEYES_BOOTSTRAP_TEST_KEY: test-key-001
+    GATEYES_BOOTSTRAP_TEST_SECRET: test-secret
+    GATEYES_ADMIN_BOOTSTRAP_KEY: admin-key-001
+    GATEYES_ADMIN_BOOTSTRAP_SECRET: admin-secret-001
+
+appConfig: |
+  server:
+    listenAddr: ":8083"
+    readTimeout: 30
+    writeTimeout: 300
+    idleTimeout: 120
+    shutdownTimeout: 10
+
+  database:
+    driver: sqlite
+    dsn: /app/data/gateyes.db
+    autoMigrate: true
+    maxOpenConns: 10
+    maxIdleConns: 5
+    connMaxLifetimeSeconds: 300
+
+  metrics:
+    namespace: gateway
+    enabled: true
+
+  router:
+    strategy: round_robin
+
+  limiter:
+    globalQPS: 1000
+    globalTPM: 1000000
+    globalTokenBurst: 100000
+    perUserRequestBurst: 100
+    queueSize: 1000
+
+  alert:
+    enabled: true
+    quotaThreshold: 0.8
+    webhookURL: ""
+    webhookSecret: ""
+    providerStateURL: ""
+    budgetExhaustedURL: ""
+    requestEventURL: ""
+    errorEventURL: ""
+
+  healthCheck:
+    enabled: true
+    intervalSeconds: 60
+    timeoutSeconds: 15
+    failureThreshold: 2
+
+  retry:
+    maxRetries: 2
+    initialDelayMs: 100
+    maxDelayMs: 5000
+    backoffFactor: 2.0
+
+  circuitBreaker:
+    failureThreshold: 5
+    recoveryTimeout: 60
+    halfOpenMaxRequests: 1
+
+  providers:
+    - name: openai-primary
+      type: openai
+      baseURL: ${OPENAI_BASE_URL}
+      endpoint: responses
+      apiKey: ${OPENAI_API_KEY}
+      model: ${OPENAI_MODEL}
+      priceInput: 0.000005
+      priceOutput: 0.000015
+      maxTokens: 16384
+      timeout: 60
+      enabled: true
+
+    - name: anthropic-primary
+      type: anthropic
+      baseURL: ${ANTHROPIC_BASE_URL}
+      apiKey: ${ANTHROPIC_API_KEY}
+      model: ${ANTHROPIC_MODEL}
+      priceInput: 0.000003
+      priceOutput: 0.000015
+      maxTokens: 16384
+      timeout: 60
+      enabled: false
+
+  apiKeys:
+    - key: ${GATEYES_BOOTSTRAP_TEST_KEY}
+      secret: ${GATEYES_BOOTSTRAP_TEST_SECRET}
+      quota: 1000000
+      qps: 1000
+      models: []
+
+  admin:
+    defaultTenant: default
+    bootstrapKey: ${GATEYES_ADMIN_BOOTSTRAP_KEY}
+    bootstrapSecret: ${GATEYES_ADMIN_BOOTSTRAP_SECRET}
+
+migrationJob:
+  enabled: true
+
+rolloutStrategy:
+  type: RollingUpdate

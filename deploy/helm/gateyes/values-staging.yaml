@@ -1,0 +1,97 @@
+replicaCount: 2
+
+image:
+  tag: staging
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: gateyes-staging.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+persistence:
+  enabled: false
+
+appConfig: |
+  server:
+    listenAddr: ":8083"
+    readTimeout: 30
+    writeTimeout: 300
+    idleTimeout: 120
+    shutdownTimeout: 10
+
+  database:
+    driver: postgres
+    dsn: ${POSTGRES_DSN}
+    autoMigrate: true
+    maxOpenConns: 20
+    maxIdleConns: 10
+    connMaxLifetimeSeconds: 300
+
+  metrics:
+    namespace: gateway
+    enabled: true
+
+  router:
+    strategy: least_load
+
+  limiter:
+    globalQPS: 1000
+    globalTPM: 1000000
+    globalTokenBurst: 100000
+    perUserRequestBurst: 100
+    queueSize: 1000
+
+  retry:
+    maxRetries: 2
+    initialDelayMs: 100
+    maxDelayMs: 5000
+    backoffFactor: 2
+
+  circuitBreaker:
+    failureThreshold: 5
+    recoveryTimeout: 60
+    halfOpenMaxRequests: 1
+
+  providers:
+    - name: openai-primary
+      type: openai
+      baseURL: ${OPENAI_BASE_URL}
+      endpoint: responses
+      apiKey: ${OPENAI_API_KEY}
+      model: ${OPENAI_MODEL}
+      maxTokens: 16384
+      timeout: 60
+      enabled: true
+
+    - name: anthropic-primary
+      type: anthropic
+      baseURL: ${ANTHROPIC_BASE_URL}
+      apiKey: ${ANTHROPIC_API_KEY}
+      model: ${ANTHROPIC_MODEL}
+      maxTokens: 16384
+      timeout: 60
+      enabled: true
+
+  apiKeys:
+    - key: ${GATEYES_BOOTSTRAP_TEST_KEY}
+      secret: ${GATEYES_BOOTSTRAP_TEST_SECRET}
+      quota: 1000000
+      qps: 1000
+      models: []
+
+  admin:
+    defaultTenant: default
+    bootstrapKey: ${GATEYES_ADMIN_BOOTSTRAP_KEY}
+    bootstrapSecret: ${GATEYES_ADMIN_BOOTSTRAP_SECRET}

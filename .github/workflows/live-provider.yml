@@ -1,0 +1,40 @@
+name: live-provider
+
+on:
+  workflow_dispatch:
+    inputs:
+      config_path:
+        description: "config file path"
+        required: false
+        default: "configs/config.yaml"
+      providers:
+        description: "comma separated provider names"
+        required: false
+        default: ""
+
+jobs:
+  live-provider:
+    if: ${{ secrets.GATEYES_LIVE == '1' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run env-gated live provider matrix
+        env:
+          GATEYES_LIVE: ${{ secrets.GATEYES_LIVE }}
+          GATEYES_LIVE_CONFIG: ${{ github.event.inputs.config_path }}
+          GATEYES_LIVE_PROVIDERS: ${{ github.event.inputs.providers }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL: ${{ secrets.ANTHROPIC_MODEL }}
+        run: go test ./internal/handler -run TestLiveProviderCompatibility -count=1 -v

@@ -1,0 +1,83 @@
+replicaCount: 1
+
+image:
+  tag: dev
+
+ingress:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi
+
+persistence:
+  enabled: true
+  size: 2Gi
+
+appConfig: |
+  server:
+    listenAddr: ":8083"
+    readTimeout: 30
+    writeTimeout: 300
+    idleTimeout: 120
+    shutdownTimeout: 10
+
+  database:
+    driver: sqlite
+    dsn: /app/data/gateyes.db
+    autoMigrate: true
+    maxOpenConns: 5
+    maxIdleConns: 2
+    connMaxLifetimeSeconds: 300
+
+  metrics:
+    namespace: gateway
+    enabled: true
+
+  router:
+    strategy: round_robin
+
+  limiter:
+    globalQPS: 300
+    globalTPM: 300000
+    globalTokenBurst: 30000
+    perUserRequestBurst: 50
+    queueSize: 300
+
+  retry:
+    maxRetries: 1
+    initialDelayMs: 100
+    maxDelayMs: 1000
+    backoffFactor: 2
+
+  circuitBreaker:
+    failureThreshold: 3
+    recoveryTimeout: 30
+    halfOpenMaxRequests: 1
+
+  providers:
+    - name: openai-primary
+      type: openai
+      baseURL: ${OPENAI_BASE_URL}
+      endpoint: responses
+      apiKey: ${OPENAI_API_KEY}
+      model: ${OPENAI_MODEL}
+      maxTokens: 8192
+      timeout: 60
+      enabled: true
+
+  apiKeys:
+    - key: ${GATEYES_BOOTSTRAP_TEST_KEY}
+      secret: ${GATEYES_BOOTSTRAP_TEST_SECRET}
+      quota: 200000
+      qps: 200
+      models: []
+
+  admin:
+    defaultTenant: default
+    bootstrapKey: ${GATEYES_ADMIN_BOOTSTRAP_KEY}
+    bootstrapSecret: ${GATEYES_ADMIN_BOOTSTRAP_SECRET}

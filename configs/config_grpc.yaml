@@ -5,7 +5,7 @@ server:
 
 database:
   driver: sqlite
-  dsn: gateyes.db
+  dsn: gateyes-grpc.db
   autoMigrate: true
   maxOpenConns: 10
   maxIdleConns: 5
@@ -53,28 +53,21 @@ circuitBreaker:
   halfOpenMaxRequests: 1
 
 providers:
-  - name: openai-primary
-    type: openai
-    baseURL: ${OPENAI_BASE_URL}
-    endpoint: responses
-    apiKey: ${OPENAI_API_KEY}
-    model: ${OPENAI_MODEL}
-    priceInput: 0.000005
-    priceOutput: 0.000015
-    maxTokens: 16384
-    timeout: 60
+  - name: vllm-grpc-qwen
+    type: grpc
+    vendor: vllm
+    grpcTarget: ${VLLM_GRPC_TARGET}
+    grpcUseTLS: false
+    grpcAuthority: ""
+    apiKey: ${VLLM_GRPC_API_KEY}
+    model: ${VLLM_GRPC_MODEL}
+    priceInput: 0
+    priceOutput: 0
+    maxTokens: 131072
+    timeout: 120
     enabled: true
-
-  - name: anthropic-primary
-    type: anthropic
-    baseURL: ${ANTHROPIC_BASE_URL}
-    apiKey: ${ANTHROPIC_API_KEY}
-    model: ${ANTHROPIC_MODEL}
-    priceInput: 0.000003
-    priceOutput: 0.000015
-    maxTokens: 16384
-    timeout: 60
-    enabled: true
+    headers:
+      x-tenant: gateyes-live
 
 apiKeys:
   - key: ${GATEYES_BOOTSTRAP_TEST_KEY}

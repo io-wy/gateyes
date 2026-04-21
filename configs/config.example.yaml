@@ -2,6 +2,8 @@ server:
   listenAddr: ":8083"
   readTimeout: 30
   writeTimeout: 300
+  idleTimeout: 120
+  shutdownTimeout: 10
 
 database:
   driver: sqlite
@@ -74,7 +76,7 @@ providers:
     priceOutput: 0.000015
     maxTokens: 16384
     timeout: 60
-    enabled: true
+    enabled: false
 
 apiKeys:
   - key: ${GATEYES_BOOTSTRAP_TEST_KEY}
