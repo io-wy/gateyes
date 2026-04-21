@@ -49,11 +49,11 @@ func TestTokenBucket_Refill(t *testing.T) {
 
 func TestLimiter_GlobalQPS(t *testing.T) {
 	cfg := config.LimiterConfig{
-		GlobalQPS:          100,
-		GlobalTPM:          1000000,
-		GlobalTokenBurst:   50,
+		GlobalQPS:           100,
+		GlobalTPM:           1000000,
+		GlobalTokenBurst:    50,
 		PerUserRequestBurst: 50,
-		QueueSize:          1000,
+		QueueSize:           1000,
 	}
 	l := NewLimiter(cfg)
 	defer l.Stop()
@@ -68,11 +68,11 @@ func TestLimiter_GlobalQPS(t *testing.T) {
 
 func TestLimiter_PerUserQPS(t *testing.T) {
 	cfg := config.LimiterConfig{
-		GlobalQPS:          10000, // 很高，测试 per-user
-		GlobalTPM:          1000000,
-		GlobalTokenBurst:   1000,
+		GlobalQPS:           10000, // 很高，测试 per-user
+		GlobalTPM:           1000000,
+		GlobalTokenBurst:    1000,
 		PerUserRequestBurst: 1000,
-		QueueSize:          1000,
+		QueueSize:           1000,
 	}
 	l := NewLimiter(cfg)
 	defer l.Stop()
@@ -105,11 +105,11 @@ func TestLimiter_PerUserQPS(t *testing.T) {
 
 func TestLimiter_DifferentUsers(t *testing.T) {
 	cfg := config.LimiterConfig{
-		GlobalQPS:          10000,
-		GlobalTPM:          1000000,
-		GlobalTokenBurst:   1000,
+		GlobalQPS:           10000,
+		GlobalTPM:           1000000,
+		GlobalTokenBurst:    1000,
 		PerUserRequestBurst: 1000,
-		QueueSize:          1000,
+		QueueSize:           1000,
 	}
 	l := NewLimiter(cfg)
 	defer l.Stop()
@@ -130,11 +130,11 @@ func TestLimiter_DifferentUsers(t *testing.T) {
 
 func TestLimiter_QueueSize(t *testing.T) {
 	cfg := config.LimiterConfig{
-		GlobalQPS:          1,    // 很低的全局 QPS
-		GlobalTPM:          1000,
-		GlobalTokenBurst:   1,
+		GlobalQPS:           1, // 很低的全局 QPS
+		GlobalTPM:           1000,
+		GlobalTokenBurst:    1,
 		PerUserRequestBurst: 1,
-		QueueSize:          5, // 小的队列
+		QueueSize:           5, // 小的队列
 	}
 	l := NewLimiter(cfg)
 	defer l.Stop()
@@ -155,11 +155,11 @@ func TestLimiter_QueueSize(t *testing.T) {
 
 func TestLimiter_Concurrent(t *testing.T) {
 	cfg := config.LimiterConfig{
-		GlobalQPS:          10000,
-		GlobalTPM:          1000000,
-		GlobalTokenBurst:   1000,
+		GlobalQPS:           10000,
+		GlobalTPM:           1000000,
+		GlobalTokenBurst:    1000,
 		PerUserRequestBurst: 1000,
-		QueueSize:          1000,
+		QueueSize:           1000,
 	}
 	l := NewLimiter(cfg)
 	defer l.Stop()
@@ -183,11 +183,11 @@ func TestLimiter_Concurrent(t *testing.T) {
 
 func TestLimiter_Cancel(t *testing.T) {
 	cfg := config.LimiterConfig{
-		GlobalQPS:          10000,
-		GlobalTPM:          1000000,
-		GlobalTokenBurst:   1000,
+		GlobalQPS:           10000,
+		GlobalTPM:           1000000,
+		GlobalTokenBurst:    1000,
 		PerUserRequestBurst: 1000,
-		QueueSize:          1000,
+		QueueSize:           1000,
 	}
 	l := NewLimiter(cfg)
 	defer l.Stop()
@@ -204,11 +204,11 @@ func TestLimiter_Cancel(t *testing.T) {
 
 func TestLimiter_UserQPSConfig(t *testing.T) {
 	cfg := config.LimiterConfig{
-		GlobalQPS:          5,    // 全局默认只有 5 QPS
-		GlobalTPM:          1000000,
-		GlobalTokenBurst:   1000,
+		GlobalQPS:           5, // 全局默认只有 5 QPS
+		GlobalTPM:           1000000,
+		GlobalTokenBurst:    1000,
 		PerUserRequestBurst: 10,
-		QueueSize:          1000,
+		QueueSize:           1000,
 	}
 	l := NewLimiter(cfg)
 	defer l.Stop()

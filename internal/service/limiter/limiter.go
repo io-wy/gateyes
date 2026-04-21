@@ -27,11 +27,11 @@ type TokenBucket struct {
 }
 
 type Request struct {
-	Context     context.Context
-	Key          string
-	UserQPS      int // 用户配置的 QPS，0 表示使用全局默认
-	Tokens       int // 预估 token 数（prompt + output budget）
-	Result       chan bool
+	Context context.Context
+	Key     string
+	UserQPS int // 用户配置的 QPS，0 表示使用全局默认
+	Tokens  int // 预估 token 数（prompt + output budget）
+	Result  chan bool
 }
 
 func NewLimiter(cfg config.LimiterConfig) *Limiter {
@@ -175,11 +175,11 @@ func (l *Limiter) check(key string, userQPS, tokens int) bool {
 
 func (l *Limiter) Allow(ctx context.Context, key string, userQPS, admissionTokens int) bool {
 	req := &Request{
-		Context:     ctx,
-		Key:         key,
-		UserQPS:     userQPS,
-		Tokens:      admissionTokens,
-		Result:      make(chan bool, 1),
+		Context: ctx,
+		Key:     key,
+		UserQPS: userQPS,
+		Tokens:  admissionTokens,
+		Result:  make(chan bool, 1),
 	}
 
 	select {

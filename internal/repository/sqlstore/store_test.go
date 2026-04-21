@@ -180,9 +180,9 @@ func TestProviderRegistryCRUD(t *testing.T) {
 	weight := 9
 	stream := false
 	updated, err := store.UpdateProviderRegistry(ctx, "openai-primary", repository.UpdateProviderRegistryParams{
-		Drain:         &drain,
-		HealthStatus:  &health,
-		RoutingWeight: &weight,
+		Drain:          &drain,
+		HealthStatus:   &health,
+		RoutingWeight:  &weight,
 		SupportsStream: &stream,
 	})
 	if err != nil {

@@ -127,11 +127,11 @@ func TestOpenAICompatibilityHelpersCoverBranches(t *testing.T) {
 					Content   string     `json:"content"`
 					ToolCalls []ToolCall `json:"tool_calls"`
 				}{
-					Role: "assistant",
+					Role:    "assistant",
 					Content: "",
 					ToolCalls: []ToolCall{{
-						ID:   "call-1",
-						Type: "function",
+						ID:       "call-1",
+						Type:     "function",
 						Function: FunctionCall{Name: "lookup", Arguments: "{}"},
 					}},
 				},

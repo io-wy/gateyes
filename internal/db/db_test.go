@@ -10,9 +10,9 @@ import (
 
 func TestDriverNameSupportsKnownDrivers(t *testing.T) {
 	tests := []struct {
-		driver   string
-		want     string
-		wantErr  bool
+		driver  string
+		want    string
+		wantErr bool
 	}{
 		{driver: "", want: "sqlite"},
 		{driver: "sqlite", want: "sqlite"},

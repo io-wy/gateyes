@@ -15,9 +15,9 @@ type mockStore struct {
 
 func TestAlertService_ComputeSignature(t *testing.T) {
 	cfg := config.AlertConfig{
-		Enabled:       true,
+		Enabled:        true,
 		QuotaThreshold: 0.8,
-		WebhookSecret: "test-secret",
+		WebhookSecret:  "test-secret",
 	}
 	svc := NewAlertService(cfg, nil)
 
@@ -62,9 +62,9 @@ func TestAlertService_Disabled(t *testing.T) {
 
 func TestAlertService_NoWebhookURL(t *testing.T) {
 	cfg := config.AlertConfig{
-		Enabled:       true,
+		Enabled:        true,
 		QuotaThreshold: 0.8,
-		WebhookURL:    "", // 没有 webhook URL
+		WebhookURL:     "", // 没有 webhook URL
 	}
 	svc := NewAlertService(cfg, nil)
 
@@ -83,9 +83,9 @@ func TestAlertService_NoWebhookURL(t *testing.T) {
 
 func TestAlertService_NoQuotaLimit(t *testing.T) {
 	cfg := config.AlertConfig{
-		Enabled:       true,
+		Enabled:        true,
 		QuotaThreshold: 0.8,
-		WebhookURL:    "http://test.com",
+		WebhookURL:     "http://test.com",
 	}
 	svc := NewAlertService(cfg, nil)
 
@@ -104,9 +104,9 @@ func TestAlertService_NoQuotaLimit(t *testing.T) {
 
 func TestAlertService_UnderThreshold(t *testing.T) {
 	cfg := config.AlertConfig{
-		Enabled:       true,
+		Enabled:        true,
 		QuotaThreshold: 0.8, // 80%
-		WebhookURL:    "http://test.com",
+		WebhookURL:     "http://test.com",
 	}
 	svc := NewAlertService(cfg, nil)
 
@@ -126,7 +126,7 @@ func TestAlertService_UnderThreshold(t *testing.T) {
 func TestAlertService_AtThreshold(t *testing.T) {
 	cfg := config.AlertConfig{
 		Enabled:        true,
-		QuotaThreshold: 0.8,  // 80%
+		QuotaThreshold: 0.8, // 80%
 		WebhookURL:     "http://test.com",
 		WebhookSecret:  "secret",
 	}

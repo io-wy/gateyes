@@ -9,9 +9,9 @@ import (
 )
 
 const (
-	StateClosed    = "closed"
-	StateOpen       = "open"
-	StateHalfOpen   = "half-open"
+	StateClosed   = "closed"
+	StateOpen     = "open"
+	StateHalfOpen = "half-open"
 )
 
 type CircuitBreaker struct {
@@ -21,9 +21,9 @@ type CircuitBreaker struct {
 }
 
 type ProviderState struct {
-	failures          int
-	lastFailure       time.Time
-	state             string
+	failures         int
+	lastFailure      time.Time
+	state            string
 	halfOpenRequests int // half-open 状态下的并发请求数
 }
 
