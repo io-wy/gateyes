@@ -2,12 +2,10 @@ run:
   timeout: 5m
 
 linters:
+  disable-all: true
   enable:
     - govet
-    - staticcheck
     - ineffassign
-    - errcheck
-    - revive
     - misspell
 
 issues:

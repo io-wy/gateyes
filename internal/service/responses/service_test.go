@@ -523,6 +523,7 @@ func TestCreateStreamMarksCancelledAndRecordsPartialUsageOnClientDisconnect(t *t
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	stream, err := env.service.CreateStream(ctx, env.identity, &provider.ResponseRequest{
 		Model:  "public-model",
 		Input:  "hello",

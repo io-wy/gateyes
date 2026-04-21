@@ -47,6 +47,7 @@ func NewLimiter(cfg config.LimiterConfig) *Limiter {
 	if perUserBurst <= 0 {
 		perUserBurst = 100 // 默认值
 	}
+	cfg.PerUserRequestBurst = perUserBurst
 
 	l := &Limiter{
 		cfg:         cfg,

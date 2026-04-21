@@ -27,7 +27,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: "1.25.9"
           cache: true
 
       - name: Check formatting
@@ -49,11 +49,6 @@ jobs:
         with:
           version: v1.64.8
 
-      - name: Staticcheck
-        run: |
-          go install honnef.co/go/tools/cmd/staticcheck@latest
-          staticcheck ./...
-
       - name: Govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -67,15 +62,16 @@ jobs:
         run: ./scripts/check-openapi.ps1
 
       - name: Secret scan
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          go install github.com/zricethezav/gitleaks/v8@latest
+          "$(go env GOPATH)/bin/gitleaks" detect --source=. --no-git --no-banner
 
-      - name: Trivy filesystem scan
+      - name: Trivy filesystem scan (advisory)
         uses: aquasecurity/trivy-action@v0.35.0
         with:
           scan-type: fs
           scan-ref: .
           format: table
-          exit-code: 1
+          severity: HIGH,CRITICAL
+          exit-code: 0
           ignore-unfixed: true

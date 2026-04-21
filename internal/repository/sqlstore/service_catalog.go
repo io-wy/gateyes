@@ -508,8 +508,8 @@ WHERE service_id = ?`), version.ID, mode, service.ID, time.Now().UTC(), service.
 	}
 
 	publishedID := service.PublishedVersionID
-	stagedID := service.StagedVersionID
-	publishStatus := service.PublishStatus
+	stagedID := ""
+	publishStatus := ""
 	switch mode {
 	case "staged":
 		stagedID = version.ID
