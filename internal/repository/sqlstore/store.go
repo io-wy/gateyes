@@ -25,6 +25,11 @@ func (s *Store) CreateUser(ctx context.Context, params repository.CreateUserPara
 	if _, err := s.loadTenant(ctx, params.TenantID); err != nil {
 		return nil, err
 	}
+	if params.ProjectID != "" {
+		if _, err := s.loadProject(ctx, params.TenantID, params.ProjectID); err != nil {
+			return nil, err
+		}
+	}
 
 	now := time.Now().UTC()
 	userID := uuid.NewString()
@@ -54,9 +59,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`),
 	}
 
 	if _, err := tx.ExecContext(ctx, s.db.Rebind(`
-INSERT INTO api_keys (id, user_id, key, secret_hash, status, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)`),
-		apiKeyID, userID, params.APIKey, params.SecretHash, repository.StatusActive, now, now,
+INSERT INTO api_keys (id, user_id, key, secret_hash, status, project_id, budget_usd, spent_usd, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`),
+		apiKeyID, userID, params.APIKey, params.SecretHash, repository.StatusActive, params.ProjectID, params.KeyBudgetUSD, now, now,
 	); err != nil {
 		tx.Rollback()
 		return nil, fmt.Errorf("insert api key: %w", err)
@@ -151,6 +156,11 @@ func (s *Store) UpdateUser(ctx context.Context, tenantID string, idOrAPIKey stri
 	if err != nil {
 		return nil, err
 	}
+	if params.ProjectID != nil && *params.ProjectID != "" {
+		if _, err := s.loadProject(ctx, user.TenantID, *params.ProjectID); err != nil {
+			return nil, err
+		}
+	}
 
 	tx, err := s.db.Conn.BeginTx(ctx, nil)
 	if err != nil {
@@ -185,6 +195,28 @@ SET %s
 WHERE id = ?`, strings.Join(sets, ", "))), args...); err != nil {
 		tx.Rollback()
 		return nil, fmt.Errorf("update user: %w", err)
+	}
+
+	keySets := make([]string, 0, 3)
+	keyArgs := make([]any, 0, 4)
+	if params.ProjectID != nil {
+		keySets = append(keySets, "project_id = ?")
+		keyArgs = append(keyArgs, *params.ProjectID)
+	}
+	if params.KeyBudgetUSD != nil {
+		keySets = append(keySets, "budget_usd = ?")
+		keyArgs = append(keyArgs, *params.KeyBudgetUSD)
+	}
+	if len(keySets) > 0 {
+		keySets = append(keySets, "updated_at = ?")
+		keyArgs = append(keyArgs, time.Now().UTC(), user.ID)
+		if _, err := tx.ExecContext(ctx, s.db.Rebind(fmt.Sprintf(`
+UPDATE api_keys
+SET %s
+WHERE user_id = ?`, strings.Join(keySets, ", "))), keyArgs...); err != nil {
+			tx.Rollback()
+			return nil, fmt.Errorf("update user api key metadata: %w", err)
+		}
 	}
 
 	if params.Models != nil {
@@ -306,8 +338,8 @@ func (s *Store) EnsureTenant(ctx context.Context, params repository.EnsureTenant
 
 	now := time.Now().UTC()
 	if _, err := s.db.Conn.ExecContext(ctx, s.db.Rebind(`
-INSERT INTO tenants (id, slug, name, status, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?)`), id, slug, name, status, now, now); err != nil {
+INSERT INTO tenants (id, slug, name, status, budget_usd, spent_usd, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, 0, ?, ?)`), id, slug, name, status, params.BudgetUSD, now, now); err != nil {
 		return nil, fmt.Errorf("insert tenant: %w", err)
 	}
 

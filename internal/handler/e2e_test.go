@@ -20,6 +20,7 @@ import (
 	"github.com/gateyes/gateway/internal/middleware"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/repository/sqlstore"
+	"github.com/gateyes/gateway/internal/service/catalog"
 	"github.com/gateyes/gateway/internal/service/limiter"
 	"github.com/gateyes/gateway/internal/service/provider"
 	responseSvc "github.com/gateyes/gateway/internal/service/responses"
@@ -494,14 +495,21 @@ func newGatewayE2EEnv(t *testing.T) *gatewayE2EEnv {
 		Router:      routerSvc,
 		Alert:       nil,
 	})
+	catalogSvc := catalog.New(&catalog.Dependencies{
+		Store:     store,
+		Auth:      mw.AuthService(),
+		Limiter:   limiterSvc,
+		Responses: responseService,
+	})
 	h := NewHandler(&Dependencies{
 		Config:      cfgObj,
 		Store:       store,
 		Metrics:     metrics,
 		ProviderMgr: providerMgr,
 		ResponseSvc: responseService,
+		CatalogSvc:  catalogSvc,
 	})
-	adminHandler := NewAdminHandler(store, providerMgr)
+	adminHandler := NewAdminHandler(store, providerMgr, catalogSvc)
 	handlerEnv := &handlerTestEnv{
 		server:      NewServer(cfgObj.Server, h, adminHandler, mw),
 		store:       store,

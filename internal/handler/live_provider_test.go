@@ -16,6 +16,7 @@ import (
 	"github.com/gateyes/gateway/internal/middleware"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/repository/sqlstore"
+	"github.com/gateyes/gateway/internal/service/catalog"
 	"github.com/gateyes/gateway/internal/service/limiter"
 	"github.com/gateyes/gateway/internal/service/provider"
 	responseSvc "github.com/gateyes/gateway/internal/service/responses"
@@ -59,6 +60,10 @@ func TestLiveProviderCompatibility(t *testing.T) {
 				t.Run("anthropic_stream", func(t *testing.T) {
 					runLiveAnthropicStream(t, client, env.server.URL, providerCfg)
 				})
+			case "grpc":
+				t.Run("grpc_gateway_responses_only", func(t *testing.T) {
+					runLiveGRPCGatewayResponsesOnly(t, client, env.server.URL, providerCfg)
+				})
 			default:
 				t.Run("chat_tool_call", func(t *testing.T) {
 					runLiveChatToolCall(t, client, env.server.URL, providerCfg)
@@ -68,6 +73,23 @@ func TestLiveProviderCompatibility(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func runLiveGRPCGatewayResponsesOnly(t *testing.T, client *http.Client, baseURL string, providerCfg config.ProviderConfig) {
+	t.Helper()
+	resp, body := doRequest(t, client, http.MethodPost, baseURL+"/v1/responses", authHeaders("live-test-key:live-test-secret"), map[string]any{
+		"model":             providerCfg.Model,
+		"input":             "Return one short sentence proving the gateway routed through grpc-vllm.",
+		"max_output_tokens": 256,
+	})
+	assertStatus(t, resp, http.StatusOK, body)
+	payload := decodeJSONMap(t, body)
+	if payload["status"] != "completed" {
+		t.Fatalf("grpc gateway responses body = %s, want completed response", body)
+	}
+	if text := extractResponsesText(payload); strings.TrimSpace(text) == "" {
+		t.Fatalf("grpc gateway responses body = %s, want non-empty output text", body)
 	}
 }
 
@@ -413,14 +435,21 @@ func newLiveGatewayEnv(t *testing.T) *gatewayE2EEnv {
 		Router:      routerSvc,
 		Alert:       nil,
 	})
+	catalogSvc := catalog.New(&catalog.Dependencies{
+		Store:     store,
+		Auth:      mw.AuthService(),
+		Limiter:   limiterSvc,
+		Responses: responseService,
+	})
 	h := NewHandler(&Dependencies{
 		Config:      cfgObj,
 		Store:       store,
 		Metrics:     metrics,
 		ProviderMgr: providerMgr,
 		ResponseSvc: responseService,
+		CatalogSvc:  catalogSvc,
 	})
-	adminHandler := NewAdminHandler(store, providerMgr)
+	adminHandler := NewAdminHandler(store, providerMgr, catalogSvc)
 	handlerEnv := &handlerTestEnv{
 		server:      NewServer(cfgObj.Server, h, adminHandler, mw),
 		store:       store,

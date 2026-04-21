@@ -20,13 +20,14 @@ func (s *Store) CreateUsageRecord(ctx context.Context, record repository.UsageRe
 
 	if _, err := s.db.Conn.ExecContext(ctx, s.db.Rebind(`
 INSERT INTO usage_records (
-	id, tenant_id, user_id, api_key_id, provider_name, model,
+	id, tenant_id, project_id, user_id, api_key_id, provider_name, model,
 	prompt_tokens, completion_tokens, total_tokens, cost, latency_ms,
 	status, error_type, created_at
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		record.ID,
 		record.TenantID,
+		record.ProjectID,
 		record.UserID,
 		record.APIKeyID,
 		record.ProviderName,
@@ -52,6 +53,7 @@ SELECT COUNT(1),
 	COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0),
 	COALESCE(SUM(CASE WHEN status = 'success' THEN 0 ELSE 1 END), 0),
 	COALESCE(SUM(total_tokens), 0),
+	COALESCE(SUM(cost), 0),
 	COALESCE(AVG(latency_ms), 0)
 FROM usage_records`
 	args := make([]any, 0, 1)
@@ -68,6 +70,7 @@ WHERE tenant_id = ?`
 		&stats.SuccessRequests,
 		&stats.FailedRequests,
 		&stats.TotalTokens,
+		&stats.TotalCostUSD,
 		&stats.AvgLatencyMs,
 	); err != nil {
 		return nil, fmt.Errorf("get usage summary: %w", err)
@@ -82,6 +85,7 @@ SELECT provider_name,
 	COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0),
 	COALESCE(SUM(CASE WHEN status = 'success' THEN 0 ELSE 1 END), 0),
 	COALESCE(SUM(total_tokens), 0),
+	COALESCE(SUM(cost), 0),
 	COALESCE(AVG(latency_ms), 0)
 FROM usage_records`
 	args := make([]any, 0, 1)
@@ -108,6 +112,7 @@ GROUP BY provider_name`
 			&stat.SuccessRequests,
 			&stat.FailedRequests,
 			&stat.TotalTokens,
+			&stat.TotalCostUSD,
 			&stat.AvgLatencyMs,
 		); err != nil {
 			return nil, fmt.Errorf("scan provider usage summary: %w", err)
@@ -122,9 +127,34 @@ GROUP BY provider_name`
 	return result, nil
 }
 
+func (s *Store) GetProjectUsageSummary(ctx context.Context, tenantID, projectID string) (*repository.UsageStats, error) {
+	query := `
+SELECT COUNT(1),
+	COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0),
+	COALESCE(SUM(CASE WHEN status = 'success' THEN 0 ELSE 1 END), 0),
+	COALESCE(SUM(total_tokens), 0),
+	COALESCE(SUM(cost), 0),
+	COALESCE(AVG(latency_ms), 0)
+FROM usage_records
+WHERE tenant_id = ? AND project_id = ?`
+	stats := &repository.UsageStats{}
+	row := s.db.Conn.QueryRowContext(ctx, s.db.Rebind(query), tenantID, projectID)
+	if err := row.Scan(
+		&stats.TotalRequests,
+		&stats.SuccessRequests,
+		&stats.FailedRequests,
+		&stats.TotalTokens,
+		&stats.TotalCostUSD,
+		&stats.AvgLatencyMs,
+	); err != nil {
+		return nil, fmt.Errorf("get project usage summary: %w", err)
+	}
+	return stats, nil
+}
+
 func (s *Store) GetUserUsageDetail(ctx context.Context, tenantID, userID string, startTime, endTime time.Time) ([]repository.UsageRecord, error) {
 	query := `
-SELECT id, tenant_id, user_id, api_key_id, provider_name, model,
+SELECT id, tenant_id, project_id, user_id, api_key_id, provider_name, model,
 	prompt_tokens, completion_tokens, total_tokens, cost, latency_ms,
 	status, error_type, created_at
 FROM usage_records
@@ -151,7 +181,7 @@ WHERE tenant_id = ? AND user_id = ?`
 	for rows.Next() {
 		var r repository.UsageRecord
 		if err := rows.Scan(
-			&r.ID, &r.TenantID, &r.UserID, &r.APIKeyID, &r.ProviderName, &r.Model,
+			&r.ID, &r.TenantID, &r.ProjectID, &r.UserID, &r.APIKeyID, &r.ProviderName, &r.Model,
 			&r.PromptTokens, &r.CompletionTokens, &r.TotalTokens, &r.Cost, &r.LatencyMs,
 			&r.Status, &r.ErrorType, &r.CreatedAt,
 		); err != nil {
@@ -164,6 +194,10 @@ WHERE tenant_id = ? AND user_id = ?`
 
 func (s *Store) GetUserUsageTrend(ctx context.Context, tenantID, userID string, days int) ([]repository.DailyUsage, error) {
 	return s.getDailyUsage(ctx, tenantID, userID, days)
+}
+
+func (s *Store) GetProjectUsageTrend(ctx context.Context, tenantID, projectID string, days int) ([]repository.DailyUsage, error) {
+	return s.getDailyUsageByProject(ctx, tenantID, projectID, days)
 }
 
 func (s *Store) GetTenantUsageTrend(ctx context.Context, tenantID string, days int) ([]repository.DailyUsage, error) {
@@ -182,6 +216,7 @@ SELECT ifnull(DATE(created_at), '') as date,
 	COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0),
 	COALESCE(SUM(CASE WHEN status = 'success' THEN 0 ELSE 1 END), 0),
 	COALESCE(SUM(total_tokens), 0),
+	COALESCE(SUM(cost), 0),
 	COALESCE(AVG(latency_ms), 0)
 FROM usage_records
 WHERE tenant_id = ? AND created_at IS NOT NULL`
@@ -213,9 +248,52 @@ WHERE tenant_id = ? AND created_at IS NOT NULL`
 			&d.SuccessRequests,
 			&d.FailedRequests,
 			&d.TotalTokens,
+			&d.TotalCostUSD,
 			&d.AvgLatencyMs,
 		); err != nil {
 			return nil, fmt.Errorf("scan daily usage: %w", err)
+		}
+		results = append(results, d)
+	}
+	return results, rows.Err()
+}
+
+func (s *Store) getDailyUsageByProject(ctx context.Context, tenantID, projectID string, days int) ([]repository.DailyUsage, error) {
+	if days <= 0 {
+		days = 7
+	}
+
+	query := `
+SELECT ifnull(DATE(created_at), '') as date,
+	COUNT(1),
+	COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0),
+	COALESCE(SUM(CASE WHEN status = 'success' THEN 0 ELSE 1 END), 0),
+	COALESCE(SUM(total_tokens), 0),
+	COALESCE(SUM(cost), 0),
+	COALESCE(AVG(latency_ms), 0)
+FROM usage_records
+WHERE tenant_id = ? AND project_id = ? AND created_at IS NOT NULL AND created_at >= ?
+GROUP BY DATE(created_at) ORDER BY date ASC`
+
+	rows, err := s.db.Conn.QueryContext(ctx, s.db.Rebind(query), tenantID, projectID, time.Now().UTC().AddDate(0, 0, -days))
+	if err != nil {
+		return nil, fmt.Errorf("get project daily usage: %w", err)
+	}
+	defer rows.Close()
+
+	var results []repository.DailyUsage
+	for rows.Next() {
+		var d repository.DailyUsage
+		if err := rows.Scan(
+			&d.Date,
+			&d.TotalRequests,
+			&d.SuccessRequests,
+			&d.FailedRequests,
+			&d.TotalTokens,
+			&d.TotalCostUSD,
+			&d.AvgLatencyMs,
+		); err != nil {
+			return nil, fmt.Errorf("scan project daily usage: %w", err)
 		}
 		results = append(results, d)
 	}

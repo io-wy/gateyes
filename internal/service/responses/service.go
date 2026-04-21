@@ -72,6 +72,7 @@ type execution struct {
 	responseID            string
 	tenantID              string
 	requestBody           []byte
+	routeTrace            *routeTrace
 	startedAt             time.Time
 	estimatedPromptTokens int
 }
@@ -91,7 +92,7 @@ func New(deps *Dependencies) *Service {
 func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*CreateResult, error) {
 	req.Normalize()
 
-	candidates := s.getCandidateProviders(ctx, identity, sessionID, req)
+	candidates, trace := s.planCandidates(ctx, identity, sessionID, req)
 	if len(candidates) == 0 {
 		return nil, ErrNoProvider
 	}
@@ -99,16 +100,22 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 	// 先创建一条 in_progress 记录，使用第一个候选 provider
 	firstProvider := candidates[0]
 	responseID := uuid.NewString()
+	if trace != nil {
+		trace.ResponseID = responseID
+		trace.touch()
+	}
 	requestBody, _ := json.Marshal(req)
 	if err := s.store.CreateResponse(ctx, repository.ResponseRecord{
-		ID:           responseID,
-		TenantID:     identity.TenantID,
-		UserID:       identity.UserID,
-		APIKeyID:     identity.APIKeyID,
-		ProviderName: firstProvider.Name(),
-		Model:        req.Model,
-		Status:       "in_progress",
-		RequestBody:  requestBody,
+		ID:             responseID,
+		TenantID:       identity.TenantID,
+		ProjectID:      identity.ProjectID,
+		UserID:         identity.UserID,
+		APIKeyID:       identity.APIKeyID,
+		ProviderName:   firstProvider.Name(),
+		Model:          req.Model,
+		Status:         "in_progress",
+		RequestBody:    requestBody,
+		RouteTraceBody: routeTraceBytes(trace),
 	}); err != nil {
 		return nil, err
 	}
@@ -132,6 +139,7 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 			_ = s.store.UpdateResponse(ctx, repository.ResponseRecord{
 				ID:           responseID,
 				TenantID:     tenantID,
+				ProjectID:    identity.ProjectID,
 				ProviderName: providerName,
 				Model:        req.Model,
 				Status:       "in_progress",
@@ -145,6 +153,7 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 			responseID:            responseID,
 			tenantID:              tenantID,
 			requestBody:           requestBody,
+			routeTrace:            trace,
 			startedAt:             time.Now(),
 			estimatedPromptTokens: req.EstimatePromptTokens(),
 		}
@@ -157,6 +166,7 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 		latencyMs := time.Since(exec.startedAt).Milliseconds()
 
 		if err != nil {
+			appendRouteAttempt(exec.routeTrace, providerName, retries, "error", err)
 			s.router.DecLoad(providerName)
 			s.providerMgr.Stats.DecrementLoad(providerName)
 			if s.circuitBreaker != nil {
@@ -177,6 +187,7 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 
 		resp = s.normalizeResponse(exec, resp)
 		if budgetErr := validateVisibleOutputBudget(exec, resp); budgetErr != nil {
+			appendRouteAttempt(exec.routeTrace, providerName, retries, "budget_rejected", budgetErr)
 			if s.circuitBreaker != nil {
 				s.circuitBreaker.RecordSuccess(tenantID, providerName)
 			}
@@ -184,6 +195,7 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 			s.providerMgr.Stats.RecordRequest(providerName, true, resp.Usage.TotalTokens, latencyMs)
 			return nil, budgetErr
 		}
+		appendRouteAttempt(exec.routeTrace, providerName, retries, "success", nil)
 		if err := s.persistSuccess(ctx, identity, exec, resp, latencyMs); err != nil {
 			return nil, err
 		}
@@ -205,15 +217,17 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 func buildUpstreamRequest(req *provider.ResponseRequest) *provider.ResponseRequest {
 	messages := req.InputMessages()
 	return &provider.ResponseRequest{
-		Model:           req.Model,
-		Input:           messages,
-		Messages:        messages,
-		Stream:          req.Stream,
-		MaxOutputTokens: req.MaxOutputTokens,
-		MaxTokens:       req.MaxTokens,
-		Tools:           req.Tools,
-		OutputFormat:    cloneOutputFormat(req.OutputFormat),
-		Options:         provider.CloneRequestOptions(req.Options),
+		Model:             req.Model,
+		PreferredProvider: req.PreferredProvider,
+		Surface:           req.Surface,
+		Input:             messages,
+		Messages:          messages,
+		Stream:            req.Stream,
+		MaxOutputTokens:   req.MaxOutputTokens,
+		MaxTokens:         req.MaxTokens,
+		Tools:             req.Tools,
+		OutputFormat:      cloneOutputFormat(req.OutputFormat),
+		Options:           provider.CloneRequestOptions(req.Options),
 	}
 }
 
@@ -253,7 +267,7 @@ func cloneStringAnyMap(value map[string]any) map[string]any {
 func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*Stream, error) {
 	req.Normalize()
 
-	candidates := s.getCandidateProviders(ctx, identity, sessionID, req)
+	candidates, trace := s.planCandidates(ctx, identity, sessionID, req)
 	if len(candidates) == 0 {
 		return nil, ErrNoProvider
 	}
@@ -263,21 +277,27 @@ func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIde
 
 	// 先创建 response 记录，使用第一个成功响应的 provider
 	responseID := uuid.NewString()
+	if trace != nil {
+		trace.ResponseID = responseID
+		trace.touch()
+	}
 	requestBody, _ := json.Marshal(req)
 	if err := s.store.CreateResponse(ctx, repository.ResponseRecord{
-		ID:           responseID,
-		TenantID:     identity.TenantID,
-		UserID:       identity.UserID,
-		APIKeyID:     identity.APIKeyID,
-		ProviderName: "", // 先不填，等确定 provider 后更新
-		Model:        req.Model,
-		Status:       "in_progress",
-		RequestBody:  requestBody,
+		ID:             responseID,
+		TenantID:       identity.TenantID,
+		ProjectID:      identity.ProjectID,
+		UserID:         identity.UserID,
+		APIKeyID:       identity.APIKeyID,
+		ProviderName:   "", // 先不填，等确定 provider 后更新
+		Model:          req.Model,
+		Status:         "in_progress",
+		RequestBody:    requestBody,
+		RouteTraceBody: routeTraceBytes(trace),
 	}); err != nil {
 		return nil, err
 	}
 
-	go s.runStreamWithFallback(ctx, identity, req, sessionID, candidates, responseID, events, errCh)
+	go s.runStreamWithFallback(ctx, identity, req, sessionID, candidates, responseID, trace, events, errCh)
 
 	return &Stream{
 		ResponseID:   responseID,
@@ -288,7 +308,7 @@ func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIde
 	}, nil
 }
 
-func (s *Service) runStreamWithFallback(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string, candidates []provider.Provider, responseID string, out chan<- provider.ResponseEvent, errCh chan<- error) {
+func (s *Service) runStreamWithFallback(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string, candidates []provider.Provider, responseID string, trace *routeTrace, out chan<- provider.ResponseEvent, errCh chan<- error) {
 	defer close(out)
 	defer close(errCh)
 
@@ -311,11 +331,13 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 
 		// 更新 response 记录的 provider
 		_ = s.store.UpdateResponse(ctx, repository.ResponseRecord{
-			ID:           responseID,
-			TenantID:     tenantID,
-			ProviderName: providerName,
-			Model:        req.Model,
-			Status:       "in_progress",
+			ID:             responseID,
+			TenantID:       tenantID,
+			ProjectID:      identity.ProjectID,
+			ProviderName:   providerName,
+			Model:          req.Model,
+			Status:         "in_progress",
+			RouteTraceBody: routeTraceBytes(trace),
 		})
 
 		// 只在第一次真正开始流式响应时发送 response.created
@@ -335,6 +357,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 
 		upstreamReq := &provider.ResponseRequest{
 			Model:           req.Model,
+			Surface:         req.Surface,
 			Input:           req.InputMessages(),
 			Messages:        req.InputMessages(),
 			Stream:          true,
@@ -361,6 +384,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 						upstreamRequest:       upstreamReq,
 						responseID:            responseID,
 						tenantID:              tenantID,
+						routeTrace:            trace,
 						startedAt:             startedAt,
 						estimatedPromptTokens: req.EstimatePromptTokens(),
 					}
@@ -378,7 +402,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 						errCh <- budgetErr
 						return
 					}
-					s.finalizeStream(ctx, identity, responseID, providerName, req.Model, finalResponse, latencyMs, out, !hasSentPayload)
+					s.finalizeStream(ctx, identity, responseID, providerName, req.Model, finalResponse, latencyMs, trace, out, !hasSentPayload)
 					s.router.DecLoad(providerName)
 					s.providerMgr.Stats.DecrementLoad(providerName)
 					if s.circuitBreaker != nil {
@@ -413,6 +437,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 				if err == nil {
 					continue
 				}
+				appendRouteAttempt(trace, providerName, 0, "error", err)
 				latencyMs := time.Since(startedAt).Milliseconds()
 				s.handleStreamError(ctx, identity, responseID, providerName, req.Model, latencyMs, err)
 				s.router.DecLoad(providerName)
@@ -450,7 +475,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 				errCh <- err
 				return
 			case <-ctx.Done():
-				s.handleStreamCancellation(ctx, identity, req, responseID, p, finalResponse, assistantText, streamedOutputs, streamUsage, startedAt)
+				s.handleStreamCancellation(ctx, identity, req, responseID, p, trace, finalResponse, assistantText, streamedOutputs, streamUsage, startedAt)
 				s.router.DecLoad(providerName)
 				s.providerMgr.Stats.DecrementLoad(providerName)
 				errCh <- ctx.Err()
@@ -469,6 +494,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 							upstreamRequest:       upstreamReq,
 							responseID:            responseID,
 							tenantID:              tenantID,
+							routeTrace:            trace,
 							startedAt:             startedAt,
 							estimatedPromptTokens: req.EstimatePromptTokens(),
 						}
@@ -476,6 +502,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 						applyRecoveredStreamUsage(finalResponse, streamUsage)
 						latencyMs := time.Since(startedAt).Milliseconds()
 						if budgetErr := validateVisibleOutputBudget(fallbackExec, finalResponse); budgetErr != nil && !hasSentPayload {
+							appendRouteAttempt(trace, providerName, retryCfg.MaxRetries, "budget_rejected", budgetErr)
 							_ = s.recordOutputBudgetError(ctx, identity, fallbackExec, finalResponse, latencyMs, providerName)
 							s.providerMgr.Stats.RecordRequest(providerName, true, finalResponse.Usage.TotalTokens, latencyMs)
 							s.router.DecLoad(providerName)
@@ -486,7 +513,8 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 							errCh <- budgetErr
 							return
 						}
-						s.finalizeStream(ctx, identity, responseID, providerName, req.Model, finalResponse, latencyMs, out, !hasSentPayload)
+						appendRouteAttempt(trace, providerName, retryCfg.MaxRetries, "success", nil)
+						s.finalizeStream(ctx, identity, responseID, providerName, req.Model, finalResponse, latencyMs, trace, out, !hasSentPayload)
 						s.router.DecLoad(providerName)
 						s.providerMgr.Stats.DecrementLoad(providerName)
 						if s.circuitBreaker != nil {
@@ -521,6 +549,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 					if err == nil {
 						continue
 					}
+					appendRouteAttempt(trace, providerName, retryCfg.MaxRetries, "error", err)
 					latencyMs := time.Since(startedAt).Milliseconds()
 					s.handleStreamError(ctx, identity, responseID, providerName, req.Model, latencyMs, err)
 					s.router.DecLoad(providerName)
@@ -538,7 +567,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 					errCh <- err
 					return
 				case <-ctx.Done():
-					s.handleStreamCancellation(ctx, identity, req, responseID, p, finalResponse, assistantText, streamedOutputs, streamUsage, startedAt)
+					s.handleStreamCancellation(ctx, identity, req, responseID, p, trace, finalResponse, assistantText, streamedOutputs, streamUsage, startedAt)
 					s.router.DecLoad(providerName)
 					s.providerMgr.Stats.DecrementLoad(providerName)
 					errCh <- ctx.Err()
@@ -554,6 +583,15 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 	}
 
 	// 所有 provider 都失败，最后发送错误
+	finalizeRouteTrace(trace, "", "no_provider", ErrNoProvider)
+	_ = s.store.UpdateResponse(ctx, repository.ResponseRecord{
+		ID:             responseID,
+		TenantID:       tenantID,
+		ProjectID:      identity.ProjectID,
+		Model:          req.Model,
+		Status:         "error",
+		RouteTraceBody: routeTraceBytes(trace),
+	})
 	errCh <- ErrNoProvider
 }
 
@@ -561,7 +599,7 @@ func (s *Service) isStreamRetryable(err error) bool {
 	return isRetryable(err)
 }
 
-func (s *Service) finalizeStream(ctx context.Context, identity *repository.AuthIdentity, responseID, providerName, model string, resp *provider.Response, latencyMs int64, out chan<- provider.ResponseEvent, emitOutputs bool) {
+func (s *Service) finalizeStream(ctx context.Context, identity *repository.AuthIdentity, responseID, providerName, model string, resp *provider.Response, latencyMs int64, trace *routeTrace, out chan<- provider.ResponseEvent, emitOutputs bool) {
 	if resp == nil {
 		resp = provider.NewTextResponse(responseID, model, "", provider.Usage{})
 	}
@@ -569,21 +607,38 @@ func (s *Service) finalizeStream(ctx context.Context, identity *repository.AuthI
 	resp.Model = model
 	resp.Created = time.Now().Unix()
 	resp.Status = "completed"
+	finalizeRouteTrace(trace, providerName, "success", nil)
 
 	persistCtx, cancel := detachedPersistenceContext(ctx)
 	defer cancel()
 
 	body, _ := json.Marshal(resp)
 	_ = s.store.UpdateResponse(persistCtx, repository.ResponseRecord{
-		ID:           responseID,
-		TenantID:     identity.TenantID,
-		ProviderName: providerName,
-		Model:        model,
-		Status:       "completed",
-		ResponseBody: body,
+		ID:             responseID,
+		TenantID:       identity.TenantID,
+		ProjectID:      identity.ProjectID,
+		ProviderName:   providerName,
+		Model:          model,
+		Status:         "completed",
+		ResponseBody:   body,
+		RouteTraceBody: routeTraceBytes(trace),
 	})
 
 	_ = s.auth.RecordUsage(persistCtx, identity, providerName, model, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens, 0, latencyMs, "success", "")
+	if s.alert != nil {
+		s.alert.CheckQuotaUsage(persistCtx, identity)
+		s.alert.NotifyRequestEvent(persistCtx, map[string]any{
+			"tenant_id":      identity.TenantID,
+			"project_id":     identity.ProjectID,
+			"api_key_id":     identity.APIKeyID,
+			"provider_name":  providerName,
+			"model":          model,
+			"status":         "success",
+			"latency_ms":     latencyMs,
+			"total_tokens":   resp.Usage.TotalTokens,
+			"total_cost_usd": 0,
+		})
+	}
 
 	s.providerMgr.Stats.RecordRequest(providerName, true, resp.Usage.TotalTokens, latencyMs)
 
@@ -766,11 +821,24 @@ func (s *Service) handleStreamError(ctx context.Context, identity *repository.Au
 	_ = s.store.UpdateResponse(persistCtx, repository.ResponseRecord{
 		ID:           responseID,
 		TenantID:     identity.TenantID,
+		ProjectID:    identity.ProjectID,
 		ProviderName: providerName,
 		Model:        model,
 		Status:       "error",
 	})
 	_ = s.auth.RecordUsage(persistCtx, identity, providerName, model, 0, 0, 0, 0, latencyMs, "error", "upstream_error")
+	if s.alert != nil {
+		s.alert.NotifyErrorEvent(persistCtx, map[string]any{
+			"tenant_id":     identity.TenantID,
+			"project_id":    identity.ProjectID,
+			"api_key_id":    identity.APIKeyID,
+			"provider_name": providerName,
+			"model":         model,
+			"status":        "upstream_error",
+			"latency_ms":    latencyMs,
+			"error":         errorString(streamErr),
+		})
+	}
 }
 
 func (s *Service) prepare(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*execution, error) {
@@ -790,6 +858,7 @@ func (s *Service) prepareWithProvider(ctx context.Context, identity *repository.
 	if err := s.store.CreateResponse(ctx, repository.ResponseRecord{
 		ID:           responseID,
 		TenantID:     identity.TenantID,
+		ProjectID:    identity.ProjectID,
 		UserID:       identity.UserID,
 		APIKeyID:     identity.APIKeyID,
 		ProviderName: selected.Name(),
@@ -801,15 +870,17 @@ func (s *Service) prepareWithProvider(ctx context.Context, identity *repository.
 	}
 
 	upstreamReq := &provider.ResponseRequest{
-		Model:           req.Model, // 透传请求中的模型名
-		Input:           req.InputMessages(),
-		Messages:        req.InputMessages(),
-		Stream:          req.Stream,
-		MaxOutputTokens: req.MaxOutputTokens,
-		MaxTokens:       req.MaxTokens,
-		Tools:           req.Tools,
-		OutputFormat:    cloneOutputFormat(req.OutputFormat),
-		Options:         provider.CloneRequestOptions(req.Options),
+		Model:             req.Model, // 透传请求中的模型名
+		PreferredProvider: req.PreferredProvider,
+		Surface:           req.Surface,
+		Input:             req.InputMessages(),
+		Messages:          req.InputMessages(),
+		Stream:            req.Stream,
+		MaxOutputTokens:   req.MaxOutputTokens,
+		MaxTokens:         req.MaxTokens,
+		Tools:             req.Tools,
+		OutputFormat:      cloneOutputFormat(req.OutputFormat),
+		Options:           provider.CloneRequestOptions(req.Options),
 	}
 
 	return &execution{
@@ -903,13 +974,13 @@ func (s *Service) runStream(ctx context.Context, identity *repository.AuthIdenti
 			errCh <- err
 			return
 		case <-ctx.Done():
-			s.handleStreamCancellation(ctx, identity, exec.upstreamRequest, exec.responseID, exec.provider, finalResponse, assistantText, streamedOutputs, streamUsage, exec.startedAt)
+			s.handleStreamCancellation(ctx, identity, exec.upstreamRequest, exec.responseID, exec.provider, exec.routeTrace, finalResponse, assistantText, streamedOutputs, streamUsage, exec.startedAt)
 			return
 		}
 	}
 }
 
-func (s *Service) handleStreamCancellation(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, responseID string, currentProvider provider.Provider, finalResponse *provider.Response, assistantText string, streamedOutputs []provider.ResponseOutput, streamUsage *provider.Usage, startedAt time.Time) {
+func (s *Service) handleStreamCancellation(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, responseID string, currentProvider provider.Provider, trace *routeTrace, finalResponse *provider.Response, assistantText string, streamedOutputs []provider.ResponseOutput, streamUsage *provider.Usage, startedAt time.Time) {
 	if identity == nil || req == nil || currentProvider == nil {
 		return
 	}
@@ -920,6 +991,7 @@ func (s *Service) handleStreamCancellation(ctx context.Context, identity *reposi
 		upstreamRequest:       buildUpstreamRequest(req),
 		responseID:            responseID,
 		tenantID:              identity.TenantID,
+		routeTrace:            trace,
 		startedAt:             startedAt,
 		estimatedPromptTokens: req.EstimatePromptTokens(),
 	}
@@ -931,6 +1003,7 @@ func (s *Service) handleStreamCancellation(ctx context.Context, identity *reposi
 	applyRecoveredStreamUsage(resp, streamUsage)
 	resp = s.normalizeResponse(exec, resp)
 	resp.Status = "cancelled"
+	finalizeRouteTrace(trace, currentProvider.Name(), "cancelled", context.Canceled)
 
 	latencyMs := time.Since(startedAt).Milliseconds()
 	cost := currentProvider.Cost(resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
@@ -940,12 +1013,14 @@ func (s *Service) handleStreamCancellation(ctx context.Context, identity *reposi
 
 	body, _ := json.Marshal(resp)
 	_ = s.store.UpdateResponse(persistCtx, repository.ResponseRecord{
-		ID:           responseID,
-		TenantID:     identity.TenantID,
-		ProviderName: currentProvider.Name(),
-		Model:        req.Model,
-		Status:       "cancelled",
-		ResponseBody: body,
+		ID:             responseID,
+		TenantID:       identity.TenantID,
+		ProjectID:      identity.ProjectID,
+		ProviderName:   currentProvider.Name(),
+		Model:          req.Model,
+		Status:         "cancelled",
+		ResponseBody:   body,
+		RouteTraceBody: routeTraceBytes(trace),
 	})
 	_ = s.auth.RecordBillableUsage(persistCtx, identity, currentProvider.Name(), req.Model, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens, cost, latencyMs, "cancelled", "client_disconnect")
 	s.providerMgr.Stats.RecordRequest(currentProvider.Name(), false, resp.Usage.TotalTokens, latencyMs)
@@ -962,14 +1037,17 @@ func (s *Service) persistSuccess(ctx context.Context, identity *repository.AuthI
 		return err
 	}
 
+	finalizeRouteTrace(exec.routeTrace, exec.provider.Name(), "success", nil)
 	body, _ := json.Marshal(resp)
 	if err := s.store.UpdateResponse(ctx, repository.ResponseRecord{
-		ID:           exec.responseID,
-		TenantID:     identity.TenantID,
-		ProviderName: exec.provider.Name(),
-		Model:        exec.requestedModel,
-		Status:       "completed",
-		ResponseBody: body,
+		ID:             exec.responseID,
+		TenantID:       identity.TenantID,
+		ProjectID:      identity.ProjectID,
+		ProviderName:   exec.provider.Name(),
+		Model:          exec.requestedModel,
+		Status:         "completed",
+		ResponseBody:   body,
+		RouteTraceBody: routeTraceBytes(exec.routeTrace),
 	}); err != nil {
 		return err
 	}
@@ -990,6 +1068,9 @@ func (s *Service) persistSuccess(ctx context.Context, identity *repository.AuthI
 		if errors.Is(err, auth.ErrQuotaExceeded) {
 			_ = s.recordQuotaExceeded(ctx, identity, exec, resp, latencyMs, exec.provider.Name(), cost)
 		}
+		if errors.Is(err, auth.ErrBudgetExceeded) {
+			_ = s.recordBudgetExceeded(ctx, identity, exec, resp, latencyMs, exec.provider.Name(), cost)
+		}
 		return err
 	}
 
@@ -998,6 +1079,17 @@ func (s *Service) persistSuccess(ctx context.Context, identity *repository.AuthI
 	// 检查配额使用情况并发送预警
 	if s.alert != nil {
 		s.alert.CheckQuotaUsage(ctx, identity)
+		s.alert.NotifyRequestEvent(ctx, map[string]any{
+			"tenant_id":      identity.TenantID,
+			"project_id":     identity.ProjectID,
+			"api_key_id":     identity.APIKeyID,
+			"provider_name":  exec.provider.Name(),
+			"model":          exec.requestedModel,
+			"status":         "success",
+			"latency_ms":     latencyMs,
+			"total_tokens":   resp.Usage.TotalTokens,
+			"total_cost_usd": cost,
+		})
 	}
 
 	return nil
@@ -1011,14 +1103,28 @@ func (s *Service) ensureQuotaAvailable(ctx context.Context, identity *repository
 }
 
 func (s *Service) recordQuotaExceeded(ctx context.Context, identity *repository.AuthIdentity, exec *execution, resp *provider.Response, latencyMs int64, providerName string, cost float64) error {
+	finalizeRouteTrace(exec.routeTrace, providerName, "quota_exceeded", auth.ErrQuotaExceeded)
 	_ = s.store.UpdateResponse(ctx, repository.ResponseRecord{
-		ID:           exec.responseID,
-		TenantID:     identity.TenantID,
-		ProviderName: providerName,
-		Model:        exec.requestedModel,
-		Status:       "error",
-		ResponseBody: nil,
+		ID:             exec.responseID,
+		TenantID:       identity.TenantID,
+		ProjectID:      identity.ProjectID,
+		ProviderName:   providerName,
+		Model:          exec.requestedModel,
+		Status:         "error",
+		ResponseBody:   nil,
+		RouteTraceBody: routeTraceBytes(exec.routeTrace),
 	})
+	if s.alert != nil {
+		s.alert.NotifyBudgetExhausted(ctx, alert.BudgetExhausted{
+			TenantID:     identity.TenantID,
+			ProjectID:    identity.ProjectID,
+			APIKeyID:     identity.APIKeyID,
+			ProviderName: providerName,
+			Model:        exec.requestedModel,
+			CostUSD:      cost,
+			BudgetScope:  "quota",
+		})
+	}
 	_ = s.auth.RecordUsage(
 		ctx,
 		identity,
@@ -1035,25 +1141,96 @@ func (s *Service) recordQuotaExceeded(ctx context.Context, identity *repository.
 	return auth.ErrQuotaExceeded
 }
 
-func (s *Service) markError(ctx context.Context, identity *repository.AuthIdentity, exec *execution, latencyMs int64) error {
+func (s *Service) recordBudgetExceeded(ctx context.Context, identity *repository.AuthIdentity, exec *execution, resp *provider.Response, latencyMs int64, providerName string, cost float64) error {
+	var body []byte
+	if resp != nil {
+		body, _ = json.Marshal(resp)
+	}
+	finalizeRouteTrace(exec.routeTrace, providerName, "budget_exceeded", auth.ErrBudgetExceeded)
 	_ = s.store.UpdateResponse(ctx, repository.ResponseRecord{
-		ID:           exec.responseID,
-		TenantID:     identity.TenantID,
-		ProviderName: exec.provider.Name(),
-		Model:        exec.requestedModel,
-		Status:       "error",
+		ID:             exec.responseID,
+		TenantID:       identity.TenantID,
+		ProjectID:      identity.ProjectID,
+		ProviderName:   providerName,
+		Model:          exec.requestedModel,
+		Status:         "error",
+		ResponseBody:   body,
+		RouteTraceBody: routeTraceBytes(exec.routeTrace),
 	})
+	if s.alert != nil {
+		scope := "api_key"
+		if identity.ProjectID != "" {
+			scope = "project_or_api_key"
+		}
+		s.alert.NotifyBudgetExhausted(ctx, alert.BudgetExhausted{
+			TenantID:     identity.TenantID,
+			ProjectID:    identity.ProjectID,
+			APIKeyID:     identity.APIKeyID,
+			ProviderName: providerName,
+			Model:        exec.requestedModel,
+			CostUSD:      cost,
+			BudgetScope:  scope,
+		})
+		s.alert.NotifyErrorEvent(ctx, map[string]any{
+			"tenant_id":     identity.TenantID,
+			"project_id":    identity.ProjectID,
+			"api_key_id":    identity.APIKeyID,
+			"provider_name": providerName,
+			"model":         exec.requestedModel,
+			"status":        "budget_exceeded",
+			"latency_ms":    latencyMs,
+		})
+	}
+	return auth.ErrBudgetExceeded
+}
+
+func (s *Service) markError(ctx context.Context, identity *repository.AuthIdentity, exec *execution, latencyMs int64) error {
+	finalizeRouteTrace(exec.routeTrace, exec.provider.Name(), "error", nil)
+	_ = s.store.UpdateResponse(ctx, repository.ResponseRecord{
+		ID:             exec.responseID,
+		TenantID:       identity.TenantID,
+		ProjectID:      identity.ProjectID,
+		ProviderName:   exec.provider.Name(),
+		Model:          exec.requestedModel,
+		Status:         "error",
+		RouteTraceBody: routeTraceBytes(exec.routeTrace),
+	})
+	if s.alert != nil {
+		s.alert.NotifyErrorEvent(ctx, map[string]any{
+			"tenant_id":     identity.TenantID,
+			"project_id":    identity.ProjectID,
+			"api_key_id":    identity.APIKeyID,
+			"provider_name": exec.provider.Name(),
+			"model":         exec.requestedModel,
+			"status":        "upstream_error",
+			"latency_ms":    latencyMs,
+		})
+	}
 	return s.auth.RecordUsage(ctx, identity, exec.provider.Name(), exec.requestedModel, 0, 0, 0, 0, latencyMs, "error", "upstream_error")
 }
 
 func (s *Service) markErrorWithProvider(ctx context.Context, identity *repository.AuthIdentity, exec *execution, latencyMs int64, providerName string) error {
+	finalizeRouteTrace(exec.routeTrace, providerName, "error", nil)
 	_ = s.store.UpdateResponse(ctx, repository.ResponseRecord{
-		ID:           exec.responseID,
-		TenantID:     identity.TenantID,
-		ProviderName: providerName,
-		Model:        exec.requestedModel,
-		Status:       "error",
+		ID:             exec.responseID,
+		TenantID:       identity.TenantID,
+		ProjectID:      identity.ProjectID,
+		ProviderName:   providerName,
+		Model:          exec.requestedModel,
+		Status:         "error",
+		RouteTraceBody: routeTraceBytes(exec.routeTrace),
 	})
+	if s.alert != nil {
+		s.alert.NotifyErrorEvent(ctx, map[string]any{
+			"tenant_id":     identity.TenantID,
+			"project_id":    identity.ProjectID,
+			"api_key_id":    identity.APIKeyID,
+			"provider_name": providerName,
+			"model":         exec.requestedModel,
+			"status":        "upstream_error",
+			"latency_ms":    latencyMs,
+		})
+	}
 	return s.auth.RecordUsage(ctx, identity, providerName, exec.requestedModel, 0, 0, 0, 0, latencyMs, "error", "upstream_error")
 }
 
@@ -1062,14 +1239,28 @@ func (s *Service) recordOutputBudgetError(ctx context.Context, identity *reposit
 	if resp != nil {
 		body, _ = json.Marshal(resp)
 	}
+	finalizeRouteTrace(exec.routeTrace, providerName, "output_budget_too_low", ErrOutputBudgetTooLow)
 	_ = s.store.UpdateResponse(ctx, repository.ResponseRecord{
-		ID:           exec.responseID,
-		TenantID:     identity.TenantID,
-		ProviderName: providerName,
-		Model:        exec.requestedModel,
-		Status:       "error",
-		ResponseBody: body,
+		ID:             exec.responseID,
+		TenantID:       identity.TenantID,
+		ProjectID:      identity.ProjectID,
+		ProviderName:   providerName,
+		Model:          exec.requestedModel,
+		Status:         "error",
+		ResponseBody:   body,
+		RouteTraceBody: routeTraceBytes(exec.routeTrace),
 	})
+	if s.alert != nil {
+		s.alert.NotifyErrorEvent(ctx, map[string]any{
+			"tenant_id":     identity.TenantID,
+			"project_id":    identity.ProjectID,
+			"api_key_id":    identity.APIKeyID,
+			"provider_name": providerName,
+			"model":         exec.requestedModel,
+			"status":        "output_budget_too_low",
+			"latency_ms":    latencyMs,
+		})
+	}
 	if resp == nil {
 		return s.auth.RecordUsage(ctx, identity, providerName, exec.requestedModel, 0, 0, 0, 0, latencyMs, "error", "output_budget_too_low")
 	}
@@ -1098,9 +1289,7 @@ func (s *Service) normalizeResponse(exec *execution, resp *provider.Response) *p
 	} else {
 		resp.ID = exec.responseID
 	}
-	if resp.Object == "" {
-		resp.Object = "response"
-	}
+	resp.Object = "response"
 	if resp.Created == 0 {
 		resp.Created = time.Now().Unix()
 	}
@@ -1193,12 +1382,11 @@ func nearOutputBudgetLimit(actual, requested int) bool {
 }
 
 func (s *Service) selectProvider(ctx context.Context, identity *repository.AuthIdentity, sessionID string, req *provider.ResponseRequest) (provider.Provider, error) {
-	providerNames, err := s.store.ListTenantProviders(ctx, identity.TenantID)
-	if err != nil {
-		return nil, err
+	candidates, _ := s.planCandidates(ctx, identity, sessionID, req)
+	if len(candidates) == 0 {
+		return nil, ErrNoProvider
 	}
-	routeCtx := buildRouteContext(req, sessionID)
-	return s.router.SelectFromWithContext(s.providerMgr.ListByNames(providerNames), routeCtx), nil
+	return candidates[0], nil
 }
 
 func isRetryable(err error) bool {
@@ -1268,18 +1456,30 @@ func (s *Service) callWithRetry(ctx context.Context, identity *repository.AuthId
 }
 
 func (s *Service) getCandidateProviders(ctx context.Context, identity *repository.AuthIdentity, sessionID string, req *provider.ResponseRequest) []provider.Provider {
-	providerNames, err := s.store.ListTenantProviders(ctx, identity.TenantID)
-	if err != nil {
-		return nil
-	}
-	candidates := s.providerMgr.ListByNames(providerNames)
-	if len(candidates) == 0 {
-		return nil
-	}
-	if s.router != nil {
-		return s.router.OrderCandidates(candidates, buildRouteContext(req, sessionID))
-	}
+	candidates, _ := s.planCandidates(ctx, identity, sessionID, req)
 	return candidates
+}
+
+func modelRequiredButUnavailable(req *provider.ResponseRequest, all []provider.Provider, filtered []provider.Provider) bool {
+	if req == nil || req.Model == "" {
+		return false
+	}
+	hadModelMatch := false
+	for _, item := range all {
+		if item.Model() == req.Model {
+			hadModelMatch = true
+			break
+		}
+	}
+	if !hadModelMatch {
+		return false
+	}
+	for _, item := range filtered {
+		if item.Model() == req.Model {
+			return false
+		}
+	}
+	return true
 }
 
 func buildRouteContext(req *provider.ResponseRequest, sessionID string) router.RouteContext {
@@ -1304,6 +1504,8 @@ func WrapError(err error) ginError {
 	case errors.Is(err, auth.ErrModelNotAllowed):
 		return ginError{Status: 403, Message: err.Error(), Type: "invalid_request_error"}
 	case errors.Is(err, auth.ErrQuotaExceeded):
+		return ginError{Status: 429, Message: err.Error(), Type: "rate_limit_error"}
+	case errors.Is(err, auth.ErrBudgetExceeded):
 		return ginError{Status: 429, Message: err.Error(), Type: "rate_limit_error"}
 	case errors.Is(err, ErrOutputBudgetTooLow):
 		return ginError{Status: 400, Message: err.Error(), Type: "invalid_request_error"}
@@ -1330,4 +1532,11 @@ func (s *Service) GetCircuitBreakerStates() map[string]int {
 		return nil
 	}
 	return s.circuitBreaker.GetAllStates()
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }

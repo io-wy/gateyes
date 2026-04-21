@@ -218,7 +218,7 @@ func TestChatCompatibilityHelpers(t *testing.T) {
 		MaxTokens: 99,
 	}
 	respReq := ConvertChatRequest(chatReq)
-	if respReq.Model != "gpt-test" || !respReq.Stream || respReq.MaxTokens != 99 {
+	if respReq.Model != "gpt-test" || respReq.Surface != "chat" || !respReq.Stream || respReq.MaxTokens != 99 {
 		t.Fatalf("ConvertChatRequest() = %+v, want copied fields", respReq)
 	}
 	if respReq == nil || respReq.Messages[0].Role != "user" {

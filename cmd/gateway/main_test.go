@@ -26,6 +26,18 @@ func (f *fakeIdentityStore) ConsumeQuota(ctx context.Context, userID string, tok
 	return true, nil
 }
 
+func (f *fakeIdentityStore) ConsumeAPIKeyBudget(ctx context.Context, apiKeyID string, cost float64) (bool, error) {
+	return true, nil
+}
+
+func (f *fakeIdentityStore) ConsumeProjectBudget(ctx context.Context, projectID string, cost float64) (bool, error) {
+	return true, nil
+}
+
+func (f *fakeIdentityStore) ConsumeTenantBudget(ctx context.Context, tenantID string, cost float64) (bool, error) {
+	return true, nil
+}
+
 func (f *fakeIdentityStore) EnsureBootstrapKey(ctx context.Context, params repository.BootstrapAPIKeyParams) error {
 	if f.err != nil {
 		return f.err

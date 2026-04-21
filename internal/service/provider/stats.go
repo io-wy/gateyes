@@ -105,6 +105,15 @@ func (s *Stats) Get(name string) (*ProviderStats, bool) {
 	return stats, ok
 }
 
+func (s *Stats) SetStatus(name string, status string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if stats, ok := s.providerStats[name]; ok {
+		stats.Status = status
+		stats.UpdatedAt = time.Now()
+	}
+}
+
 func (s *Stats) List() []*ProviderStats {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

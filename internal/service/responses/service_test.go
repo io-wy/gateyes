@@ -604,10 +604,11 @@ func TestCreateStreamMarksCancelledAndRecordsPartialUsageOnClientDisconnect(t *t
 }
 
 type responsesTestEnv struct {
-	database *db.DB
-	store    *sqlstore.Store
-	service  *Service
-	identity *repository.AuthIdentity
+	database    *db.DB
+	store       *sqlstore.Store
+	service     *Service
+	identity    *repository.AuthIdentity
+	providerMgr *provider.Manager
 }
 
 type responsesTestEnvConfig struct {
@@ -710,10 +711,11 @@ func newResponsesTestEnv(t *testing.T, cfg responsesTestEnvConfig) *responsesTes
 	})
 
 	return &responsesTestEnv{
-		database: database,
-		store:    store,
-		service:  service,
-		identity: identity,
+		database:    database,
+		store:       store,
+		service:     service,
+		identity:    identity,
+		providerMgr: providerMgr,
 	}
 }
 

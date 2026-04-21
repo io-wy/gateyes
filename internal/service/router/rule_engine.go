@@ -8,8 +8,13 @@ import (
 )
 
 func (r *Router) applyRuleEngineLocked(candidates []provider.Provider, ctx RouteContext) []provider.Provider {
+	filtered, _ := r.applyRuleEngineTraceLocked(candidates, ctx)
+	return filtered
+}
+
+func (r *Router) applyRuleEngineTraceLocked(candidates []provider.Provider, ctx RouteContext) ([]provider.Provider, RuleTrace) {
 	if !r.cfg.RuleEngine.Enabled || len(r.cfg.RuleEngine.Rules) == 0 || len(candidates) == 0 {
-		return candidates
+		return candidates, RuleTrace{}
 	}
 
 	for _, rule := range r.cfg.RuleEngine.Rules {
@@ -18,12 +23,20 @@ func (r *Router) applyRuleEngineLocked(candidates []provider.Provider, ctx Route
 		}
 		filtered := filterProvidersByName(candidates, rule.Action.Providers)
 		if len(filtered) > 0 {
-			return filtered
+			return filtered, RuleTrace{
+				Matched:   true,
+				RuleName:  rule.Name,
+				Providers: providerNameList(filtered),
+			}
 		}
-		return candidates
+		return candidates, RuleTrace{
+			Matched:   true,
+			RuleName:  rule.Name,
+			Providers: providerNameList(candidates),
+		}
 	}
 
-	return candidates
+	return candidates, RuleTrace{}
 }
 
 func matchRouteRule(match config.RouteMatchConfig, ctx RouteContext) bool {

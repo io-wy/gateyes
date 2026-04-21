@@ -13,7 +13,7 @@ import (
 
 func (s *Store) ListTenants(ctx context.Context) ([]repository.TenantRecord, error) {
 	rows, err := s.db.Conn.QueryContext(ctx, `
-SELECT id, slug, name, status, created_at, updated_at
+SELECT id, slug, name, status, budget_usd, spent_usd, created_at, updated_at
 FROM tenants
 ORDER BY created_at ASC`)
 	if err != nil {
@@ -29,6 +29,8 @@ ORDER BY created_at ASC`)
 			&tenant.Slug,
 			&tenant.Name,
 			&tenant.Status,
+			&tenant.BudgetUSD,
+			&tenant.SpentUSD,
 			&tenant.CreatedAt,
 			&tenant.UpdatedAt,
 		); err != nil {
@@ -63,6 +65,10 @@ func (s *Store) UpdateTenant(ctx context.Context, idOrSlug string, params reposi
 	if params.Status != nil {
 		sets = append(sets, "status = ?")
 		args = append(args, *params.Status)
+	}
+	if params.BudgetUSD != nil {
+		sets = append(sets, "budget_usd = ?")
+		args = append(args, *params.BudgetUSD)
 	}
 	sets = append(sets, "updated_at = ?")
 	args = append(args, time.Now().UTC(), tenant.ID)

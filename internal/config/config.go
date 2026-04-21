@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -16,6 +17,7 @@ type Config struct {
 	Router         RouterConfig         `yaml:"router"`
 	Limiter        LimiterConfig        `yaml:"limiter"`
 	Alert          AlertConfig          `yaml:"alert"`
+	HealthCheck    HealthCheckConfig    `yaml:"healthCheck"`
 	Retry          RetryConfig          `yaml:"retry"`
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuitBreaker"`
 	Providers      []ProviderConfig     `yaml:"providers"`
@@ -91,20 +93,24 @@ type LimiterConfig struct {
 }
 
 type ProviderConfig struct {
-	Name        string            `yaml:"name"`
-	Type        string            `yaml:"type"`
-	Vendor      string            `yaml:"vendor"`
-	BaseURL     string            `yaml:"baseURL"`
-	Endpoint    string            `yaml:"endpoint"` // "chat" or "responses", default "chat"
-	APIKey      string            `yaml:"apiKey"`
-	Model       string            `yaml:"model"`
-	PriceInput  float64           `yaml:"priceInput"`
-	PriceOutput float64           `yaml:"priceOutput"`
-	MaxTokens   int               `yaml:"maxTokens"`
-	Timeout     int               `yaml:"timeout"`
-	Enabled     bool              `yaml:"enabled"`
-	Headers     map[string]string `yaml:"headers"`
-	ExtraBody   map[string]any    `yaml:"extraBody"`
+	Name          string            `yaml:"name"`
+	Type          string            `yaml:"type"`
+	Vendor        string            `yaml:"vendor"`
+	BaseURL       string            `yaml:"baseURL"`
+	GRPCTarget    string            `yaml:"grpcTarget"`
+	GRPCUseTLS    bool              `yaml:"grpcUseTLS"`
+	GRPCAuthority string            `yaml:"grpcAuthority"`
+	Endpoint      string            `yaml:"endpoint"` // "chat" or "responses", default "chat"
+	APIKey        string            `yaml:"apiKey"`
+	Model         string            `yaml:"model"`
+	Weight        int               `yaml:"weight"`
+	PriceInput    float64           `yaml:"priceInput"`
+	PriceOutput   float64           `yaml:"priceOutput"`
+	MaxTokens     int               `yaml:"maxTokens"`
+	Timeout       int               `yaml:"timeout"`
+	Enabled       bool              `yaml:"enabled"`
+	Headers       map[string]string `yaml:"headers"`
+	ExtraBody     map[string]any    `yaml:"extraBody"`
 }
 
 type APIKeyConfig struct {
@@ -122,10 +128,21 @@ type AdminConfig struct {
 }
 
 type AlertConfig struct {
-	Enabled        bool    `yaml:"enabled"`
-	QuotaThreshold float64 `yaml:"quotaThreshold"` // 0.8 = 80%
-	WebhookURL     string  `yaml:"webhookURL"`
-	WebhookSecret  string  `yaml:"webhookSecret"`
+	Enabled            bool    `yaml:"enabled"`
+	QuotaThreshold     float64 `yaml:"quotaThreshold"` // 0.8 = 80%
+	WebhookURL         string  `yaml:"webhookURL"`
+	WebhookSecret      string  `yaml:"webhookSecret"`
+	ProviderStateURL   string  `yaml:"providerStateURL"`
+	BudgetExhaustedURL string  `yaml:"budgetExhaustedURL"`
+	RequestEventURL    string  `yaml:"requestEventURL"`
+	ErrorEventURL      string  `yaml:"errorEventURL"`
+}
+
+type HealthCheckConfig struct {
+	Enabled          bool `yaml:"enabled"`
+	IntervalSeconds  int  `yaml:"intervalSeconds"`
+	TimeoutSeconds   int  `yaml:"timeoutSeconds"`
+	FailureThreshold int  `yaml:"failureThreshold"`
 }
 
 type RetryConfig struct {
@@ -173,8 +190,94 @@ func Load(path string) (*Config, error) {
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, err
 	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 
 	return &cfg, nil
+}
+
+func (c *Config) Validate() error {
+	if c == nil {
+		return fmt.Errorf("config is nil")
+	}
+	if strings.TrimSpace(c.Server.ListenAddr) == "" {
+		return fmt.Errorf("server.listenAddr is required")
+	}
+	if !containsString([]string{"sqlite", "postgres", "mysql", ""}, c.Database.Driver) {
+		return fmt.Errorf("unsupported database.driver: %s", c.Database.Driver)
+	}
+	if !containsString([]string{"round_robin", "random", "least_load", "cost_based", "sticky", "ml_rank", ""}, c.Router.Strategy) {
+		return fmt.Errorf("unsupported router.strategy: %s", c.Router.Strategy)
+	}
+	if !containsString([]string{"", "none", "ml_rank"}, c.Router.Ranker.Method) {
+		return fmt.Errorf("unsupported router.ranker.method: %s", c.Router.Ranker.Method)
+	}
+	if c.Metrics.Namespace != "" {
+		pattern := regexp.MustCompile(`^[a-zA-Z_:][a-zA-Z0-9_:]*$`)
+		if !pattern.MatchString(c.Metrics.Namespace) {
+			return fmt.Errorf("invalid metrics.namespace: %s", c.Metrics.Namespace)
+		}
+	}
+	seenProviders := make(map[string]struct{}, len(c.Providers))
+	for _, provider := range c.Providers {
+		name := strings.TrimSpace(provider.Name)
+		if name == "" {
+			return fmt.Errorf("provider name is required")
+		}
+		if _, ok := seenProviders[name]; ok {
+			return fmt.Errorf("duplicate provider name: %s", name)
+		}
+		seenProviders[name] = struct{}{}
+		if !containsString([]string{"openai", "anthropic", "grpc", "azure", ""}, strings.ToLower(strings.TrimSpace(provider.Type))) {
+			return fmt.Errorf("unsupported provider type for %s: %s", name, provider.Type)
+		}
+		if endpoint := strings.ToLower(strings.TrimSpace(provider.Endpoint)); endpoint != "" && !containsString([]string{"chat", "responses"}, endpoint) {
+			return fmt.Errorf("unsupported provider endpoint for %s: %s", name, provider.Endpoint)
+		}
+		if provider.Timeout < 0 {
+			return fmt.Errorf("provider timeout must be >= 0 for %s", name)
+		}
+		if provider.MaxTokens < 0 {
+			return fmt.Errorf("provider maxTokens must be >= 0 for %s", name)
+		}
+	}
+	seenKeys := make(map[string]struct{}, len(c.APIKeys))
+	for _, apiKey := range c.APIKeys {
+		key := strings.TrimSpace(apiKey.Key)
+		if key == "" {
+			return fmt.Errorf("apiKeys.key is required")
+		}
+		if _, ok := seenKeys[key]; ok {
+			return fmt.Errorf("duplicate api key: %s", key)
+		}
+		seenKeys[key] = struct{}{}
+		if apiKey.QPS < 0 || apiKey.Quota < -1 {
+			return fmt.Errorf("invalid api key quota/qps for %s", key)
+		}
+	}
+	if c.Limiter.GlobalQPS < 0 || c.Limiter.GlobalTPM < 0 || c.Limiter.QueueSize < 0 {
+		return fmt.Errorf("limiter values must be >= 0")
+	}
+	if c.Retry.MaxRetries < 0 || c.Retry.InitialDelayMs < 0 || c.Retry.MaxDelayMs < 0 {
+		return fmt.Errorf("retry values must be >= 0")
+	}
+	if c.CircuitBreaker.FailureThreshold < 0 || c.CircuitBreaker.RecoveryTimeout < 0 || c.CircuitBreaker.HalfOpenMaxRequests < 0 {
+		return fmt.Errorf("circuitBreaker values must be >= 0")
+	}
+	if c.HealthCheck.IntervalSeconds < 0 || c.HealthCheck.TimeoutSeconds < 0 || c.HealthCheck.FailureThreshold < 0 {
+		return fmt.Errorf("healthCheck values must be >= 0")
+	}
+	return nil
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func DefaultConfig() *Config {
@@ -214,6 +317,16 @@ func DefaultConfig() *Config {
 			GlobalTokenBurst:    100000,
 			PerUserRequestBurst: 100,
 			QueueSize:           1000,
+		},
+		Alert: AlertConfig{
+			Enabled:        true,
+			QuotaThreshold: 0.8,
+		},
+		HealthCheck: HealthCheckConfig{
+			Enabled:          true,
+			IntervalSeconds:  60,
+			TimeoutSeconds:   15,
+			FailureThreshold: 2,
 		},
 		Retry: RetryConfig{
 			MaxRetries:     2,

@@ -7,7 +7,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/gateyes/gateway/internal/middleware"
-	"github.com/gateyes/gateway/internal/protocol/apicompat"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/provider"
 	responseSvc "github.com/gateyes/gateway/internal/service/responses"
@@ -48,6 +47,7 @@ func (h *Handler) handleResponsesCreate(c *gin.Context) {
 		return
 	}
 	req.Normalize()
+	req.Surface = "responses"
 
 	identity, ok := middleware.Identity(c)
 	if !ok {
@@ -203,7 +203,7 @@ func (h *Handler) streamChatCompatibility(c *gin.Context, stream *responseSvc.St
 	}
 
 	firstTokenRecorded := false
-	encoder := apicompat.NewChatStreamEncoder(stream.ResponseID, model)
+	encoder := provider.NewChatStreamEncoder(stream.ResponseID, model)
 
 	for {
 		select {
@@ -264,7 +264,7 @@ func (h *Handler) streamAnthropicMessages(c *gin.Context, stream *responseSvc.St
 	}
 
 	firstTokenRecorded := false
-	encoder := apicompat.NewAnthropicStreamEncoder(stream.ResponseID, model)
+	encoder := provider.NewAnthropicStreamEncoder(stream.ResponseID, model)
 
 	for {
 		select {

@@ -14,6 +14,8 @@ func resolveProviderFactory(providerType string) (providerFactory, error) {
 		return NewOpenAIProvider, nil
 	case "anthropic":
 		return NewAnthropicProvider, nil
+	case "grpc":
+		return NewGRPCProvider, nil
 	default:
 		return nil, newProviderConfigError("provider.factory", "unsupported provider type: "+providerType)
 	}

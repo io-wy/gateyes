@@ -14,6 +14,7 @@ var (
 	ErrInactiveAPIKey  = errors.New("inactive API key")
 	ErrModelNotAllowed = errors.New("model not allowed")
 	ErrQuotaExceeded   = errors.New("quota exceeded")
+	ErrBudgetExceeded  = errors.New("budget exceeded")
 	ErrForbidden       = errors.New("forbidden")
 )
 
@@ -50,15 +51,40 @@ func (a *Auth) Touch(ctx context.Context, identity *repository.AuthIdentity) err
 }
 
 func (a *Auth) CheckModel(identity *repository.AuthIdentity, model string) bool {
-	if len(identity.Models) == 0 {
+	if len(identity.Models) == 0 && len(identity.APIKeyModels) == 0 {
 		return true
 	}
-	for _, allowed := range identity.Models {
-		if allowed == model {
-			return true
-		}
+	if len(identity.Models) > 0 && !contains(identity.Models, model) {
+		return false
 	}
-	return false
+	if len(identity.APIKeyModels) > 0 && !contains(identity.APIKeyModels, model) {
+		return false
+	}
+	return true
+}
+
+func (a *Auth) CheckProvider(identity *repository.AuthIdentity, providerName string) bool {
+	if len(identity.APIKeyProviders) == 0 {
+		return true
+	}
+	return contains(identity.APIKeyProviders, providerName)
+}
+
+func (a *Auth) CheckService(identity *repository.AuthIdentity, requestPrefix string) bool {
+	if len(identity.APIKeyServices) == 0 {
+		return true
+	}
+	return contains(identity.APIKeyServices, strings.ToLower(strings.TrimSpace(requestPrefix)))
+}
+
+func (a *Auth) EffectiveRateLimitQPS(identity *repository.AuthIdentity) int {
+	if identity == nil {
+		return 0
+	}
+	if identity.APIKeyRateLimitQPS > 0 {
+		return identity.APIKeyRateLimitQPS
+	}
+	return identity.QPS
 }
 
 func (a *Auth) HasQuota(identity *repository.AuthIdentity, tokens int) bool {
@@ -136,8 +162,35 @@ func (a *Auth) recordUsage(
 		identity.Used += totalTokens
 	}
 
+	if cost > 0 {
+		ok, err := a.store.ConsumeAPIKeyBudget(ctx, identity.APIKeyID, cost)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ErrBudgetExceeded
+		}
+		if identity.ProjectID != "" {
+			ok, err = a.store.ConsumeProjectBudget(ctx, identity.ProjectID, cost)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return ErrBudgetExceeded
+			}
+		}
+		ok, err = a.store.ConsumeTenantBudget(ctx, identity.TenantID, cost)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ErrBudgetExceeded
+		}
+	}
+
 	return a.store.CreateUsageRecord(ctx, repository.UsageRecord{
 		TenantID:         identity.TenantID,
+		ProjectID:        identity.ProjectID,
 		UserID:           identity.UserID,
 		APIKeyID:         identity.APIKeyID,
 		ProviderName:     providerName,
@@ -168,4 +221,13 @@ func (a *Auth) ExtractKey(authHeader string) (key string, secret string) {
 	}
 
 	return parts[1], ""
+}
+
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

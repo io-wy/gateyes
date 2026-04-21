@@ -3,6 +3,7 @@ package sqlstore
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -61,12 +62,15 @@ SELECT u.id,
 	u.tenant_id,
 	t.slug,
 	COALESCE((SELECT ak.key FROM api_keys ak WHERE ak.user_id = u.id ORDER BY ak.created_at LIMIT 1), ''),
+	COALESCE((SELECT ak.project_id FROM api_keys ak WHERE ak.user_id = u.id ORDER BY ak.created_at LIMIT 1), ''),
 	u.name,
 	u.email,
 	u.role,
 	u.quota,
 	u.used,
 	u.qps,
+	COALESCE((SELECT ak.budget_usd FROM api_keys ak WHERE ak.user_id = u.id ORDER BY ak.created_at LIMIT 1), 0),
+	COALESCE((SELECT ak.spent_usd FROM api_keys ak WHERE ak.user_id = u.id ORDER BY ak.created_at LIMIT 1), 0),
 	u.status,
 	u.created_at,
 	u.updated_at
@@ -90,12 +94,15 @@ LIMIT 1`
 		&user.TenantID,
 		&user.TenantSlug,
 		&user.APIKey,
+		&user.ProjectID,
 		&user.Name,
 		&user.Email,
 		&user.Role,
 		&user.Quota,
 		&user.Used,
 		&user.QPS,
+		&user.KeyBudgetUSD,
+		&user.KeySpentUSD,
 		&user.Status,
 		&user.CreatedAt,
 		&user.UpdatedAt,
@@ -117,7 +124,7 @@ LIMIT 1`
 
 func (s *Store) loadTenant(ctx context.Context, idOrSlug string) (*repository.TenantRecord, error) {
 	row := s.db.Conn.QueryRowContext(ctx, s.db.Rebind(`
-SELECT id, slug, name, status, created_at, updated_at
+SELECT id, slug, name, status, budget_usd, spent_usd, created_at, updated_at
 FROM tenants
 WHERE id = ?
    OR slug = ?
@@ -129,6 +136,8 @@ LIMIT 1`), idOrSlug, idOrSlug)
 		&tenant.Slug,
 		&tenant.Name,
 		&tenant.Status,
+		&tenant.BudgetUSD,
+		&tenant.SpentUSD,
 		&tenant.CreatedAt,
 		&tenant.UpdatedAt,
 	); err != nil {
@@ -139,4 +148,26 @@ LIMIT 1`), idOrSlug, idOrSlug)
 	}
 
 	return &tenant, nil
+}
+
+func encodeStringSlice(value []string) string {
+	if len(value) == 0 {
+		return "[]"
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return "[]"
+	}
+	return string(raw)
+}
+
+func decodeStringSlice(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	var values []string
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		return nil
+	}
+	return values
 }

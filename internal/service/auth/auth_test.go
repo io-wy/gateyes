@@ -10,16 +10,22 @@ import (
 )
 
 type fakeIdentityStore struct {
-	identity           *repository.AuthIdentity
-	authenticateErr    error
-	touchErr           error
-	consumeOK          bool
-	consumeErr         error
-	usageErr           error
-	touchedAPIKeyID    string
-	consumedUserID     string
-	consumedTokens     int
-	usageRecords       []repository.UsageRecord
+	identity                *repository.AuthIdentity
+	authenticateErr         error
+	touchErr                error
+	consumeOK               bool
+	consumeErr              error
+	consumeKeyBudgetOK      bool
+	consumeKeyBudgetErr     error
+	consumeProjectBudgetOK  bool
+	consumeProjectBudgetErr error
+	consumeTenantBudgetOK   bool
+	consumeTenantBudgetErr  error
+	usageErr                error
+	touchedAPIKeyID         string
+	consumedUserID          string
+	consumedTokens          int
+	usageRecords            []repository.UsageRecord
 }
 
 func (f *fakeIdentityStore) CreateUser(ctx context.Context, params repository.CreateUserParams) (*repository.UserRecord, error) {
@@ -68,6 +74,45 @@ func (f *fakeIdentityStore) ConsumeQuota(ctx context.Context, userID string, tok
 	return f.consumeOK, f.consumeErr
 }
 
+func (f *fakeIdentityStore) ConsumeAPIKeyBudget(ctx context.Context, apiKeyID string, cost float64) (bool, error) {
+	if apiKeyID == "" || cost <= 0 {
+		return true, nil
+	}
+	if f.consumeKeyBudgetErr != nil {
+		return false, f.consumeKeyBudgetErr
+	}
+	if !f.consumeKeyBudgetOK {
+		return false, nil
+	}
+	return true, nil
+}
+
+func (f *fakeIdentityStore) ConsumeProjectBudget(ctx context.Context, projectID string, cost float64) (bool, error) {
+	if projectID == "" || cost <= 0 {
+		return true, nil
+	}
+	if f.consumeProjectBudgetErr != nil {
+		return false, f.consumeProjectBudgetErr
+	}
+	if !f.consumeProjectBudgetOK {
+		return false, nil
+	}
+	return true, nil
+}
+
+func (f *fakeIdentityStore) ConsumeTenantBudget(ctx context.Context, tenantID string, cost float64) (bool, error) {
+	if tenantID == "" || cost <= 0 {
+		return true, nil
+	}
+	if f.consumeTenantBudgetErr != nil {
+		return false, f.consumeTenantBudgetErr
+	}
+	if !f.consumeTenantBudgetOK {
+		return false, nil
+	}
+	return true, nil
+}
+
 func (f *fakeIdentityStore) EnsureBootstrapKey(ctx context.Context, params repository.BootstrapAPIKeyParams) error {
 	return nil
 }
@@ -88,6 +133,10 @@ func (f *fakeIdentityStore) GetProviderUsageSummary(ctx context.Context, tenantI
 	return nil, nil
 }
 
+func (f *fakeIdentityStore) GetProjectUsageSummary(ctx context.Context, tenantID, projectID string) (*repository.UsageStats, error) {
+	return nil, nil
+}
+
 func (f *fakeIdentityStore) GetUserUsageDetail(ctx context.Context, tenantID, userID string, startTime, endTime time.Time) ([]repository.UsageRecord, error) {
 	return nil, nil
 }
@@ -96,7 +145,23 @@ func (f *fakeIdentityStore) GetUserUsageTrend(ctx context.Context, tenantID, use
 	return nil, nil
 }
 
+func (f *fakeIdentityStore) GetProjectUsageTrend(ctx context.Context, tenantID, projectID string, days int) ([]repository.DailyUsage, error) {
+	return nil, nil
+}
+
 func (f *fakeIdentityStore) GetTenantUsageTrend(ctx context.Context, tenantID string, days int) ([]repository.DailyUsage, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) GetUsageSummaryFiltered(ctx context.Context, filter repository.UsageFilter) (*repository.UsageStats, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) GetUsageBreakdown(ctx context.Context, filter repository.UsageFilter, dimension string) ([]repository.UsageBreakdownRow, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) GetUsageTimeBuckets(ctx context.Context, filter repository.UsageFilter, period string, limit int) ([]repository.UsageTimeBucket, error) {
 	return nil, nil
 }
 
@@ -133,6 +198,126 @@ func (f *fakeIdentityStore) UpdateResponse(ctx context.Context, record repositor
 }
 
 func (f *fakeIdentityStore) GetResponse(ctx context.Context, tenantID string, id string) (*repository.ResponseRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) ListProviderRegistry(ctx context.Context) ([]repository.ProviderRegistryRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) GetProviderRegistry(ctx context.Context, name string) (*repository.ProviderRegistryRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) UpsertProviderRegistry(ctx context.Context, record repository.ProviderRegistryRecord) error {
+	return nil
+}
+
+func (f *fakeIdentityStore) UpdateProviderRegistry(ctx context.Context, name string, params repository.UpdateProviderRegistryParams) (*repository.ProviderRegistryRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) CreateProject(ctx context.Context, params repository.CreateProjectParams) (*repository.ProjectRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) ListProjects(ctx context.Context, tenantID string) ([]repository.ProjectRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) GetProject(ctx context.Context, tenantID string, idOrSlug string) (*repository.ProjectRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) UpdateProject(ctx context.Context, tenantID string, idOrSlug string, params repository.UpdateProjectParams) (*repository.ProjectRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) CreateAPIKey(ctx context.Context, params repository.CreateAPIKeyParams) (*repository.APIKeyRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) ListAPIKeys(ctx context.Context, tenantID string, filter repository.APIKeyFilter) ([]repository.APIKeyRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) GetAPIKey(ctx context.Context, tenantID string, idOrKey string) (*repository.APIKeyRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) UpdateAPIKey(ctx context.Context, tenantID string, idOrKey string, params repository.UpdateAPIKeyParams) (*repository.APIKeyRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) RotateAPIKey(ctx context.Context, tenantID string, idOrKey string, params repository.RotateAPIKeyParams) (*repository.APIKeyRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) CreateService(ctx context.Context, params repository.CreateServiceParams) (*repository.ServiceRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) ListServices(ctx context.Context, tenantID string, filter repository.ServiceFilter) ([]repository.ServiceRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) GetService(ctx context.Context, tenantID string, idOrPrefix string) (*repository.ServiceRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) GetServiceByPrefix(ctx context.Context, tenantID string, prefix string) (*repository.ServiceRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) UpdateService(ctx context.Context, tenantID string, idOrPrefix string, params repository.UpdateServiceParams) (*repository.ServiceRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) CreateServiceVersion(ctx context.Context, tenantID string, params repository.CreateServiceVersionParams) (*repository.ServiceVersionRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) ListServiceVersions(ctx context.Context, tenantID string, serviceID string) ([]repository.ServiceVersionRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) GetServiceVersion(ctx context.Context, tenantID string, serviceID string, versionOrID string) (*repository.ServiceVersionRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) PublishServiceVersion(ctx context.Context, tenantID string, serviceID string, params repository.PublishServiceVersionParams) (*repository.ServiceRecord, *repository.ServiceVersionRecord, error) {
+	return nil, nil, nil
+}
+
+func (f *fakeIdentityStore) PromoteStagedServiceVersion(ctx context.Context, tenantID string, serviceID string) (*repository.ServiceRecord, *repository.ServiceVersionRecord, error) {
+	return nil, nil, nil
+}
+
+func (f *fakeIdentityStore) RollbackServiceVersion(ctx context.Context, tenantID string, serviceID string, params repository.RollbackServiceVersionParams) (*repository.ServiceRecord, *repository.ServiceVersionRecord, error) {
+	return nil, nil, nil
+}
+
+func (f *fakeIdentityStore) CreateServiceSubscription(ctx context.Context, tenantID string, params repository.CreateServiceSubscriptionParams) (*repository.ServiceSubscriptionRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) ListServiceSubscriptions(ctx context.Context, tenantID string, filter repository.ServiceSubscriptionFilter) ([]repository.ServiceSubscriptionRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) GetServiceSubscription(ctx context.Context, tenantID string, id string) (*repository.ServiceSubscriptionRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) UpdateServiceSubscription(ctx context.Context, tenantID string, id string, params repository.UpdateServiceSubscriptionParams) (*repository.ServiceSubscriptionRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeIdentityStore) CreateAuditLog(ctx context.Context, record repository.AuditLogRecord) error {
+	return nil
+}
+
+func (f *fakeIdentityStore) ListAuditLogs(ctx context.Context, tenantID string, filter repository.AuditLogFilter) ([]repository.AuditLogRecord, error) {
 	return nil, nil
 }
 
@@ -192,8 +377,17 @@ func TestTouchCheckModelHasQuotaRequireRoleAndExtractKey(t *testing.T) {
 	if got, want := store.touchedAPIKeyID, "api-1"; got != want {
 		t.Fatalf("Touch() touched API key = %q, want %q", got, want)
 	}
+	store.identity.APIKeyModels = []string{"gpt-1"}
+	store.identity.APIKeyProviders = []string{"openai-primary"}
+	store.identity.APIKeyRateLimitQPS = 12
 	if !service.CheckModel(store.identity, "gpt-1") || service.CheckModel(store.identity, "claude-1") {
 		t.Fatal("CheckModel() returned unexpected result")
+	}
+	if !service.CheckProvider(store.identity, "openai-primary") || service.CheckProvider(store.identity, "anthropic-primary") {
+		t.Fatal("CheckProvider() returned unexpected result")
+	}
+	if got, want := service.EffectiveRateLimitQPS(store.identity), 12; got != want {
+		t.Fatalf("EffectiveRateLimitQPS() = %d, want %d", got, want)
 	}
 	if !service.HasQuota(store.identity, 10) || service.HasQuota(store.identity, 17) {
 		t.Fatal("HasQuota() returned unexpected result")
@@ -217,8 +411,11 @@ func TestTouchCheckModelHasQuotaRequireRoleAndExtractKey(t *testing.T) {
 func TestRecordUsageSuccessAndQuotaExceeded(t *testing.T) {
 	identity := baseIdentity()
 	store := &fakeIdentityStore{
-		identity:  identity,
-		consumeOK: true,
+		identity:               identity,
+		consumeOK:              true,
+		consumeKeyBudgetOK:     true,
+		consumeProjectBudgetOK: true,
+		consumeTenantBudgetOK:  true,
 	}
 	service := NewAuth(store)
 
@@ -235,10 +432,15 @@ func TestRecordUsageSuccessAndQuotaExceeded(t *testing.T) {
 	if len(store.usageRecords) != 1 {
 		t.Fatalf("RecordUsage(success) usage records = %d, want %d", len(store.usageRecords), 1)
 	}
+	if store.usageRecords[0].ProjectID != identity.ProjectID {
+		t.Fatalf("RecordUsage(success) project id = %q, want %q", store.usageRecords[0].ProjectID, identity.ProjectID)
+	}
 
 	quotaStore := &fakeIdentityStore{
-		identity:  baseIdentity(),
-		consumeOK: false,
+		identity:              baseIdentity(),
+		consumeOK:             false,
+		consumeKeyBudgetOK:    true,
+		consumeTenantBudgetOK: true,
 	}
 	quotaService := NewAuth(quotaStore)
 	if err := quotaService.RecordUsage(context.Background(), quotaStore.identity, "openai", "gpt-1", 1, 1, 2, 0.1, 10, "success", ""); !errors.Is(err, ErrQuotaExceeded) {
@@ -246,5 +448,43 @@ func TestRecordUsageSuccessAndQuotaExceeded(t *testing.T) {
 	}
 	if len(quotaStore.usageRecords) != 0 {
 		t.Fatalf("RecordUsage(quota exceeded) usage records = %d, want %d", len(quotaStore.usageRecords), 0)
+	}
+
+	projectIdentity := baseIdentity()
+	projectIdentity.ProjectID = "proj-1"
+	budgetStore := &fakeIdentityStore{
+		identity:               projectIdentity,
+		consumeOK:              true,
+		consumeKeyBudgetOK:     false,
+		consumeProjectBudgetOK: true,
+		consumeTenantBudgetOK:  true,
+	}
+	budgetService := NewAuth(budgetStore)
+	if err := budgetService.RecordUsage(context.Background(), projectIdentity, "openai", "gpt-1", 1, 1, 2, 0.5, 10, "success", ""); !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("RecordUsage(key budget exceeded) error = %v, want %v", err, ErrBudgetExceeded)
+	}
+
+	projectBudgetStore := &fakeIdentityStore{
+		identity:               projectIdentity,
+		consumeOK:              true,
+		consumeKeyBudgetOK:     true,
+		consumeProjectBudgetOK: false,
+		consumeTenantBudgetOK:  true,
+	}
+	projectBudgetService := NewAuth(projectBudgetStore)
+	if err := projectBudgetService.RecordUsage(context.Background(), projectIdentity, "openai", "gpt-1", 1, 1, 2, 0.5, 10, "success", ""); !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("RecordUsage(project budget exceeded) error = %v, want %v", err, ErrBudgetExceeded)
+	}
+
+	tenantBudgetStore := &fakeIdentityStore{
+		identity:               projectIdentity,
+		consumeOK:              true,
+		consumeKeyBudgetOK:     true,
+		consumeProjectBudgetOK: true,
+		consumeTenantBudgetOK:  false,
+	}
+	tenantBudgetService := NewAuth(tenantBudgetStore)
+	if err := tenantBudgetService.RecordUsage(context.Background(), projectIdentity, "openai", "gpt-1", 1, 1, 2, 0.5, 10, "success", ""); !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("RecordUsage(tenant budget exceeded) error = %v, want %v", err, ErrBudgetExceeded)
 	}
 }

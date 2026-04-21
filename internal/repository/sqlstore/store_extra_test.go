@@ -21,23 +21,35 @@ func TestUserCRUDStatsAndTouchPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureTenant() error: %v", err)
 	}
+	project, err := store.CreateProject(ctx, repository.CreateProjectParams{
+		TenantID:  tenant.ID,
+		Slug:      "app-a",
+		Name:      "App A",
+		Status:    repository.StatusActive,
+		BudgetUSD: 100,
+	})
+	if err != nil {
+		t.Fatalf("CreateProject() error: %v", err)
+	}
 
 	created, err := store.CreateUser(ctx, repository.CreateUserParams{
-		TenantID:   tenant.ID,
-		Name:       "alice",
-		Email:      "alice@example.com",
-		Role:       repository.RoleTenantAdmin,
-		Quota:      100,
-		QPS:        5,
-		Models:     []string{"gpt-a", "gpt-b"},
-		APIKey:     "alice-key",
-		SecretHash: repository.HashSecret("alice-secret"),
+		TenantID:     tenant.ID,
+		ProjectID:    project.ID,
+		Name:         "alice",
+		Email:        "alice@example.com",
+		Role:         repository.RoleTenantAdmin,
+		Quota:        100,
+		QPS:          5,
+		KeyBudgetUSD: 9.5,
+		Models:       []string{"gpt-a", "gpt-b"},
+		APIKey:       "alice-key",
+		SecretHash:   repository.HashSecret("alice-secret"),
 	})
 	if err != nil {
 		t.Fatalf("CreateUser() error: %v", err)
 	}
-	if created.APIKey != "alice-key" || len(created.Models) != 2 {
-		t.Fatalf("CreateUser() = %+v, want api key and models", created)
+	if created.APIKey != "alice-key" || len(created.Models) != 2 || created.ProjectID != project.ID || created.KeyBudgetUSD != 9.5 {
+		t.Fatalf("CreateUser() = %+v, want api key/models/project/key budget", created)
 	}
 
 	users, err := store.ListUsers(ctx, tenant.ID)
@@ -65,17 +77,21 @@ func TestUserCRUDStatsAndTouchPaths(t *testing.T) {
 	qps := 9
 	models := []string{"claude-a"}
 	status := repository.StatusInactive
+	projectID := ""
+	keyBudget := 20.0
 	updated, err := store.UpdateUser(ctx, tenant.ID, created.ID, repository.UpdateUserParams{
-		Role:   &role,
-		Quota:  &quota,
-		QPS:    &qps,
-		Models: &models,
-		Status: &status,
+		Role:         &role,
+		Quota:        &quota,
+		QPS:          &qps,
+		ProjectID:    &projectID,
+		KeyBudgetUSD: &keyBudget,
+		Models:       &models,
+		Status:       &status,
 	})
 	if err != nil {
 		t.Fatalf("UpdateUser() error: %v", err)
 	}
-	if updated.Role != repository.RoleTenantUser || updated.QPS != 9 || len(updated.Models) != 1 || updated.Models[0] != "claude-a" {
+	if updated.Role != repository.RoleTenantUser || updated.QPS != 9 || len(updated.Models) != 1 || updated.Models[0] != "claude-a" || updated.ProjectID != "" || updated.KeyBudgetUSD != 20 {
 		t.Fatalf("UpdateUser() = %+v, want updated fields", updated)
 	}
 
@@ -288,5 +304,266 @@ INSERT INTO usage_records (
 	}
 	if userTenantID != tenantB.ID {
 		t.Fatalf("legacy user tenant_id = %q, want %q", userTenantID, tenantB.ID)
+	}
+}
+
+func TestAPIKeyLifecycleUsageBreakdownAndResponseTrace(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	tenant, err := store.EnsureTenant(ctx, repository.EnsureTenantParams{
+		ID:        "tenant-budget",
+		Slug:      "tenant-budget",
+		Name:      "Tenant Budget",
+		Status:    repository.StatusActive,
+		BudgetUSD: 20,
+	})
+	if err != nil {
+		t.Fatalf("EnsureTenant() error: %v", err)
+	}
+	project, err := store.CreateProject(ctx, repository.CreateProjectParams{
+		TenantID:  tenant.ID,
+		Slug:      "proj-budget",
+		Name:      "Project Budget",
+		Status:    repository.StatusActive,
+		BudgetUSD: 10,
+	})
+	if err != nil {
+		t.Fatalf("CreateProject() error: %v", err)
+	}
+	user, err := store.CreateUser(ctx, repository.CreateUserParams{
+		TenantID:     tenant.ID,
+		ProjectID:    project.ID,
+		Name:         "alice",
+		Email:        "alice@example.com",
+		Role:         repository.RoleTenantAdmin,
+		Quota:        100,
+		QPS:          5,
+		KeyBudgetUSD: 5,
+		APIKey:       "bootstrap-key",
+		SecretHash:   repository.HashSecret("bootstrap-secret"),
+	})
+	if err != nil {
+		t.Fatalf("CreateUser() error: %v", err)
+	}
+
+	keyRecord, err := store.CreateAPIKey(ctx, repository.CreateAPIKeyParams{
+		UserID:           user.ID,
+		ProjectID:        project.ID,
+		Key:              "scoped-key",
+		SecretHash:       repository.HashSecret("scoped-secret"),
+		BudgetUSD:        8,
+		RateLimitQPS:     7,
+		AllowedModels:    []string{"gpt-4o-mini"},
+		AllowedProviders: []string{"openai-primary"},
+	})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error: %v", err)
+	}
+	if keyRecord.RateLimitQPS != 7 || len(keyRecord.AllowedProviders) != 1 || keyRecord.AllowedProviders[0] != "openai-primary" {
+		t.Fatalf("CreateAPIKey() = %+v, want scoped key fields", keyRecord)
+	}
+
+	keys, err := store.ListAPIKeys(ctx, tenant.ID, repository.APIKeyFilter{UserID: user.ID})
+	if err != nil {
+		t.Fatalf("ListAPIKeys() error: %v", err)
+	}
+	if len(keys) != 2 {
+		t.Fatalf("ListAPIKeys() length = %d, want %d", len(keys), 2)
+	}
+
+	inactive := repository.StatusInactive
+	newBudget := 9.0
+	newQPS := 11
+	updatedKey, err := store.UpdateAPIKey(ctx, tenant.ID, keyRecord.ID, repository.UpdateAPIKeyParams{
+		Status:       &inactive,
+		BudgetUSD:    &newBudget,
+		RateLimitQPS: &newQPS,
+	})
+	if err != nil {
+		t.Fatalf("UpdateAPIKey() error: %v", err)
+	}
+	if updatedKey.Status != repository.StatusInactive || updatedKey.BudgetUSD != newBudget || updatedKey.RateLimitQPS != newQPS {
+		t.Fatalf("UpdateAPIKey() = %+v, want updated status/budget/qps", updatedKey)
+	}
+
+	rotatedKey, err := store.RotateAPIKey(ctx, tenant.ID, keyRecord.ID, repository.RotateAPIKeyParams{
+		NewKey:        "scoped-key-rotated",
+		NewSecretHash: repository.HashSecret("rotated-secret"),
+	})
+	if err != nil {
+		t.Fatalf("RotateAPIKey() error: %v", err)
+	}
+	if rotatedKey.Key != "scoped-key-rotated" || rotatedKey.Status != repository.StatusActive {
+		t.Fatalf("RotateAPIKey() = %+v, want rotated active key", rotatedKey)
+	}
+
+	revoked := repository.StatusRevoked
+	now := time.Now().UTC()
+	revokedKey, err := store.UpdateAPIKey(ctx, tenant.ID, rotatedKey.ID, repository.UpdateAPIKeyParams{
+		Status:    &revoked,
+		RevokedAt: &now,
+	})
+	if err != nil {
+		t.Fatalf("Revoke API key error: %v", err)
+	}
+	if revokedKey.Status != repository.StatusRevoked || revokedKey.RevokedAt == nil {
+		t.Fatalf("revoked API key = %+v, want revoked status and revoked_at", revokedKey)
+	}
+
+	if ok, err := store.ConsumeTenantBudget(ctx, tenant.ID, 3.5); err != nil || !ok {
+		t.Fatalf("ConsumeTenantBudget() = (%v,%v), want (true,nil)", ok, err)
+	}
+	tenantAfterBudget, err := store.GetTenant(ctx, tenant.ID)
+	if err != nil {
+		t.Fatalf("GetTenant() error: %v", err)
+	}
+	if tenantAfterBudget.SpentUSD != 3.5 {
+		t.Fatalf("tenant spent_usd = %v, want %v", tenantAfterBudget.SpentUSD, 3.5)
+	}
+
+	usageRows := []repository.UsageRecord{
+		{
+			ID:               "usage-breakdown-1",
+			TenantID:         tenant.ID,
+			ProjectID:        project.ID,
+			UserID:           user.ID,
+			APIKeyID:         rotatedKey.ID,
+			ProviderName:     "openai-primary",
+			Model:            "gpt-4o-mini",
+			PromptTokens:     3,
+			CompletionTokens: 2,
+			TotalTokens:      5,
+			Cost:             0.3,
+			LatencyMs:        20,
+			Status:           "success",
+			CreatedAt:        now.Add(-2 * time.Hour),
+		},
+		{
+			ID:               "usage-breakdown-2",
+			TenantID:         tenant.ID,
+			ProjectID:        project.ID,
+			UserID:           user.ID,
+			APIKeyID:         rotatedKey.ID,
+			ProviderName:     "openai-primary",
+			Model:            "gpt-4o-mini",
+			PromptTokens:     2,
+			CompletionTokens: 1,
+			TotalTokens:      3,
+			Cost:             0.2,
+			LatencyMs:        30,
+			Status:           "error",
+			ErrorType:        "upstream_error",
+			CreatedAt:        now.Add(-time.Hour),
+		},
+	}
+	for _, row := range usageRows {
+		if err := store.CreateUsageRecord(ctx, row); err != nil {
+			t.Fatalf("CreateUsageRecord(%s) error: %v", row.ID, err)
+		}
+	}
+
+	summary, err := store.GetUsageSummaryFiltered(ctx, repository.UsageFilter{
+		TenantID:  tenant.ID,
+		APIKeyID:  rotatedKey.ID,
+		StartTime: now.Add(-24 * time.Hour),
+		EndTime:   now.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("GetUsageSummaryFiltered() error: %v", err)
+	}
+	if summary.TotalRequests != 2 || summary.TotalCostUSD != 0.5 {
+		t.Fatalf("GetUsageSummaryFiltered() = %+v, want 2 requests and 0.5 cost", summary)
+	}
+
+	breakdown, err := store.GetUsageBreakdown(ctx, repository.UsageFilter{
+		TenantID: tenant.ID,
+		APIKeyID: rotatedKey.ID,
+	}, "provider")
+	if err != nil {
+		t.Fatalf("GetUsageBreakdown() error: %v", err)
+	}
+	if len(breakdown) != 1 || breakdown[0].Dimension != "openai-primary" || breakdown[0].TotalCostUSD != 0.5 {
+		t.Fatalf("GetUsageBreakdown() = %+v, want provider cost aggregation", breakdown)
+	}
+
+	timeBuckets, err := store.GetUsageTimeBuckets(ctx, repository.UsageFilter{
+		TenantID: tenant.ID,
+		APIKeyID: rotatedKey.ID,
+	}, "day", 10)
+	if err != nil {
+		t.Fatalf("GetUsageTimeBuckets() error: %v", err)
+	}
+	if len(timeBuckets) == 0 || timeBuckets[len(timeBuckets)-1].TotalRequests != 2 {
+		t.Fatalf("GetUsageTimeBuckets() = %+v, want aggregated day bucket", timeBuckets)
+	}
+
+	traceBody := []byte(`{"response_id":"resp-trace","status":"success","ordered_candidates":["openai-primary"]}`)
+	if err := store.CreateResponse(ctx, repository.ResponseRecord{
+		ID:             "resp-trace",
+		TenantID:       tenant.ID,
+		ProjectID:      project.ID,
+		UserID:         user.ID,
+		APIKeyID:       rotatedKey.ID,
+		ProviderName:   "openai-primary",
+		Model:          "gpt-4o-mini",
+		Status:         "completed",
+		ResponseBody:   []byte(`{"id":"resp-trace","object":"response"}`),
+		RouteTraceBody: traceBody,
+	}); err != nil {
+		t.Fatalf("CreateResponse() error: %v", err)
+	}
+	record, err := store.GetResponse(ctx, tenant.ID, "resp-trace")
+	if err != nil {
+		t.Fatalf("GetResponse() error: %v", err)
+	}
+	if string(record.RouteTraceBody) != string(traceBody) {
+		t.Fatalf("GetResponse().RouteTraceBody = %q, want %q", string(record.RouteTraceBody), string(traceBody))
+	}
+}
+
+func TestAuditLogLifecycle(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	tenant, err := store.EnsureTenant(ctx, repository.EnsureTenantParams{
+		ID:     "tenant-audit",
+		Slug:   "tenant-audit",
+		Name:   "Tenant Audit",
+		Status: repository.StatusActive,
+	})
+	if err != nil {
+		t.Fatalf("EnsureTenant() error: %v", err)
+	}
+
+	if err := store.CreateAuditLog(ctx, repository.AuditLogRecord{
+		ID:            "audit-1",
+		TenantID:      tenant.ID,
+		ActorUserID:   "user-1",
+		ActorAPIKeyID: "key-1",
+		ActorRole:     repository.RoleTenantAdmin,
+		Action:        "project.create",
+		ResourceType:  "project",
+		ResourceID:    "project-1",
+		RequestID:     "req-1",
+		IPAddress:     "127.0.0.1",
+		Payload:       []byte(`{"name":"Project A"}`),
+		CreatedAt:     time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("CreateAuditLog() error: %v", err)
+	}
+
+	items, err := store.ListAuditLogs(ctx, tenant.ID, repository.AuditLogFilter{
+		Action:       "project.create",
+		ResourceType: "project",
+		ResourceID:   "project-1",
+		ActorUserID:  "user-1",
+		Limit:        10,
+	})
+	if err != nil {
+		t.Fatalf("ListAuditLogs() error: %v", err)
+	}
+	if len(items) != 1 || items[0].Action != "project.create" || string(items[0].Payload) != `{"name":"Project A"}` {
+		t.Fatalf("ListAuditLogs() = %+v, want one matching audit record", items)
 	}
 }

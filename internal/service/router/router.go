@@ -83,6 +83,34 @@ func (r *Router) OrderCandidates(candidates []provider.Provider, ctx RouteContex
 	return ordered
 }
 
+func (r *Router) ExplainOrderCandidates(candidates []provider.Provider, ctx RouteContext) ([]provider.Provider, OrderTrace) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	trace := OrderTrace{
+		Initial:  providerNameList(candidates),
+		Ranker:   r.cfg.Ranker.Method,
+		Strategy: r.cfg.Strategy,
+	}
+	if len(candidates) == 0 {
+		return nil, trace
+	}
+
+	ordered := make([]provider.Provider, len(candidates))
+	copy(ordered, candidates)
+
+	ordered, trace.Rule = r.applyRuleEngineTraceLocked(ordered, ctx)
+	trace.AfterRule = providerNameList(ordered)
+	ordered = r.applyRankerLocked(ordered, ctx)
+	trace.AfterRanker = providerNameList(ordered)
+	ordered = r.orderByStrategyLocked(ordered, ctx.SessionID)
+	trace.Ordered = providerNameList(ordered)
+	if len(ordered) == 0 {
+		return nil, trace
+	}
+	return ordered, trace
+}
+
 func (r *Router) orderByStrategyLocked(candidates []provider.Provider, sessionID string) []provider.Provider {
 	if len(candidates) <= 1 {
 		return candidates

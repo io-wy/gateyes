@@ -1,19 +1,66 @@
-package apicompat
+package provider
 
-import (
-	"testing"
+import "testing"
 
-	"github.com/gateyes/gateway/internal/service/provider"
-)
+func TestChatStreamEncoderSuppressesDuplicateCompletedChunkAfterFinish(t *testing.T) {
+	encoder := NewChatStreamEncoder("resp-1", "gpt-test")
+
+	first := encoder.Encode(ResponseEvent{
+		Type:         EventContentDelta,
+		FinishReason: "stop",
+		Usage:        &Usage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3},
+	})
+	if len(first) != 1 {
+		t.Fatalf("first finish event emitted %d chunks, want one merged finish chunk", len(first))
+	}
+	if first[0].Choices[0].Delta.Role != "assistant" {
+		t.Fatalf("first chunk role = %q, want assistant", first[0].Choices[0].Delta.Role)
+	}
+	if first[0].Choices[0].FinishReason != "stop" {
+		t.Fatalf("first finish_reason = %q, want stop", first[0].Choices[0].FinishReason)
+	}
+
+	second := encoder.Encode(ResponseEvent{
+		Type:     EventResponseCompleted,
+		Response: &Response{Usage: Usage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3}},
+	})
+	if len(second) != 0 {
+		t.Fatalf("completed after finish emitted %d chunks, want 0", len(second))
+	}
+}
+
+func TestChatStreamEncoderMergesAssistantRoleIntoFirstToolChunk(t *testing.T) {
+	encoder := NewChatStreamEncoder("resp-1", "gpt-test")
+
+	chunks := encoder.Encode(ResponseEvent{
+		Type: EventContentDelta,
+		ToolCalls: []ToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: FunctionCall{
+				Name:      "lookup",
+				Arguments: `{"city":"Shanghai"}`,
+			},
+		}},
+	})
+
+	if len(chunks) != 1 {
+		t.Fatalf("tool-only first event emitted %d chunks, want 1 merged chunk", len(chunks))
+	}
+	if chunks[0].Choices[0].Delta.Role != "assistant" {
+		t.Fatalf("merged tool chunk role = %q, want assistant", chunks[0].Choices[0].Delta.Role)
+	}
+	if len(chunks[0].Choices[0].Delta.ToolCalls) != 1 {
+		t.Fatalf("merged tool chunk tool_calls = %+v, want one tool call", chunks[0].Choices[0].Delta.ToolCalls)
+	}
+}
 
 func TestAnthropicStreamEncoderEmitsTextToolAndCompletionLifecycle(t *testing.T) {
 	encoder := NewAnthropicStreamEncoder("resp-1", "claude-test")
 
-	started := encoder.Encode(provider.ResponseEvent{
-		Type: provider.EventResponseStarted,
-		Response: &provider.Response{
-			Usage: provider.Usage{PromptTokens: 7},
-		},
+	started := encoder.Encode(ResponseEvent{
+		Type:     EventResponseStarted,
+		Response: &Response{Usage: Usage{PromptTokens: 7}},
 	})
 	if len(started) != 1 || started[0].Type != "message_start" {
 		t.Fatalf("response_started emitted %+v, want one message_start", started)
@@ -22,13 +69,13 @@ func TestAnthropicStreamEncoderEmitsTextToolAndCompletionLifecycle(t *testing.T)
 		t.Fatalf("message_start usage = %+v, want prompt tokens copied", started[0].Message)
 	}
 
-	textAndTool := encoder.Encode(provider.ResponseEvent{
-		Type:      provider.EventContentDelta,
+	textAndTool := encoder.Encode(ResponseEvent{
+		Type:      EventContentDelta,
 		TextDelta: "hello",
-		ToolCalls: []provider.ToolCall{{
+		ToolCalls: []ToolCall{{
 			ID:   "call-1",
 			Type: "function",
-			Function: provider.FunctionCall{
+			Function: FunctionCall{
 				Name:      "lookup",
 				Arguments: `{"city":"shanghai"}`,
 			},
@@ -60,8 +107,8 @@ func TestAnthropicStreamEncoderEmitsTextToolAndCompletionLifecycle(t *testing.T)
 		t.Fatalf("fifth event = %+v, want tool block stop", textAndTool[4])
 	}
 
-	thinking := encoder.Encode(provider.ResponseEvent{
-		Type:          provider.EventThinkingDelta,
+	thinking := encoder.Encode(ResponseEvent{
+		Type:          EventThinkingDelta,
 		ThinkingDelta: "internal chain",
 	})
 	if len(thinking) != 2 {
@@ -75,16 +122,16 @@ func TestAnthropicStreamEncoderEmitsTextToolAndCompletionLifecycle(t *testing.T)
 		t.Fatalf("thinking delta event = %+v, want thinking delta payload", thinking[1])
 	}
 
-	completed := encoder.Encode(provider.ResponseEvent{
-		Type: provider.EventResponseCompleted,
-		Response: &provider.Response{
-			Output: []provider.ResponseOutput{{
+	completed := encoder.Encode(ResponseEvent{
+		Type: EventResponseCompleted,
+		Response: &Response{
+			Output: []ResponseOutput{{
 				Type:   "function_call",
 				CallID: "call-1",
 				Name:   "lookup",
 				Args:   `{"city":"shanghai"}`,
 			}},
-			Usage: provider.Usage{
+			Usage: Usage{
 				PromptTokens:     7,
 				CompletionTokens: 5,
 			},
@@ -114,10 +161,10 @@ func TestAnthropicStreamEncoderEmitsTextToolAndCompletionLifecycle(t *testing.T)
 func TestAnthropicStreamEncoderImplicitStartOnCompletedEvent(t *testing.T) {
 	encoder := NewAnthropicStreamEncoder("resp-implicit", "claude-test")
 
-	events := encoder.Encode(provider.ResponseEvent{
-		Type: provider.EventResponseCompleted,
-		Response: &provider.Response{
-			Usage: provider.Usage{
+	events := encoder.Encode(ResponseEvent{
+		Type: EventResponseCompleted,
+		Response: &Response{
+			Usage: Usage{
 				PromptTokens:     3,
 				CompletionTokens: 2,
 			},
@@ -138,5 +185,33 @@ func TestAnthropicStreamEncoderImplicitStartOnCompletedEvent(t *testing.T) {
 	}
 	if events[2].Type != "message_stop" {
 		t.Fatalf("implicit final event = %+v, want message_stop", events[2])
+	}
+}
+
+func TestAnthropicStreamEncoderAdditionalBranches(t *testing.T) {
+	encoder := NewAnthropicStreamEncoder("resp-extra", "claude-test")
+	if got := encoder.Encode(ResponseEvent{Type: EventThinkingDelta}); got != nil {
+		t.Fatalf("Encode(empty thinking delta) = %+v, want nil", got)
+	}
+
+	toolOnly := encoder.Encode(ResponseEvent{
+		Type: EventContentDelta,
+		ToolCalls: []ToolCall{{
+			ID:   "tool-1",
+			Type: "function",
+			Function: FunctionCall{
+				Name:      "lookup",
+				Arguments: `{"city":"Shanghai"}`,
+			},
+		}},
+	})
+	if len(toolOnly) < 3 || toolOnly[0].Type != "message_start" {
+		t.Fatalf("Encode(tool-only delta) = %+v, want message_start + tool_use lifecycle", toolOnly)
+	}
+	if got := encoder.Encode(ResponseEvent{Type: EventToolCallDone, Output: &ResponseOutput{Type: "message"}}); got != nil {
+		t.Fatalf("Encode(tool_call_done non-function) = %+v, want nil", got)
+	}
+	if got := encoder.Encode(ResponseEvent{Type: "unknown"}); got != nil {
+		t.Fatalf("Encode(unknown) = %+v, want nil", got)
 	}
 }

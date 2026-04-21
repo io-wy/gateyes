@@ -6,9 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/gateyes/gateway/internal/repository"
+	"github.com/gin-gonic/gin"
 )
 
 func TestMiddlewareAuthServiceAndRequireRoles(t *testing.T) {

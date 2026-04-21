@@ -17,7 +17,7 @@
 - 程序入口：`cmd/gateway/main.go`
 - HTTP 入口与路由分组：`internal/handler/server.go`
 - 中间件：`internal/middleware`
-- 协议兼容层：`internal/protocol/apicompat`
+- 协议兼容、provider adapter、provider registry metadata：`internal/service/provider`
 - 主业务编排：`internal/service/responses`
 - 核心服务：`internal/service/auth`、`internal/service/limiter`、`internal/service/router`
 - 监控：`internal/handler/metrics.go`
@@ -37,10 +37,11 @@
    - 执行限流
 4. `handler` 负责：
    - 绑定 JSON
-   - 调用 `internal/protocol/apicompat` 做 OpenAI / Anthropic 兼容转换
+   - 调用 `internal/service/provider` 中的 compatibility helper 做 OpenAI / Anthropic 兼容转换
    - 返回 JSON 或 SSE
 5. `responses.Service` 负责：
    - 查询 tenant 可用 provider
+   - 按 provider registry 的 health/drain/capability 过滤 candidate providers
    - 排序 candidate providers 并执行 retry / fallback
    - 写入 `responses` 表中的 `in_progress` 记录
    - 调用上游 provider
@@ -50,7 +51,7 @@
 和本文五个机制最相关的入口文件：
 
 - `internal/handler/server.go`
-- `internal/protocol/apicompat`
+- `internal/service/provider`
 - `internal/middleware/middleware.go`
 - `internal/service/responses/service.go`
 - `internal/handler/metrics.go`
@@ -121,7 +122,19 @@ Authorization header
 - `QPS`
 - `Models`
 
+当前还开始加入 project-aware 字段：
+
+- `ProjectID`
+- `ProjectSlug`
+- `ProjectName`
+- `ProjectStatus`
+- `ProjectBudgetUSD`
+- `ProjectSpentUSD`
+- `APIKeyBudgetUSD`
+- `APIKeySpentUSD`
+
 这意味着后续 quota、模型白名单、角色校验、tenant 作用域计算都依赖同一个身份对象完成。
+现在这层也开始承载 project/key 预算治理的上下文。
 
 ### 模型白名单
 
@@ -140,6 +153,13 @@ Authorization header
 2. 实际记账：响应成功后 `auth.RecordUsage(...)` 调用 `store.ConsumeQuota(...)`
 
 预检查用的是 admission tokens，真正入账用的是响应里的 `total_tokens`。
+
+当前还新增了基础成本预算扣减：
+
+1. API key budget：`ConsumeAPIKeyBudget(...)`
+2. project budget：`ConsumeProjectBudget(...)`
+
+也就是说，请求成功后不只是消耗 token quota，也会推进 key/project 的预算消耗。
 
 ### 使用记录写入
 

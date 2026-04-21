@@ -17,6 +17,7 @@ import (
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/repository/sqlstore"
 	"github.com/gateyes/gateway/internal/service/alert"
+	"github.com/gateyes/gateway/internal/service/catalog"
 	"github.com/gateyes/gateway/internal/service/limiter"
 	"github.com/gateyes/gateway/internal/service/provider"
 	responseSvc "github.com/gateyes/gateway/internal/service/responses"
@@ -85,6 +86,16 @@ func main() {
 		slog.Error("failed to initialize providers", "error", err)
 		os.Exit(1)
 	}
+	if err := seedProviderRegistry(context.Background(), store, cfg.Providers); err != nil {
+		slog.Error("failed to seed provider registry", "error", err)
+		os.Exit(1)
+	}
+	if records, err := store.ListProviderRegistry(context.Background()); err != nil {
+		slog.Error("failed to load provider registry", "error", err)
+		os.Exit(1)
+	} else {
+		providerMgr.ApplyRegistry(records)
+	}
 
 	limiterSvc := limiter.NewLimiter(cfg.Limiter)
 	routerSvc := router.NewRouter(cfg.Router)
@@ -92,6 +103,7 @@ func main() {
 
 	// 初始化配额预警服务
 	alertSvc := alert.NewAlertService(cfg.Alert, store)
+	healthChecker := provider.NewHealthChecker(cfg.HealthCheck, store, providerMgr, alertSvc)
 
 	httpMiddleware := middleware.New(store, limiterSvc, metrics)
 	responsesService := responseSvc.New(&responseSvc.Dependencies{
@@ -102,6 +114,12 @@ func main() {
 		Router:      routerSvc,
 		Alert:       alertSvc,
 	})
+	catalogSvc := catalog.New(&catalog.Dependencies{
+		Store:     store,
+		Auth:      httpMiddleware.AuthService(),
+		Limiter:   limiterSvc,
+		Responses: responsesService,
+	})
 
 	h := handler.NewHandler(&handler.Dependencies{
 		Config:      cfg,
@@ -109,9 +127,10 @@ func main() {
 		Metrics:     metrics,
 		ProviderMgr: providerMgr,
 		ResponseSvc: responsesService,
+		CatalogSvc:  catalogSvc,
 	})
 
-	adminHandler := handler.NewAdminHandler(store, providerMgr)
+	adminHandler := handler.NewAdminHandler(store, providerMgr, catalogSvc)
 	srv := handler.NewServer(cfg.Server, h, adminHandler, httpMiddleware)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -127,6 +146,7 @@ func main() {
 			stop()
 		}
 	}()
+	healthChecker.Start(ctx)
 
 	<-ctx.Done()
 	shutdownTimeout := time.Duration(cfg.Server.ShutdownTimeout) * time.Second
@@ -185,4 +205,13 @@ func enabledProviderNames(providers []config.ProviderConfig) []string {
 		}
 	}
 	return names
+}
+
+func seedProviderRegistry(ctx context.Context, store repository.ProviderRegistryStore, providers []config.ProviderConfig) error {
+	for _, item := range providers {
+		if err := store.UpsertProviderRegistry(ctx, provider.DefaultRegistryRecordFromConfig(item)); err != nil {
+			return err
+		}
+	}
+	return nil
 }

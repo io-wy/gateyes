@@ -1,0 +1,22 @@
+CREATE TABLE IF NOT EXISTS provider_registry (
+	name TEXT PRIMARY KEY,
+	type TEXT NOT NULL,
+	vendor TEXT NOT NULL DEFAULT '',
+	base_url TEXT NOT NULL DEFAULT '',
+	endpoint TEXT NOT NULL DEFAULT '',
+	model TEXT NOT NULL DEFAULT '',
+	enabled INTEGER NOT NULL DEFAULT 1,
+	drain INTEGER NOT NULL DEFAULT 0,
+	health_status TEXT NOT NULL DEFAULT 'healthy',
+	routing_weight INTEGER NOT NULL DEFAULT 1,
+	supports_chat INTEGER NOT NULL DEFAULT 1,
+	supports_responses INTEGER NOT NULL DEFAULT 0,
+	supports_messages INTEGER NOT NULL DEFAULT 0,
+	supports_stream INTEGER NOT NULL DEFAULT 1,
+	supports_tools INTEGER NOT NULL DEFAULT 1,
+	supports_images INTEGER NOT NULL DEFAULT 0,
+	supports_structured_output INTEGER NOT NULL DEFAULT 0,
+	supports_long_context INTEGER NOT NULL DEFAULT 0,
+	created_at TIMESTAMP NOT NULL,
+	updated_at TIMESTAMP NOT NULL
+);

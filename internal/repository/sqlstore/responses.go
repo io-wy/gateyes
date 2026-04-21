@@ -26,12 +26,13 @@ func (s *Store) CreateResponse(ctx context.Context, record repository.ResponseRe
 
 	if _, err := s.db.Conn.ExecContext(ctx, s.db.Rebind(`
 INSERT INTO responses (
-	id, tenant_id, user_id, api_key_id, provider_name, model, status,
-	request_body, response_body, created_at, updated_at
+	id, tenant_id, project_id, user_id, api_key_id, provider_name, model, status,
+	request_body, response_body, route_trace_body, created_at, updated_at
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		record.ID,
 		record.TenantID,
+		record.ProjectID,
 		record.UserID,
 		record.APIKeyID,
 		record.ProviderName,
@@ -39,6 +40,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		record.Status,
 		string(record.RequestBody),
 		string(record.ResponseBody),
+		string(record.RouteTraceBody),
 		record.CreatedAt,
 		record.UpdatedAt,
 	); err != nil {
@@ -52,16 +54,22 @@ func (s *Store) UpdateResponse(ctx context.Context, record repository.ResponseRe
 	if record.UpdatedAt.IsZero() {
 		record.UpdatedAt = time.Now().UTC()
 	}
+	var routeTraceValue any
+	if record.RouteTraceBody != nil {
+		routeTraceValue = string(record.RouteTraceBody)
+	}
 
 	if _, err := s.db.Conn.ExecContext(ctx, s.db.Rebind(`
 UPDATE responses
-SET provider_name = ?, model = ?, status = ?, response_body = ?, updated_at = ?
+SET provider_name = ?, model = ?, status = ?, response_body = ?, route_trace_body = CASE WHEN ? IS NULL THEN route_trace_body ELSE ? END, updated_at = ?
 WHERE id = ?
   AND tenant_id = ?`),
 		record.ProviderName,
 		record.Model,
 		record.Status,
 		string(record.ResponseBody),
+		routeTraceValue,
+		routeTraceValue,
 		record.UpdatedAt,
 		record.ID,
 		record.TenantID,
@@ -74,7 +82,7 @@ WHERE id = ?
 
 func (s *Store) GetResponse(ctx context.Context, tenantID string, id string) (*repository.ResponseRecord, error) {
 	query := `
-SELECT id, tenant_id, user_id, api_key_id, provider_name, model, status, request_body, response_body, created_at, updated_at
+SELECT id, tenant_id, project_id, user_id, api_key_id, provider_name, model, status, request_body, response_body, route_trace_body, created_at, updated_at
 FROM responses
 WHERE id = ?`
 	args := []any{id}
@@ -90,9 +98,11 @@ LIMIT 1`
 	var record repository.ResponseRecord
 	var requestBody string
 	var responseBody string
+	var routeTraceBody string
 	if err := row.Scan(
 		&record.ID,
 		&record.TenantID,
+		&record.ProjectID,
 		&record.UserID,
 		&record.APIKeyID,
 		&record.ProviderName,
@@ -100,6 +110,7 @@ LIMIT 1`
 		&record.Status,
 		&requestBody,
 		&responseBody,
+		&routeTraceBody,
 		&record.CreatedAt,
 		&record.UpdatedAt,
 	); err != nil {
@@ -110,5 +121,6 @@ LIMIT 1`
 	}
 	record.RequestBody = []byte(requestBody)
 	record.ResponseBody = []byte(responseBody)
+	record.RouteTraceBody = []byte(routeTraceBody)
 	return &record, nil
 }

@@ -5,9 +5,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gateyes/gateway/internal/config"
+	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/auth"
 	"github.com/gateyes/gateway/internal/service/provider"
 )
@@ -65,6 +67,7 @@ func TestWrapErrorAndGinError(t *testing.T) {
 	}{
 		{err: auth.ErrModelNotAllowed, wantStatus: 403, wantType: "invalid_request_error"},
 		{err: auth.ErrQuotaExceeded, wantStatus: 429, wantType: "rate_limit_error"},
+		{err: auth.ErrBudgetExceeded, wantStatus: 429, wantType: "rate_limit_error"},
 		{err: ErrOutputBudgetTooLow, wantStatus: 400, wantType: "invalid_request_error"},
 		{err: ErrNoProvider, wantStatus: 503, wantType: "internal_error"},
 		{err: errors.New("boom"), wantStatus: 500, wantType: "internal_error"},
@@ -168,6 +171,221 @@ func TestGetCandidateProvidersAppliesRuleEngine(t *testing.T) {
 	candidates := env.service.getCandidateProviders(context.Background(), env.identity, "session-1", req)
 	if len(candidates) != 1 || candidates[0].Name() != "coder" {
 		t.Fatalf("getCandidateProviders() = %v, want [coder]", providerNames(candidates))
+	}
+}
+
+func TestGetCandidateProvidersFiltersByProviderRegistryMetadata(t *testing.T) {
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		upstreamURL: "https://openai.example",
+		providers:   []string{"general", "image-strong"},
+		providerConfigs: []config.ProviderConfig{
+			{
+				Name:      "general",
+				Type:      "openai",
+				BaseURL:   "https://openai.example",
+				Endpoint:  "chat",
+				APIKey:    "upstream-key",
+				Model:     "general-model",
+				Timeout:   5,
+				Enabled:   true,
+				MaxTokens: 256,
+			},
+			{
+				Name:      "image-strong",
+				Type:      "openai",
+				BaseURL:   "https://openai.example",
+				Endpoint:  "chat",
+				APIKey:    "upstream-key",
+				Model:     "image-model",
+				Timeout:   5,
+				Enabled:   true,
+				MaxTokens: 256,
+			},
+		},
+	})
+
+	env.providerMgr.ApplyRegistry([]repository.ProviderRegistryRecord{
+		{
+			Name:                     "general",
+			Enabled:                  true,
+			Drain:                    false,
+			HealthStatus:             provider.ProviderHealthHealthy,
+			SupportsStream:           true,
+			SupportsTools:            true,
+			SupportsImages:           false,
+			SupportsStructuredOutput: true,
+		},
+		{
+			Name:                     "image-strong",
+			Enabled:                  true,
+			Drain:                    false,
+			HealthStatus:             provider.ProviderHealthHealthy,
+			SupportsStream:           true,
+			SupportsTools:            true,
+			SupportsImages:           true,
+			SupportsStructuredOutput: true,
+		},
+	})
+
+	req := &provider.ResponseRequest{
+		Model: "public-model",
+		Messages: []provider.Message{{
+			Role: "user",
+			Content: []provider.ContentBlock{
+				{Type: "text", Text: "look at this"},
+				{Type: "image", Image: &provider.ContentImage{URL: "https://example.com/a.png"}},
+			},
+		}},
+	}
+
+	candidates := env.service.getCandidateProviders(context.Background(), env.identity, "session-1", req)
+	if len(candidates) != 1 || candidates[0].Name() != "image-strong" {
+		t.Fatalf("getCandidateProviders(registry filter) = %v, want [image-strong]", providerNames(candidates))
+	}
+}
+
+func TestGetCandidateProvidersReturnsNilWhenExactModelProviderIsDrained(t *testing.T) {
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		upstreamURL: "https://openai.example",
+		providers:   []string{"longcat-primary", "backup-openai"},
+		providerConfigs: []config.ProviderConfig{
+			{
+				Name:      "longcat-primary",
+				Type:      "openai",
+				BaseURL:   "https://openai.example",
+				Endpoint:  "chat",
+				APIKey:    "upstream-key",
+				Model:     "LongCat-Flash-Thinking",
+				Timeout:   5,
+				Enabled:   true,
+				MaxTokens: 256,
+			},
+			{
+				Name:      "backup-openai",
+				Type:      "openai",
+				BaseURL:   "https://openai.example",
+				Endpoint:  "chat",
+				APIKey:    "upstream-key",
+				Model:     "gpt-backup",
+				Timeout:   5,
+				Enabled:   true,
+				MaxTokens: 256,
+			},
+		},
+	})
+
+	env.providerMgr.ApplyRegistry([]repository.ProviderRegistryRecord{
+		{
+			Name:                     "longcat-primary",
+			Enabled:                  true,
+			Drain:                    true,
+			HealthStatus:             provider.ProviderHealthUnhealthy,
+			SupportsStream:           true,
+			SupportsTools:            true,
+			SupportsImages:           true,
+			SupportsStructuredOutput: true,
+		},
+		{
+			Name:                     "backup-openai",
+			Enabled:                  true,
+			Drain:                    false,
+			HealthStatus:             provider.ProviderHealthHealthy,
+			SupportsStream:           true,
+			SupportsTools:            true,
+			SupportsImages:           true,
+			SupportsStructuredOutput: true,
+		},
+	})
+
+	req := &provider.ResponseRequest{
+		Model:    "LongCat-Flash-Thinking",
+		Messages: []provider.Message{{Role: "user", Content: provider.TextBlocks("hello")}},
+	}
+
+	candidates := env.service.getCandidateProviders(context.Background(), env.identity, "session-1", req)
+	if candidates != nil {
+		t.Fatalf("getCandidateProviders(exact model drained) = %v, want nil", providerNames(candidates))
+	}
+}
+
+func TestPlanCandidatesCapturesKeyProviderScopeTrace(t *testing.T) {
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		upstreamURL: "https://openai.example",
+		providers:   []string{"openai-a", "openai-b"},
+		providerConfigs: []config.ProviderConfig{
+			{
+				Name:      "openai-a",
+				Type:      "openai",
+				BaseURL:   "https://openai.example",
+				Endpoint:  "chat",
+				APIKey:    "upstream-key",
+				Model:     "gpt-a",
+				Timeout:   5,
+				Enabled:   true,
+				MaxTokens: 256,
+			},
+			{
+				Name:      "openai-b",
+				Type:      "openai",
+				BaseURL:   "https://openai.example",
+				Endpoint:  "chat",
+				APIKey:    "upstream-key",
+				Model:     "gpt-b",
+				Timeout:   5,
+				Enabled:   true,
+				MaxTokens: 256,
+			},
+		},
+	})
+	env.identity.APIKeyProviders = []string{"openai-b"}
+
+	candidates, trace := env.service.planCandidates(context.Background(), env.identity, "session-1", &provider.ResponseRequest{
+		Model: "public-model",
+		Input: "hello",
+	})
+	if len(candidates) != 1 || candidates[0].Name() != "openai-b" {
+		t.Fatalf("planCandidates() = %v, want [openai-b]", providerNames(candidates))
+	}
+	if trace == nil || len(trace.FilteredOut) != 1 || trace.FilteredOut[0].Provider != "openai-a" || trace.FilteredOut[0].Reason != "key_provider_scope" {
+		t.Fatalf("planCandidates() trace = %+v, want provider scope filter", trace)
+	}
+}
+
+func TestCreatePersistsRouteTraceAndResponseObject(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-upstream","object":"chat.completion","created":1700000000,"model":"provider-model","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`))
+	}))
+	defer upstream.Close()
+
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		upstreamURL: upstream.URL,
+		endpoint:    "chat",
+		providers:   []string{"test-openai"},
+	})
+
+	result, err := env.service.Create(context.Background(), env.identity, &provider.ResponseRequest{
+		Model: "public-model",
+		Input: "hello",
+	}, "trace-session")
+	if err != nil {
+		t.Fatalf("Service.Create() error: %v", err)
+	}
+	if result.Response.Object != "response" {
+		t.Fatalf("Service.Create().Response.Object = %q, want %q", result.Response.Object, "response")
+	}
+
+	record, err := env.store.GetResponse(context.Background(), env.identity.TenantID, result.Response.ID)
+	if err != nil {
+		t.Fatalf("GetResponse() error: %v", err)
+	}
+	if len(record.RouteTraceBody) == 0 {
+		t.Fatal("GetResponse().RouteTraceBody = empty, want persisted route trace")
+	}
+	if !strings.Contains(string(record.RouteTraceBody), `"final_provider":"test-openai"`) {
+		t.Fatalf("GetResponse().RouteTraceBody = %s, want final provider trace", string(record.RouteTraceBody))
+	}
+	if !strings.Contains(string(record.ResponseBody), `"object":"response"`) {
+		t.Fatalf("GetResponse().ResponseBody = %s, want normalized response object", string(record.ResponseBody))
 	}
 }
 
