@@ -1,17 +1,16 @@
 package alert
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/gateyes/gateway/internal/config"
 	"github.com/gateyes/gateway/internal/repository"
 )
-
-// mockStore 用于测试的 mock
-type mockStore struct {
-	repository.Store
-}
 
 func TestAlertService_ComputeSignature(t *testing.T) {
 	cfg := config.AlertConfig{
@@ -57,7 +56,7 @@ func TestAlertService_Disabled(t *testing.T) {
 	}
 
 	// disabled 时不应该 panic
-	svc.CheckQuotaUsage(nil, identity)
+	svc.CheckQuotaUsage(context.Background(), identity)
 }
 
 func TestAlertService_NoWebhookURL(t *testing.T) {
@@ -78,7 +77,7 @@ func TestAlertService_NoWebhookURL(t *testing.T) {
 	}
 
 	// 没有 webhook URL 时不应该 panic
-	svc.CheckQuotaUsage(nil, identity)
+	svc.CheckQuotaUsage(context.Background(), identity)
 }
 
 func TestAlertService_NoQuotaLimit(t *testing.T) {
@@ -99,7 +98,7 @@ func TestAlertService_NoQuotaLimit(t *testing.T) {
 	}
 
 	// 无配额限制时不应该 panic
-	svc.CheckQuotaUsage(nil, identity)
+	svc.CheckQuotaUsage(context.Background(), identity)
 }
 
 func TestAlertService_UnderThreshold(t *testing.T) {
@@ -120,7 +119,7 @@ func TestAlertService_UnderThreshold(t *testing.T) {
 	}
 
 	// 低于阈值时不应该 panic（不会触发 webhook）
-	svc.CheckQuotaUsage(nil, identity)
+	svc.CheckQuotaUsage(context.Background(), identity)
 }
 
 func TestAlertService_AtThreshold(t *testing.T) {
@@ -143,7 +142,7 @@ func TestAlertService_AtThreshold(t *testing.T) {
 	}
 
 	// 验证通知记录已添加（异步发送后）
-	svc.CheckQuotaUsage(nil, identity)
+	svc.CheckQuotaUsage(context.Background(), identity)
 
 	// 等待一下让 goroutine 执行
 	time.Sleep(100 * time.Millisecond)
@@ -160,5 +159,53 @@ func TestAlertService_AtThreshold(t *testing.T) {
 
 	// 这里测试重复通知被阻止（24小时内）
 	// 由于 webhook 是异步发送的，我们主要验证逻辑不会 panic
-	svc.CheckQuotaUsage(nil, identity2)
+	svc.CheckQuotaUsage(context.Background(), identity2)
+}
+
+func TestAlertService_AdditionalWebhookTypes(t *testing.T) {
+	requests := make(chan Event, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		var event Event
+		if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+			t.Fatalf("decode webhook body: %v", err)
+		}
+		requests <- event
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	svc := NewAlertService(config.AlertConfig{
+		Enabled:            true,
+		WebhookSecret:      "secret",
+		ProviderStateURL:   server.URL,
+		BudgetExhaustedURL: server.URL,
+		RequestEventURL:    server.URL,
+		ErrorEventURL:      server.URL,
+	}, nil)
+
+	svc.NotifyProviderStateChanged(context.Background(), ProviderStateChange{
+		ProviderName: "openai-a",
+		Previous:     "healthy",
+		Current:      "unhealthy",
+		Error:        "boom",
+	})
+	svc.NotifyBudgetExhausted(context.Background(), BudgetExhausted{
+		TenantID:    "tenant-1",
+		BudgetScope: "project",
+		CostUSD:     1.2,
+	})
+	svc.NotifyRequestEvent(context.Background(), map[string]any{"status": "success"})
+	svc.NotifyErrorEvent(context.Background(), map[string]any{"status": "error"})
+
+	received := make(map[string]bool)
+	deadline := time.After(2 * time.Second)
+	for len(received) < 4 {
+		select {
+		case event := <-requests:
+			received[event.Type] = true
+		case <-deadline:
+			t.Fatalf("received webhook types = %#v, want provider_state_changed/budget_exhausted/request_event/error_event", received)
+		}
+	}
 }

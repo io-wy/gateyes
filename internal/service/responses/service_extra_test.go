@@ -244,6 +244,70 @@ func TestGetCandidateProvidersFiltersByProviderRegistryMetadata(t *testing.T) {
 	}
 }
 
+func TestGetCandidateProvidersFiltersBySurfaceCapability(t *testing.T) {
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		providers: []string{"grpc-vllm"},
+		providerConfigs: []config.ProviderConfig{{
+			Name:       "grpc-vllm",
+			Type:       "grpc",
+			Vendor:     "vllm",
+			GRPCTarget: "127.0.0.1:50051",
+			Model:      "Qwen/Qwen3-8B",
+			Timeout:    5,
+			Enabled:    true,
+			MaxTokens:  131072,
+		}},
+	})
+
+	env.providerMgr.ApplyRegistry([]repository.ProviderRegistryRecord{{
+		Name:                     "grpc-vllm",
+		Enabled:                  true,
+		Drain:                    false,
+		HealthStatus:             provider.ProviderHealthHealthy,
+		RoutingWeight:            1,
+		SupportsResponses:        true,
+		SupportsChat:             false,
+		SupportsMessages:         false,
+		SupportsStream:           true,
+		SupportsTools:            false,
+		SupportsImages:           false,
+		SupportsStructuredOutput: true,
+	}})
+
+	chatReq := &provider.ResponseRequest{
+		Surface:  "chat",
+		Model:    "Qwen/Qwen3-8B",
+		Messages: []provider.Message{{Role: "user", Content: provider.TextBlocks("hello")}},
+	}
+	if candidates := env.service.getCandidateProviders(context.Background(), env.identity, "session-1", chatReq); len(candidates) != 0 {
+		t.Fatalf("getCandidateProviders(chat surface) = %v, want grpc-vllm filtered out", providerNames(candidates))
+	}
+
+	messagesReq := &provider.ResponseRequest{
+		Surface:  "messages",
+		Model:    "Qwen/Qwen3-8B",
+		Messages: []provider.Message{{Role: "user", Content: provider.TextBlocks("hello")}},
+	}
+	if candidates := env.service.getCandidateProviders(context.Background(), env.identity, "session-1", messagesReq); len(candidates) != 0 {
+		t.Fatalf("getCandidateProviders(messages surface) = %v, want grpc-vllm filtered out", providerNames(candidates))
+	}
+
+	responsesReq := &provider.ResponseRequest{
+		Surface:  "responses",
+		Model:    "Qwen/Qwen3-8B",
+		Messages: []provider.Message{{Role: "user", Content: provider.TextBlocks("hello")}},
+	}
+	candidates := env.service.getCandidateProviders(context.Background(), env.identity, "session-1", responsesReq)
+	if len(candidates) != 1 || candidates[0].Name() != "grpc-vllm" {
+		t.Fatalf("getCandidateProviders(responses surface) = %v, want [grpc-vllm]", providerNames(candidates))
+	}
+
+	_, trace := env.service.planCandidates(context.Background(), env.identity, "session-1", chatReq)
+	if trace == nil || len(trace.FilteredOut) != 1 || trace.FilteredOut[0].Reason != "capability_surface" || trace.FilteredOut[0].Detail != "chat" {
+		t.Fatalf("planCandidates(chat surface) trace = %+v, want capability_surface/chat", trace)
+	}
+}
+
 func TestGetCandidateProvidersReturnsNilWhenExactModelProviderIsDrained(t *testing.T) {
 	env := newResponsesTestEnv(t, responsesTestEnvConfig{
 		upstreamURL: "https://openai.example",

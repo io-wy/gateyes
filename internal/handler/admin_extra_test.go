@@ -539,6 +539,15 @@ func TestAdminAPIKeysUsageAndRouteTraceEndpoints(t *testing.T) {
 	if revokedKey["status"] != repository.StatusRevoked {
 		t.Fatalf("POST /admin/keys/:id/revoke payload = %#v, want revoked status", revokedKey)
 	}
+
+	rec = performJSONRequest(t, env, http.MethodGet, "/admin/audit", token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /admin/audit status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	auditPayload := decodeBodyMap(t, rec)["data"].([]any)
+	if len(auditPayload) == 0 {
+		t.Fatal("GET /admin/audit data = empty, want audit entries")
+	}
 }
 
 func TestAdminServiceLifecycleAndSubscriptionReviewEndpoints(t *testing.T) {
