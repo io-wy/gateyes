@@ -154,6 +154,19 @@ func TestAdminUserLifecycleAndDashboardEndpoints(t *testing.T) {
 	if projectPayload["slug"] != "proj-a" || projectPayload["budget_usd"] != float64(50) {
 		t.Fatalf("POST /admin/projects payload = %#v, want project fields", projectPayload)
 	}
+	rec = performJSONRequest(t, env, http.MethodPost, "/admin/projects", token, `{"slug":"proj-policy","name":"Project Policy","policy":{"enabled":true,"request":{"redact_terms":["tenant-secret"]},"response":{"block_terms":["project-out"]}}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /admin/projects(policy) status = %d, want %d: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	projectPolicyPayload := decodeBodyMap(t, rec)["data"].(map[string]any)
+	projectPolicy := projectPolicyPayload["policy"].(map[string]any)
+	if projectPolicy["enabled"] != true {
+		t.Fatalf("POST /admin/projects(policy) payload = %#v, want enabled policy", projectPolicyPayload)
+	}
+	projectRequestPolicy := projectPolicy["request"].(map[string]any)
+	if len(projectRequestPolicy["redact_terms"].([]any)) != 1 {
+		t.Fatalf("POST /admin/projects(policy) request = %#v, want redact_terms", projectRequestPolicy)
+	}
 	rec = performJSONRequest(t, env, http.MethodGet, "/admin/projects", token, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /admin/projects status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
@@ -162,9 +175,14 @@ func TestAdminUserLifecycleAndDashboardEndpoints(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /admin/projects/:id status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	rec = performJSONRequest(t, env, http.MethodPut, "/admin/projects/"+projectID, token, `{"budget_usd":80}`)
+	rec = performJSONRequest(t, env, http.MethodPut, "/admin/projects/"+projectID, token, `{"budget_usd":80,"policy":{"enabled":true,"response":{"redact_terms":["project-secret"]}}}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT /admin/projects/:id status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	projectPayload = decodeBodyMap(t, rec)["data"].(map[string]any)
+	projectPolicy = projectPayload["policy"].(map[string]any)
+	if projectPayload["budget_usd"] != float64(80) || projectPolicy["enabled"] != true {
+		t.Fatalf("PUT /admin/projects/:id payload = %#v, want updated budget and policy", projectPayload)
 	}
 
 	rec = performJSONRequest(t, env, http.MethodPost, "/admin/users", token, `{"name":"bob","email":"bob@example.com","project_id":"`+projectID+`","key_budget_usd":12.5,"models":["gpt-b"]}`)
@@ -278,9 +296,14 @@ func TestSuperAdminTenantRoutesAndPublicEndpoints(t *testing.T) {
 		t.Fatalf("GET /v1/models status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 
-	rec = performJSONRequest(t, env, http.MethodPost, "/admin/tenants", token, `{"id":"tenant-z","slug":"tenant-z","name":"Tenant Z"}`)
+	rec = performJSONRequest(t, env, http.MethodPost, "/admin/tenants", token, `{"id":"tenant-z","slug":"tenant-z","name":"Tenant Z","policy":{"enabled":true,"request":{"block_terms":["tenant-secret"]}}}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("POST /admin/tenants status = %d, want %d: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	tenantPayload := decodeBodyMap(t, rec)["data"].(map[string]any)
+	tenantPolicy := tenantPayload["policy"].(map[string]any)
+	if tenantPayload["slug"] != "tenant-z" || tenantPolicy["enabled"] != true {
+		t.Fatalf("POST /admin/tenants payload = %#v, want tenant policy", tenantPayload)
 	}
 	rec = performJSONRequest(t, env, http.MethodGet, "/admin/tenants", token, "")
 	if rec.Code != http.StatusOK {
@@ -290,9 +313,14 @@ func TestSuperAdminTenantRoutesAndPublicEndpoints(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /admin/tenants/:id status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	rec = performJSONRequest(t, env, http.MethodPut, "/admin/tenants/tenant-z", token, `{"name":"Tenant Z Updated","status":"inactive"}`)
+	rec = performJSONRequest(t, env, http.MethodPut, "/admin/tenants/tenant-z", token, `{"name":"Tenant Z Updated","status":"inactive","policy":{"enabled":true,"response":{"redact_terms":["tenant-out"]}}}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT /admin/tenants/:id status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	tenantPayload = decodeBodyMap(t, rec)["data"].(map[string]any)
+	tenantPolicy = tenantPayload["policy"].(map[string]any)
+	if tenantPayload["name"] != "Tenant Z Updated" || tenantPolicy["enabled"] != true {
+		t.Fatalf("PUT /admin/tenants/:id payload = %#v, want updated tenant policy", tenantPayload)
 	}
 	rec = performJSONRequest(t, env, http.MethodPost, "/admin/tenants/tenant-z/providers", token, `{"providers":["test-openai"]}`)
 	if rec.Code != http.StatusOK {

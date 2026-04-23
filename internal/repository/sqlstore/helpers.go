@@ -124,13 +124,14 @@ LIMIT 1`
 
 func (s *Store) loadTenant(ctx context.Context, idOrSlug string) (*repository.TenantRecord, error) {
 	row := s.db.Conn.QueryRowContext(ctx, s.db.Rebind(`
-SELECT id, slug, name, status, budget_usd, spent_usd, created_at, updated_at
+SELECT id, slug, name, status, budget_usd, spent_usd, policy_body, created_at, updated_at
 FROM tenants
 WHERE id = ?
    OR slug = ?
 LIMIT 1`), idOrSlug, idOrSlug)
 
 	var tenant repository.TenantRecord
+	var policyBody string
 	if err := row.Scan(
 		&tenant.ID,
 		&tenant.Slug,
@@ -138,6 +139,7 @@ LIMIT 1`), idOrSlug, idOrSlug)
 		&tenant.Status,
 		&tenant.BudgetUSD,
 		&tenant.SpentUSD,
+		&policyBody,
 		&tenant.CreatedAt,
 		&tenant.UpdatedAt,
 	); err != nil {
@@ -146,6 +148,11 @@ LIMIT 1`), idOrSlug, idOrSlug)
 		}
 		return nil, fmt.Errorf("load tenant: %w", err)
 	}
+	policy, err := decodeServicePolicy(policyBody)
+	if err != nil {
+		return nil, fmt.Errorf("decode tenant policy: %w", err)
+	}
+	tenant.Policy = policy
 
 	return &tenant, nil
 }
@@ -170,4 +177,26 @@ func decodeStringSlice(raw string) []string {
 		return nil
 	}
 	return values
+}
+
+func encodeServicePolicy(policy *repository.ServicePolicyConfig) (string, error) {
+	if policy == nil {
+		return "{}", nil
+	}
+	raw, err := json.Marshal(policy)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+func decodeServicePolicy(raw string) (*repository.ServicePolicyConfig, error) {
+	if raw == "" || raw == "{}" {
+		return nil, nil
+	}
+	var policy repository.ServicePolicyConfig
+	if err := json.Unmarshal([]byte(raw), &policy); err != nil {
+		return nil, err
+	}
+	return &policy, nil
 }

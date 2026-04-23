@@ -2,6 +2,7 @@ package sqlstore
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -304,6 +305,139 @@ INSERT INTO usage_records (
 	}
 	if userTenantID != tenantB.ID {
 		t.Fatalf("legacy user tenant_id = %q, want %q", userTenantID, tenantB.ID)
+	}
+}
+
+func TestTenantAndProjectPolicyRoundTrip(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	tenantPolicy := &repository.ServicePolicyConfig{
+		Enabled: true,
+		Request: &repository.GuardrailRuleSet{
+			BlockTerms:    []string{"tenant-secret"},
+			AllowModels:   []string{"public-model", "backup-model"},
+			MaxInputChars: 32,
+		},
+		Response: &repository.GuardrailRuleSet{
+			RedactTerms:    []string{"tenant-out"},
+			MaxOutputChars: 48,
+		},
+	}
+	tenant, err := store.EnsureTenant(ctx, repository.EnsureTenantParams{
+		ID:        "tenant-policy",
+		Slug:      "tenant-policy",
+		Name:      "Tenant Policy",
+		Status:    repository.StatusActive,
+		BudgetUSD: 15,
+		Policy:    tenantPolicy,
+	})
+	if err != nil {
+		t.Fatalf("EnsureTenant(policy) error: %v", err)
+	}
+	if !reflect.DeepEqual(tenant.Policy, tenantPolicy) {
+		t.Fatalf("EnsureTenant(policy) = %+v, want %+v", tenant.Policy, tenantPolicy)
+	}
+
+	listedTenants, err := store.ListTenants(ctx)
+	if err != nil {
+		t.Fatalf("ListTenants() error: %v", err)
+	}
+	foundTenant := false
+	for _, item := range listedTenants {
+		if item.ID == tenant.ID {
+			foundTenant = true
+			if !reflect.DeepEqual(item.Policy, tenantPolicy) {
+				t.Fatalf("ListTenants(policy) = %+v, want %+v", item.Policy, tenantPolicy)
+			}
+		}
+	}
+	if !foundTenant {
+		t.Fatalf("ListTenants() missing tenant %q", tenant.ID)
+	}
+
+	updatedTenantPolicy := &repository.ServicePolicyConfig{
+		Enabled: true,
+		Request: &repository.GuardrailRuleSet{
+			BlockTerms:    []string{"tenant-updated"},
+			MaxInputChars: 16,
+		},
+	}
+	updatedTenant, err := store.UpdateTenant(ctx, tenant.ID, repository.UpdateTenantParams{
+		Policy: updatedTenantPolicy,
+	})
+	if err != nil {
+		t.Fatalf("UpdateTenant(policy) error: %v", err)
+	}
+	if !reflect.DeepEqual(updatedTenant.Policy, updatedTenantPolicy) {
+		t.Fatalf("UpdateTenant(policy) = %+v, want %+v", updatedTenant.Policy, updatedTenantPolicy)
+	}
+
+	projectPolicy := &repository.ServicePolicyConfig{
+		Enabled: true,
+		Request: &repository.GuardrailRuleSet{
+			RedactTerms: []string{"project-in"},
+			AllowModels: []string{"public-model"},
+		},
+		Response: &repository.GuardrailRuleSet{
+			BlockTerms: []string{"project-out"},
+		},
+	}
+	project, err := store.CreateProject(ctx, repository.CreateProjectParams{
+		TenantID:  tenant.ID,
+		Slug:      "proj-policy",
+		Name:      "Project Policy",
+		Status:    repository.StatusActive,
+		BudgetUSD: 9,
+		Policy:    projectPolicy,
+	})
+	if err != nil {
+		t.Fatalf("CreateProject(policy) error: %v", err)
+	}
+	if !reflect.DeepEqual(project.Policy, projectPolicy) {
+		t.Fatalf("CreateProject(policy) = %+v, want %+v", project.Policy, projectPolicy)
+	}
+
+	listedProjects, err := store.ListProjects(ctx, tenant.ID)
+	if err != nil {
+		t.Fatalf("ListProjects(policy) error: %v", err)
+	}
+	foundProject := false
+	for _, item := range listedProjects {
+		if item.ID == project.ID {
+			foundProject = true
+			if !reflect.DeepEqual(item.Policy, projectPolicy) {
+				t.Fatalf("ListProjects(policy) = %+v, want %+v", item.Policy, projectPolicy)
+			}
+		}
+	}
+	if !foundProject {
+		t.Fatalf("ListProjects() missing project %q", project.ID)
+	}
+
+	gotProject, err := store.GetProject(ctx, tenant.ID, project.Slug)
+	if err != nil {
+		t.Fatalf("GetProject(policy) error: %v", err)
+	}
+	if !reflect.DeepEqual(gotProject.Policy, projectPolicy) {
+		t.Fatalf("GetProject(policy) = %+v, want %+v", gotProject.Policy, projectPolicy)
+	}
+
+	updatedProjectPolicy := &repository.ServicePolicyConfig{
+		Enabled: true,
+		Response: &repository.GuardrailRuleSet{
+			RedactTerms:    []string{"project-updated"},
+			MaxOutputChars: 20,
+		},
+	}
+	updatedProject, err := store.UpdateProject(ctx, tenant.ID, project.ID, repository.UpdateProjectParams{
+		Policy: updatedProjectPolicy,
+	})
+	if err != nil {
+		t.Fatalf("UpdateProject(policy) error: %v", err)
+	}
+	if !reflect.DeepEqual(updatedProject.Policy, updatedProjectPolicy) {
+		t.Fatalf("UpdateProject(policy) = %+v, want %+v", updatedProject.Policy, updatedProjectPolicy)
 	}
 }
 

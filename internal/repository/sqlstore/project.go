@@ -17,6 +17,10 @@ func (s *Store) CreateProject(ctx context.Context, params repository.CreateProje
 	if err != nil {
 		return nil, err
 	}
+	policyBody, err := encodeServicePolicy(params.Policy)
+	if err != nil {
+		return nil, fmt.Errorf("encode project policy: %w", err)
+	}
 
 	now := time.Now().UTC()
 	record := repository.ProjectRecord{
@@ -30,12 +34,13 @@ func (s *Store) CreateProject(ctx context.Context, params repository.CreateProje
 		SpentUSD:   0,
 		CreatedAt:  now,
 		UpdatedAt:  now,
+		Policy:     params.Policy,
 	}
 
 	if _, err := s.db.Conn.ExecContext(ctx, s.db.Rebind(`
-INSERT INTO projects (id, tenant_id, slug, name, status, budget_usd, spent_usd, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-		record.ID, record.TenantID, record.Slug, record.Name, record.Status, record.BudgetUSD, record.SpentUSD, record.CreatedAt, record.UpdatedAt,
+INSERT INTO projects (id, tenant_id, slug, name, status, budget_usd, spent_usd, policy_body, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		record.ID, record.TenantID, record.Slug, record.Name, record.Status, record.BudgetUSD, record.SpentUSD, policyBody, record.CreatedAt, record.UpdatedAt,
 	); err != nil {
 		return nil, fmt.Errorf("create project: %w", err)
 	}
@@ -44,7 +49,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 
 func (s *Store) ListProjects(ctx context.Context, tenantID string) ([]repository.ProjectRecord, error) {
 	query := `
-SELECT p.id, p.tenant_id, t.slug, p.slug, p.name, p.status, p.budget_usd, p.spent_usd, p.created_at, p.updated_at
+SELECT p.id, p.tenant_id, t.slug, p.slug, p.name, p.status, p.budget_usd, p.spent_usd, p.policy_body, p.created_at, p.updated_at
 FROM projects p
 JOIN tenants t ON t.id = p.tenant_id`
 	args := make([]any, 0, 1)
@@ -100,6 +105,14 @@ func (s *Store) UpdateProject(ctx context.Context, tenantID string, idOrSlug str
 		sets = append(sets, "budget_usd = ?")
 		args = append(args, *params.BudgetUSD)
 	}
+	if params.Policy != nil {
+		policyBody, err := encodeServicePolicy(params.Policy)
+		if err != nil {
+			return nil, fmt.Errorf("encode project policy: %w", err)
+		}
+		sets = append(sets, "policy_body = ?")
+		args = append(args, policyBody)
+	}
 	sets = append(sets, "updated_at = ?")
 	args = append(args, time.Now().UTC(), project.ID)
 
@@ -114,7 +127,7 @@ WHERE id = ?`, strings.Join(sets, ", "))), args...); err != nil {
 
 func (s *Store) loadProject(ctx context.Context, tenantID string, idOrSlug string) (*repository.ProjectRecord, error) {
 	query := `
-SELECT p.id, p.tenant_id, t.slug, p.slug, p.name, p.status, p.budget_usd, p.spent_usd, p.created_at, p.updated_at
+SELECT p.id, p.tenant_id, t.slug, p.slug, p.name, p.status, p.budget_usd, p.spent_usd, p.policy_body, p.created_at, p.updated_at
 FROM projects p
 JOIN tenants t ON t.id = p.tenant_id
 WHERE (p.id = ? OR p.slug = ?)`
@@ -140,6 +153,7 @@ LIMIT 1`
 
 func scanProjectRecord(scanner rowScanner) (*repository.ProjectRecord, error) {
 	record := &repository.ProjectRecord{}
+	var policyBody string
 	if err := scanner.Scan(
 		&record.ID,
 		&record.TenantID,
@@ -149,9 +163,15 @@ func scanProjectRecord(scanner rowScanner) (*repository.ProjectRecord, error) {
 		&record.Status,
 		&record.BudgetUSD,
 		&record.SpentUSD,
+		&policyBody,
 		&record.CreatedAt,
 		&record.UpdatedAt,
 	); err != nil {
+		return nil, err
+	}
+	var err error
+	record.Policy, err = decodeServicePolicy(policyBody)
+	if err != nil {
 		return nil, err
 	}
 	return record, nil

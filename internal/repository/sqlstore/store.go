@@ -337,9 +337,13 @@ func (s *Store) EnsureTenant(ctx context.Context, params repository.EnsureTenant
 	}
 
 	now := time.Now().UTC()
+	policyBody, err := encodeServicePolicy(params.Policy)
+	if err != nil {
+		return nil, fmt.Errorf("encode tenant policy: %w", err)
+	}
 	if _, err := s.db.Conn.ExecContext(ctx, s.db.Rebind(`
-INSERT INTO tenants (id, slug, name, status, budget_usd, spent_usd, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, 0, ?, ?)`), id, slug, name, status, params.BudgetUSD, now, now); err != nil {
+INSERT INTO tenants (id, slug, name, status, budget_usd, spent_usd, policy_body, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)`), id, slug, name, status, params.BudgetUSD, policyBody, now, now); err != nil {
 		return nil, fmt.Errorf("insert tenant: %w", err)
 	}
 

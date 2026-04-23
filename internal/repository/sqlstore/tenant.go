@@ -13,7 +13,7 @@ import (
 
 func (s *Store) ListTenants(ctx context.Context) ([]repository.TenantRecord, error) {
 	rows, err := s.db.Conn.QueryContext(ctx, `
-SELECT id, slug, name, status, budget_usd, spent_usd, created_at, updated_at
+SELECT id, slug, name, status, budget_usd, spent_usd, policy_body, created_at, updated_at
 FROM tenants
 ORDER BY created_at ASC`)
 	if err != nil {
@@ -24,6 +24,7 @@ ORDER BY created_at ASC`)
 	var tenants []repository.TenantRecord
 	for rows.Next() {
 		var tenant repository.TenantRecord
+		var policyBody string
 		if err := rows.Scan(
 			&tenant.ID,
 			&tenant.Slug,
@@ -31,10 +32,15 @@ ORDER BY created_at ASC`)
 			&tenant.Status,
 			&tenant.BudgetUSD,
 			&tenant.SpentUSD,
+			&policyBody,
 			&tenant.CreatedAt,
 			&tenant.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan tenant: %w", err)
+		}
+		tenant.Policy, err = decodeServicePolicy(policyBody)
+		if err != nil {
+			return nil, fmt.Errorf("decode tenant policy: %w", err)
 		}
 		tenants = append(tenants, tenant)
 	}
@@ -69,6 +75,14 @@ func (s *Store) UpdateTenant(ctx context.Context, idOrSlug string, params reposi
 	if params.BudgetUSD != nil {
 		sets = append(sets, "budget_usd = ?")
 		args = append(args, *params.BudgetUSD)
+	}
+	if params.Policy != nil {
+		policyBody, err := encodeServicePolicy(params.Policy)
+		if err != nil {
+			return nil, fmt.Errorf("encode tenant policy: %w", err)
+		}
+		sets = append(sets, "policy_body = ?")
+		args = append(args, policyBody)
 	}
 	sets = append(sets, "updated_at = ?")
 	args = append(args, time.Now().UTC(), tenant.ID)

@@ -425,11 +425,40 @@ func (s *Service) loadPublishedService(ctx context.Context, tenantID, prefix str
 	if err != nil {
 		return nil, err
 	}
+	snapshot := version.Snapshot
+	policy, err := s.resolveEffectivePolicy(ctx, serviceRecord, snapshot.Config.Policy)
+	if err != nil {
+		return nil, err
+	}
+	snapshot.Config.Policy = policy
 	return &serviceRuntime{
 		service:  serviceRecord,
 		version:  version,
-		snapshot: version.Snapshot,
+		snapshot: snapshot,
 	}, nil
+}
+
+func (s *Service) resolveEffectivePolicy(ctx context.Context, serviceRecord *repository.ServiceRecord, servicePolicy *repository.ServicePolicyConfig) (*repository.ServicePolicyConfig, error) {
+	var effective *repository.ServicePolicyConfig
+	if serviceRecord == nil {
+		return cloneServicePolicy(servicePolicy), nil
+	}
+	if serviceRecord.TenantID != "" {
+		tenant, err := s.store.GetTenant(ctx, serviceRecord.TenantID)
+		if err != nil {
+			return nil, err
+		}
+		effective = mergeServicePolicies(effective, tenant.Policy)
+	}
+	if serviceRecord.ProjectID != "" {
+		project, err := s.store.GetProject(ctx, serviceRecord.TenantID, serviceRecord.ProjectID)
+		if err != nil {
+			return nil, err
+		}
+		effective = mergeServicePolicies(effective, project.Policy)
+	}
+	effective = mergeServicePolicies(effective, servicePolicy)
+	return effective, nil
 }
 
 func (s *Service) checkSubscriptionSurface(ctx context.Context, identity *repository.AuthIdentity, serviceID, surface string) error {
@@ -686,6 +715,179 @@ func singleNonEmpty(value string) []string {
 		return nil
 	}
 	return []string{strings.TrimSpace(value)}
+}
+
+func mergeServicePolicies(base, overlay *repository.ServicePolicyConfig) *repository.ServicePolicyConfig {
+	if base == nil && overlay == nil {
+		return nil
+	}
+	merged := cloneServicePolicy(base)
+	if merged == nil {
+		merged = &repository.ServicePolicyConfig{}
+	}
+	if overlay != nil {
+		merged.Request = mergeGuardrailRuleSets(merged.Request, overlay.Request)
+		merged.Response = mergeGuardrailRuleSets(merged.Response, overlay.Response)
+		merged.Enabled = merged.Enabled || overlay.Enabled
+	}
+	if merged.Request == nil && merged.Response == nil && !merged.Enabled {
+		return nil
+	}
+	if policyHasRules(merged) {
+		merged.Enabled = true
+	}
+	return merged
+}
+
+func cloneServicePolicy(policy *repository.ServicePolicyConfig) *repository.ServicePolicyConfig {
+	if policy == nil {
+		return nil
+	}
+	return &repository.ServicePolicyConfig{
+		Enabled:  policy.Enabled,
+		Request:  cloneGuardrailRuleSet(policy.Request),
+		Response: cloneGuardrailRuleSet(policy.Response),
+	}
+}
+
+func mergeGuardrailRuleSets(base, overlay *repository.GuardrailRuleSet) *repository.GuardrailRuleSet {
+	if base == nil && overlay == nil {
+		return nil
+	}
+	if base == nil {
+		return cloneGuardrailRuleSet(overlay)
+	}
+	if overlay == nil {
+		return cloneGuardrailRuleSet(base)
+	}
+	merged := cloneGuardrailRuleSet(base)
+	merged.AllowModels = mergeAllowModels(base.AllowModels, overlay.AllowModels)
+	merged.BlockModels = mergeUniqueStrings(base.BlockModels, overlay.BlockModels)
+	merged.BlockTerms = mergeUniqueStrings(base.BlockTerms, overlay.BlockTerms)
+	merged.BlockRegex = mergeUniqueStrings(base.BlockRegex, overlay.BlockRegex)
+	merged.RedactTerms = mergeUniqueStrings(base.RedactTerms, overlay.RedactTerms)
+	merged.MaxInputChars = minPositive(base.MaxInputChars, overlay.MaxInputChars)
+	merged.MaxOutputChars = minPositive(base.MaxOutputChars, overlay.MaxOutputChars)
+	if !guardrailRuleSetHasRules(merged) {
+		return nil
+	}
+	return merged
+}
+
+func cloneGuardrailRuleSet(rules *repository.GuardrailRuleSet) *repository.GuardrailRuleSet {
+	if rules == nil {
+		return nil
+	}
+	return &repository.GuardrailRuleSet{
+		AllowModels:    append([]string(nil), rules.AllowModels...),
+		BlockModels:    append([]string(nil), rules.BlockModels...),
+		BlockTerms:     append([]string(nil), rules.BlockTerms...),
+		BlockRegex:     append([]string(nil), rules.BlockRegex...),
+		RedactTerms:    append([]string(nil), rules.RedactTerms...),
+		MaxInputChars:  rules.MaxInputChars,
+		MaxOutputChars: rules.MaxOutputChars,
+	}
+}
+
+func mergeAllowModels(base, overlay []string) []string {
+	base = normalizeStringList(base)
+	overlay = normalizeStringList(overlay)
+	if len(base) == 0 {
+		return overlay
+	}
+	if len(overlay) == 0 {
+		return base
+	}
+	allowed := make(map[string]struct{}, len(overlay))
+	for _, item := range overlay {
+		allowed[item] = struct{}{}
+	}
+	result := make([]string, 0, len(base))
+	for _, item := range base {
+		if _, ok := allowed[item]; ok {
+			result = append(result, item)
+		}
+	}
+	if len(result) == 0 {
+		return []string{"__gateyes_deny_all__"}
+	}
+	return result
+}
+
+func mergeUniqueStrings(base, overlay []string) []string {
+	base = normalizeStringList(base)
+	overlay = normalizeStringList(overlay)
+	if len(base) == 0 {
+		return overlay
+	}
+	if len(overlay) == 0 {
+		return base
+	}
+	seen := make(map[string]struct{}, len(base)+len(overlay))
+	result := make([]string, 0, len(base)+len(overlay))
+	for _, items := range [][]string{base, overlay} {
+		for _, item := range items {
+			if _, ok := seen[item]; ok {
+				continue
+			}
+			seen[item] = struct{}{}
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func normalizeStringList(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func minPositive(a, b int) int {
+	switch {
+	case a <= 0:
+		return b
+	case b <= 0:
+		return a
+	case a < b:
+		return a
+	default:
+		return b
+	}
+}
+
+func policyHasRules(policy *repository.ServicePolicyConfig) bool {
+	if policy == nil {
+		return false
+	}
+	return guardrailRuleSetHasRules(policy.Request) || guardrailRuleSetHasRules(policy.Response)
+}
+
+func guardrailRuleSetHasRules(rules *repository.GuardrailRuleSet) bool {
+	if rules == nil {
+		return false
+	}
+	return len(normalizeStringList(rules.AllowModels)) > 0 ||
+		len(normalizeStringList(rules.BlockModels)) > 0 ||
+		len(normalizeStringList(rules.BlockTerms)) > 0 ||
+		len(normalizeStringList(rules.BlockRegex)) > 0 ||
+		len(normalizeStringList(rules.RedactTerms)) > 0 ||
+		rules.MaxInputChars > 0 ||
+		rules.MaxOutputChars > 0
 }
 
 func firstNonEmpty(values ...string) string {

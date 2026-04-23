@@ -132,6 +132,7 @@ type TenantRecord struct {
 	Status    string
 	BudgetUSD float64
 	SpentUSD  float64
+	Policy    *ServicePolicyConfig
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -241,12 +242,14 @@ type EnsureTenantParams struct {
 	Name      string
 	Status    string
 	BudgetUSD float64
+	Policy    *ServicePolicyConfig
 }
 
 type UpdateTenantParams struct {
 	Name      *string
 	Status    *string
 	BudgetUSD *float64
+	Policy    *ServicePolicyConfig
 }
 
 type APIKeyRecord struct {
@@ -316,6 +319,7 @@ type ProjectRecord struct {
 	Status     string
 	BudgetUSD  float64
 	SpentUSD   float64
+	Policy     *ServicePolicyConfig
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 }
@@ -326,12 +330,14 @@ type CreateProjectParams struct {
 	Name      string
 	Status    string
 	BudgetUSD float64
+	Policy    *ServicePolicyConfig
 }
 
 type UpdateProjectParams struct {
 	Name      *string
 	Status    *string
 	BudgetUSD *float64
+	Policy    *ServicePolicyConfig
 }
 
 type UsageRecord struct {

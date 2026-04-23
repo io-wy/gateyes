@@ -272,6 +272,204 @@ func TestPromptInvocationAndResponsesPoliciesBlockInvalidContent(t *testing.T) {
 	}
 }
 
+func TestInheritedPoliciesMergeAcrossTenantProjectAndService(t *testing.T) {
+	var capturedMessages string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		rawMessages, _ := json.Marshal(body["messages"])
+		capturedMessages = string(rawMessages)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":      "chat-inherited",
+			"object":  "chat.completion",
+			"created": 1,
+			"model":   "public-model",
+			"choices": []map[string]any{{
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": "to po so",
+				},
+				"finish_reason": "stop",
+			}},
+			"usage": map[string]any{"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+		})
+	}))
+	defer upstream.Close()
+
+	env := newCatalogTestEnv(t, []config.ProviderConfig{
+		{Name: "openai-main", Type: "openai", BaseURL: upstream.URL, Endpoint: "chat", APIKey: "k1", Model: "public-model", Timeout: 5, Enabled: true, MaxTokens: 256},
+	})
+
+	project, err := env.store.CreateProject(context.Background(), repository.CreateProjectParams{
+		TenantID: env.identity.TenantID,
+		Slug:     "proj-policy",
+		Name:     "Policy Project",
+		Status:   repository.StatusActive,
+		Policy: &repository.ServicePolicyConfig{
+			Enabled: true,
+			Request: &repository.GuardrailRuleSet{
+				RedactTerms:   []string{"p1"},
+				AllowModels:   []string{"public-model"},
+				MaxInputChars: 12,
+			},
+			Response: &repository.GuardrailRuleSet{
+				RedactTerms: []string{"po"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateProject(policy) error: %v", err)
+	}
+
+	if _, err := env.store.UpdateTenant(context.Background(), env.identity.TenantID, repository.UpdateTenantParams{
+		Policy: &repository.ServicePolicyConfig{
+			Enabled: true,
+			Request: &repository.GuardrailRuleSet{
+				RedactTerms:   []string{"t1"},
+				AllowModels:   []string{"public-model", "backup-model"},
+				MaxInputChars: 20,
+			},
+			Response: &repository.GuardrailRuleSet{
+				RedactTerms: []string{"to"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("UpdateTenant(policy) error: %v", err)
+	}
+
+	createResult, err := env.service.CreateService(context.Background(), repository.CreateServiceParams{
+		TenantID:        env.identity.TenantID,
+		ProjectID:       project.ID,
+		Name:            "Inherited Policy Service",
+		RequestPrefix:   "inherit-policy",
+		DefaultProvider: "openai-main",
+		DefaultModel:    "public-model",
+		Enabled:         true,
+		Config: repository.ServiceConfig{
+			Surfaces: []string{"responses"},
+			Policy: &repository.ServicePolicyConfig{
+				Enabled: true,
+				Request: &repository.GuardrailRuleSet{
+					RedactTerms:   []string{"s1"},
+					MaxInputChars: 16,
+				},
+				Response: &repository.GuardrailRuleSet{
+					RedactTerms: []string{"so"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateService() error: %v", err)
+	}
+	if _, _, err := env.service.PublishServiceVersion(context.Background(), env.identity.TenantID, createResult.Service.ID, createResult.InitialVersion.ID, "published"); err != nil {
+		t.Fatalf("PublishServiceVersion() error: %v", err)
+	}
+
+	result, _, err := env.service.Create(context.Background(), env.identity, "inherit-policy", "responses", &provider.ResponseRequest{
+		Model: "public-model",
+		Messages: []provider.Message{{
+			Role:    "user",
+			Content: provider.TextBlocks("t1 p1 s1"),
+		}},
+	}, "session-inherited")
+	if err != nil {
+		t.Fatalf("Create(inherited policy) error: %v", err)
+	}
+	if !strings.Contains(capturedMessages, "[REDACTED]") {
+		t.Fatalf("upstream request body = %s, want inherited redact terms applied", capturedMessages)
+	}
+	if got := result.Response.OutputText(); got != "[REDACTED] [REDACTED] [REDACTED]" {
+		t.Fatalf("result.Response.OutputText() = %q, want all inherited response terms redacted", got)
+	}
+
+	if _, _, err := env.service.Create(context.Background(), env.identity, "inherit-policy", "responses", &provider.ResponseRequest{
+		Model: "public-model",
+		Messages: []provider.Message{{
+			Role:    "user",
+			Content: provider.TextBlocks("1234567890123"),
+		}},
+	}, "session-too-long"); !errors.Is(err, ErrPolicyViolation) {
+		t.Fatalf("Create(max_input_chars merge) error = %v, want %v", err, ErrPolicyViolation)
+	}
+}
+
+func TestMergeServicePoliciesConservativelyCombinesLayers(t *testing.T) {
+	tenantPolicy := &repository.ServicePolicyConfig{
+		Enabled: true,
+		Request: &repository.GuardrailRuleSet{
+			AllowModels:   []string{"public-model", "backup-model"},
+			BlockModels:   []string{"blocked-a"},
+			BlockTerms:    []string{"tenant-term"},
+			RedactTerms:   []string{"tenant-secret"},
+			MaxInputChars: 20,
+		},
+		Response: &repository.GuardrailRuleSet{
+			BlockTerms:     []string{"tenant-out"},
+			RedactTerms:    []string{"tenant-redact"},
+			MaxOutputChars: 50,
+		},
+	}
+	projectPolicy := &repository.ServicePolicyConfig{
+		Request: &repository.GuardrailRuleSet{
+			AllowModels:   []string{"public-model"},
+			BlockModels:   []string{"blocked-b"},
+			BlockTerms:    []string{"project-term"},
+			RedactTerms:   []string{"project-secret"},
+			MaxInputChars: 12,
+		},
+		Response: &repository.GuardrailRuleSet{
+			BlockTerms:     []string{"project-out"},
+			RedactTerms:    []string{"project-redact"},
+			MaxOutputChars: 40,
+		},
+	}
+	servicePolicy := &repository.ServicePolicyConfig{
+		Request: &repository.GuardrailRuleSet{
+			AllowModels:   []string{"public-model", "service-only"},
+			BlockTerms:    []string{"service-term"},
+			RedactTerms:   []string{"service-secret"},
+			MaxInputChars: 8,
+		},
+		Response: &repository.GuardrailRuleSet{
+			RedactTerms:    []string{"service-redact"},
+			MaxOutputChars: 18,
+		},
+	}
+
+	merged := mergeServicePolicies(nil, tenantPolicy)
+	merged = mergeServicePolicies(merged, projectPolicy)
+	merged = mergeServicePolicies(merged, servicePolicy)
+
+	if merged == nil || !merged.Enabled {
+		t.Fatalf("mergeServicePolicies() = %+v, want enabled merged policy", merged)
+	}
+	if merged.Request == nil || len(merged.Request.AllowModels) != 1 || merged.Request.AllowModels[0] != "public-model" {
+		t.Fatalf("merged.Request.AllowModels = %#v, want intersection [public-model]", merged.Request)
+	}
+	if merged.Request.MaxInputChars != 8 {
+		t.Fatalf("merged.Request.MaxInputChars = %d, want %d", merged.Request.MaxInputChars, 8)
+	}
+	if !containsString(merged.Request.BlockModels, "blocked-a") || !containsString(merged.Request.BlockModels, "blocked-b") {
+		t.Fatalf("merged.Request.BlockModels = %#v, want union", merged.Request.BlockModels)
+	}
+	if !containsString(merged.Request.BlockTerms, "tenant-term") || !containsString(merged.Request.BlockTerms, "project-term") || !containsString(merged.Request.BlockTerms, "service-term") {
+		t.Fatalf("merged.Request.BlockTerms = %#v, want union", merged.Request.BlockTerms)
+	}
+	if !containsString(merged.Request.RedactTerms, "tenant-secret") || !containsString(merged.Request.RedactTerms, "project-secret") || !containsString(merged.Request.RedactTerms, "service-secret") {
+		t.Fatalf("merged.Request.RedactTerms = %#v, want union", merged.Request.RedactTerms)
+	}
+	if merged.Response == nil || merged.Response.MaxOutputChars != 18 {
+		t.Fatalf("merged.Response.MaxOutputChars = %#v, want 18", merged.Response)
+	}
+	if !containsString(merged.Response.BlockTerms, "tenant-out") || !containsString(merged.Response.BlockTerms, "project-out") {
+		t.Fatalf("merged.Response.BlockTerms = %#v, want union", merged.Response.BlockTerms)
+	}
+	if !containsString(merged.Response.RedactTerms, "tenant-redact") || !containsString(merged.Response.RedactTerms, "project-redact") || !containsString(merged.Response.RedactTerms, "service-redact") {
+		t.Fatalf("merged.Response.RedactTerms = %#v, want union", merged.Response.RedactTerms)
+	}
+}
+
 func TestReviewSubscriptionApprovesScopedKey(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{

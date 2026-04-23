@@ -670,15 +670,19 @@ func (h *AdminHandler) ListTenants(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-
-	c.JSON(http.StatusOK, gin.H{"data": tenants})
+	result := make([]gin.H, 0, len(tenants))
+	for _, item := range tenants {
+		result = append(result, tenantToResponse(item))
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
 }
 
 type CreateTenantRequest struct {
-	ID        string  `json:"id"`
-	Slug      string  `json:"slug" binding:"required"`
-	Name      string  `json:"name"`
-	BudgetUSD float64 `json:"budget_usd"`
+	ID        string                          `json:"id"`
+	Slug      string                          `json:"slug" binding:"required"`
+	Name      string                          `json:"name"`
+	BudgetUSD float64                         `json:"budget_usd"`
+	Policy    *repository.ServicePolicyConfig `json:"policy"`
 }
 
 func (h *AdminHandler) CreateTenant(c *gin.Context) {
@@ -694,6 +698,7 @@ func (h *AdminHandler) CreateTenant(c *gin.Context) {
 		Name:      req.Name,
 		Status:    repository.StatusActive,
 		BudgetUSD: req.BudgetUSD,
+		Policy:    req.Policy,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -705,7 +710,7 @@ func (h *AdminHandler) CreateTenant(c *gin.Context) {
 	}
 
 	h.recordAudit(c, "tenant.create", "tenant", tenant.ID, req)
-	c.JSON(http.StatusCreated, gin.H{"data": tenant})
+	c.JSON(http.StatusCreated, gin.H{"data": tenantToResponse(*tenant)})
 }
 
 func (h *AdminHandler) GetTenant(c *gin.Context) {
@@ -725,15 +730,16 @@ func (h *AdminHandler) GetTenant(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{
-		"tenant":    tenant,
+		"tenant":    tenantToResponse(*tenant),
 		"providers": providers,
 	}})
 }
 
 type UpdateTenantRequest struct {
-	Name      *string  `json:"name"`
-	Status    *string  `json:"status"`
-	BudgetUSD *float64 `json:"budget_usd"`
+	Name      *string                         `json:"name"`
+	Status    *string                         `json:"status"`
+	BudgetUSD *float64                        `json:"budget_usd"`
+	Policy    *repository.ServicePolicyConfig `json:"policy"`
 }
 
 func (h *AdminHandler) UpdateTenant(c *gin.Context) {
@@ -747,6 +753,7 @@ func (h *AdminHandler) UpdateTenant(c *gin.Context) {
 		Name:      req.Name,
 		Status:    req.Status,
 		BudgetUSD: req.BudgetUSD,
+		Policy:    req.Policy,
 	})
 	if err != nil {
 		if err == repository.ErrNotFound {
@@ -758,7 +765,7 @@ func (h *AdminHandler) UpdateTenant(c *gin.Context) {
 	}
 
 	h.recordAudit(c, "tenant.update", "tenant", tenant.ID, req)
-	c.JSON(http.StatusOK, gin.H{"data": tenant})
+	c.JSON(http.StatusOK, gin.H{"data": tenantToResponse(*tenant)})
 }
 
 type ReplaceTenantProvidersRequest struct {
@@ -904,10 +911,11 @@ func providerStatus(stats *provider.ProviderStats) string {
 }
 
 type CreateProjectRequest struct {
-	TenantID  string  `json:"tenant_id"`
-	Slug      string  `json:"slug" binding:"required"`
-	Name      string  `json:"name" binding:"required"`
-	BudgetUSD float64 `json:"budget_usd"`
+	TenantID  string                          `json:"tenant_id"`
+	Slug      string                          `json:"slug" binding:"required"`
+	Name      string                          `json:"name" binding:"required"`
+	BudgetUSD float64                         `json:"budget_usd"`
+	Policy    *repository.ServicePolicyConfig `json:"policy"`
 }
 
 func (h *AdminHandler) CreateProject(c *gin.Context) {
@@ -927,6 +935,7 @@ func (h *AdminHandler) CreateProject(c *gin.Context) {
 		Name:      req.Name,
 		Status:    repository.StatusActive,
 		BudgetUSD: req.BudgetUSD,
+		Policy:    req.Policy,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1011,9 +1020,10 @@ func (h *AdminHandler) GetProjectUsage(c *gin.Context) {
 }
 
 type UpdateProjectRequest struct {
-	Name      *string  `json:"name"`
-	Status    *string  `json:"status"`
-	BudgetUSD *float64 `json:"budget_usd"`
+	Name      *string                         `json:"name"`
+	Status    *string                         `json:"status"`
+	BudgetUSD *float64                        `json:"budget_usd"`
+	Policy    *repository.ServicePolicyConfig `json:"policy"`
 }
 
 func (h *AdminHandler) UpdateProject(c *gin.Context) {
@@ -1031,6 +1041,7 @@ func (h *AdminHandler) UpdateProject(c *gin.Context) {
 		Name:      req.Name,
 		Status:    req.Status,
 		BudgetUSD: req.BudgetUSD,
+		Policy:    req.Policy,
 	})
 	if err != nil {
 		if err == repository.ErrNotFound {
@@ -1205,8 +1216,23 @@ func projectToResponse(project repository.ProjectRecord) gin.H {
 		"status":      project.Status,
 		"budget_usd":  project.BudgetUSD,
 		"spent_usd":   project.SpentUSD,
+		"policy":      project.Policy,
 		"created_at":  project.CreatedAt,
 		"updated_at":  project.UpdatedAt,
+	}
+}
+
+func tenantToResponse(tenant repository.TenantRecord) gin.H {
+	return gin.H{
+		"id":         tenant.ID,
+		"slug":       tenant.Slug,
+		"name":       tenant.Name,
+		"status":     tenant.Status,
+		"budget_usd": tenant.BudgetUSD,
+		"spent_usd":  tenant.SpentUSD,
+		"policy":     tenant.Policy,
+		"created_at": tenant.CreatedAt,
+		"updated_at": tenant.UpdatedAt,
 	}
 }
 
