@@ -136,6 +136,21 @@ func TestAdminUserLifecycleAndDashboardEndpoints(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /admin/providers/test-openai/stats status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
+	rec = performJSONRequest(t, env, http.MethodPost, "/admin/providers", token, `{"name":"runtime-openai","type":"openai","base_url":"`+upstream.URL+`","endpoint":"chat","api_key":"runtime-key","model":"runtime-model","enabled":true,"timeout":5,"max_tokens":256,"routing_weight":4}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /admin/providers status = %d, want %d: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	runtimeProvider := decodeBodyMap(t, rec)["data"].(map[string]any)
+	if runtimeProvider["name"] != "runtime-openai" || runtimeProvider["model"] != "runtime-model" || runtimeProvider["routing_weight"] != float64(4) {
+		t.Fatalf("POST /admin/providers payload = %#v, want runtime provider metadata", runtimeProvider)
+	}
+	if _, leaked := runtimeProvider["api_key"]; leaked {
+		t.Fatalf("POST /admin/providers leaked api_key in response: %#v", runtimeProvider)
+	}
+	rec = performJSONRequest(t, env, http.MethodPost, "/v1/responses", "test-key:test-secret", `{"model":"runtime-model","input":"hello runtime provider"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/responses(dynamic provider) status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
 	rec = performJSONRequest(t, env, http.MethodPut, "/admin/providers/test-openai", token, `{"drain":true,"health_status":"degraded","routing_weight":9,"supports_images":false}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT /admin/providers/test-openai status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
@@ -143,6 +158,22 @@ func TestAdminUserLifecycleAndDashboardEndpoints(t *testing.T) {
 	updatedProvider := decodeBodyMap(t, rec)["data"].(map[string]any)
 	if updatedProvider["drain"] != true || updatedProvider["health_status"] != "degraded" || updatedProvider["routing_weight"] != float64(9) || updatedProvider["supports_images"] != false {
 		t.Fatalf("PUT /admin/providers/test-openai payload = %#v, want updated registry metadata", updatedProvider)
+	}
+	rec = performJSONRequest(t, env, http.MethodPut, "/admin/providers/runtime-openai", token, `{"model":"runtime-model-v2","routing_weight":6}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT /admin/providers/runtime-openai status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	runtimeProvider = decodeBodyMap(t, rec)["data"].(map[string]any)
+	if runtimeProvider["model"] != "runtime-model-v2" || runtimeProvider["routing_weight"] != float64(6) {
+		t.Fatalf("PUT /admin/providers/runtime-openai payload = %#v, want updated runtime provider config", runtimeProvider)
+	}
+	rec = performJSONRequest(t, env, http.MethodDelete, "/admin/providers/runtime-openai", token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("DELETE /admin/providers/runtime-openai status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	rec = performJSONRequest(t, env, http.MethodGet, "/admin/providers/runtime-openai", token, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /admin/providers/runtime-openai(after delete) status = %d, want %d: %s", rec.Code, http.StatusNotFound, rec.Body.String())
 	}
 
 	rec = performJSONRequest(t, env, http.MethodPost, "/admin/projects", token, `{"slug":"proj-a","name":"Project A","budget_usd":50}`)
@@ -534,6 +565,18 @@ func TestAdminAPIKeysUsageAndRouteTraceEndpoints(t *testing.T) {
 	trace := tracePayload["trace"].(map[string]any)
 	if trace["final_provider"] != "test-openai" {
 		t.Fatalf("GET /admin/responses/:id/trace payload = %#v, want final provider trace", trace)
+	}
+	rec = performJSONRequest(t, env, http.MethodGet, "/admin/responses?provider_name=test-openai&status=completed&q=hello+trace", token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /admin/responses status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	responseList := decodeBodyMap(t, rec)["data"].([]any)
+	if len(responseList) == 0 {
+		t.Fatal("GET /admin/responses data = empty, want matched response records")
+	}
+	first := responseList[0].(map[string]any)
+	if first["id"] != responseID || first["provider_name"] != "test-openai" || first["status"] != "completed" {
+		t.Fatalf("GET /admin/responses first item = %#v, want filtered response summary", first)
 	}
 
 	rec = performJSONRequest(t, env, http.MethodGet, "/admin/usage/summary?days=7", token, "")

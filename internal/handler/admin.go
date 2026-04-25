@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/gateyes/gateway/internal/config"
 	"github.com/gateyes/gateway/internal/middleware"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/catalog"
@@ -15,18 +17,20 @@ import (
 )
 
 type AdminHandler struct {
-	store       repository.Store
-	providerMgr *provider.Manager
-	catalogSvc  *catalog.Service
-	startedAt   time.Time
+	store              repository.Store
+	providerMgr        *provider.Manager
+	providerRuntimeSvc *provider.RuntimeRegistryService
+	catalogSvc         *catalog.Service
+	startedAt          time.Time
 }
 
 func NewAdminHandler(store repository.Store, providerMgr *provider.Manager, catalogSvc *catalog.Service) *AdminHandler {
 	return &AdminHandler{
-		store:       store,
-		providerMgr: providerMgr,
-		catalogSvc:  catalogSvc,
-		startedAt:   time.Now(),
+		store:              store,
+		providerMgr:        providerMgr,
+		providerRuntimeSvc: provider.NewRuntimeRegistryService(store, providerMgr),
+		catalogSvc:         catalogSvc,
+		startedAt:          time.Now(),
 	}
 }
 
@@ -62,19 +66,100 @@ func (h *AdminHandler) GetProviderStats(c *gin.Context) {
 	h.GetProvider(c)
 }
 
+type CreateProviderRequest struct {
+	Name                     string            `json:"name" binding:"required"`
+	Type                     string            `json:"type"`
+	Vendor                   string            `json:"vendor"`
+	BaseURL                  string            `json:"base_url"`
+	GRPCTarget               string            `json:"grpc_target"`
+	GRPCUseTLS               bool              `json:"grpc_use_tls"`
+	GRPCAuthority            string            `json:"grpc_authority"`
+	Endpoint                 string            `json:"endpoint"`
+	APIKey                   string            `json:"api_key"`
+	Model                    string            `json:"model" binding:"required"`
+	RoutingWeight            int               `json:"routing_weight"`
+	PriceInput               float64           `json:"price_input"`
+	PriceOutput              float64           `json:"price_output"`
+	MaxTokens                int               `json:"max_tokens"`
+	Timeout                  int               `json:"timeout"`
+	Enabled                  bool              `json:"enabled"`
+	Headers                  map[string]string `json:"headers"`
+	ExtraBody                map[string]any    `json:"extra_body"`
+	SupportsChat             *bool             `json:"supports_chat"`
+	SupportsResponses        *bool             `json:"supports_responses"`
+	SupportsMessages         *bool             `json:"supports_messages"`
+	SupportsStream           *bool             `json:"supports_stream"`
+	SupportsTools            *bool             `json:"supports_tools"`
+	SupportsImages           *bool             `json:"supports_images"`
+	SupportsStructuredOutput *bool             `json:"supports_structured_output"`
+	SupportsLongContext      *bool             `json:"supports_long_context"`
+	SupportsEmbeddings       *bool             `json:"supports_embeddings"`
+}
+
+func (h *AdminHandler) CreateProvider(c *gin.Context) {
+	identity, _ := middleware.Identity(c)
+	var req CreateProviderRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	record := provider.DefaultRegistryRecordFromConfig(providerConfigFromCreateRequest(req))
+	applyProviderCapabilityOverrides(&record, providerCapabilityOverrides{
+		SupportsChat:             req.SupportsChat,
+		SupportsResponses:        req.SupportsResponses,
+		SupportsMessages:         req.SupportsMessages,
+		SupportsStream:           req.SupportsStream,
+		SupportsTools:            req.SupportsTools,
+		SupportsImages:           req.SupportsImages,
+		SupportsStructuredOutput: req.SupportsStructuredOutput,
+		SupportsLongContext:      req.SupportsLongContext,
+		SupportsEmbeddings:       req.SupportsEmbeddings,
+	})
+	created, err := h.providerRuntimeSvc.Upsert(c.Request.Context(), record)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if tenantID, ok := h.scopeTenantID(c, identity); ok && tenantID != "" {
+		if err := h.appendTenantProvider(c.Request.Context(), tenantID, created.Name); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	h.recordAudit(c, "provider.create", "provider", created.Name, providerRegistryToResponse(*created))
+	c.JSON(http.StatusCreated, gin.H{"data": providerRegistryToResponse(*created)})
+}
+
 type UpdateProviderRequest struct {
-	Enabled                  *bool   `json:"enabled"`
-	Drain                    *bool   `json:"drain"`
-	HealthStatus             *string `json:"health_status"`
-	RoutingWeight            *int    `json:"routing_weight"`
-	SupportsChat             *bool   `json:"supports_chat"`
-	SupportsResponses        *bool   `json:"supports_responses"`
-	SupportsMessages         *bool   `json:"supports_messages"`
-	SupportsStream           *bool   `json:"supports_stream"`
-	SupportsTools            *bool   `json:"supports_tools"`
-	SupportsImages           *bool   `json:"supports_images"`
-	SupportsStructuredOutput *bool   `json:"supports_structured_output"`
-	SupportsLongContext      *bool   `json:"supports_long_context"`
+	Enabled                  *bool             `json:"enabled"`
+	Drain                    *bool             `json:"drain"`
+	HealthStatus             *string           `json:"health_status"`
+	RoutingWeight            *int              `json:"routing_weight"`
+	Type                     *string           `json:"type"`
+	Vendor                   *string           `json:"vendor"`
+	BaseURL                  *string           `json:"base_url"`
+	GRPCTarget               *string           `json:"grpc_target"`
+	GRPCUseTLS               *bool             `json:"grpc_use_tls"`
+	GRPCAuthority            *string           `json:"grpc_authority"`
+	Endpoint                 *string           `json:"endpoint"`
+	APIKey                   *string           `json:"api_key"`
+	Model                    *string           `json:"model"`
+	PriceInput               *float64          `json:"price_input"`
+	PriceOutput              *float64          `json:"price_output"`
+	MaxTokens                *int              `json:"max_tokens"`
+	Timeout                  *int              `json:"timeout"`
+	Headers                  map[string]string `json:"headers"`
+	ExtraBody                map[string]any    `json:"extra_body"`
+	SupportsChat             *bool             `json:"supports_chat"`
+	SupportsResponses        *bool             `json:"supports_responses"`
+	SupportsMessages         *bool             `json:"supports_messages"`
+	SupportsStream           *bool             `json:"supports_stream"`
+	SupportsTools            *bool             `json:"supports_tools"`
+	SupportsImages           *bool             `json:"supports_images"`
+	SupportsStructuredOutput *bool             `json:"supports_structured_output"`
+	SupportsLongContext      *bool             `json:"supports_long_context"`
+	SupportsEmbeddings       *bool             `json:"supports_embeddings"`
 }
 
 func (h *AdminHandler) UpdateProvider(c *gin.Context) {
@@ -88,20 +173,7 @@ func (h *AdminHandler) UpdateProvider(c *gin.Context) {
 		return
 	}
 
-	record, err := h.store.UpdateProviderRegistry(c.Request.Context(), c.Param("name"), repository.UpdateProviderRegistryParams{
-		Enabled:                  req.Enabled,
-		Drain:                    req.Drain,
-		HealthStatus:             req.HealthStatus,
-		RoutingWeight:            req.RoutingWeight,
-		SupportsChat:             req.SupportsChat,
-		SupportsResponses:        req.SupportsResponses,
-		SupportsMessages:         req.SupportsMessages,
-		SupportsStream:           req.SupportsStream,
-		SupportsTools:            req.SupportsTools,
-		SupportsImages:           req.SupportsImages,
-		SupportsStructuredOutput: req.SupportsStructuredOutput,
-		SupportsLongContext:      req.SupportsLongContext,
-	})
+	current, err := h.store.GetProviderRegistry(c.Request.Context(), c.Param("name"))
 	if err != nil {
 		if err == repository.ErrNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "provider not found"})
@@ -110,9 +182,32 @@ func (h *AdminHandler) UpdateProvider(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	h.providerMgr.ApplyRegistry([]repository.ProviderRegistryRecord{*record})
+	updated := mergeProviderUpdate(*current, req)
+	record, err := h.providerRuntimeSvc.Upsert(c.Request.Context(), updated)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	h.recordAudit(c, "provider.update", "provider", record.Name, req)
 	c.JSON(http.StatusOK, gin.H{"data": providerRegistryToResponse(*record)})
+}
+
+func (h *AdminHandler) DeleteProvider(c *gin.Context) {
+	identity, _ := middleware.Identity(c)
+	name := c.Param("name")
+	if err := h.providerRuntimeSvc.Delete(c.Request.Context(), name); err != nil {
+		if err == repository.ErrNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "provider not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if tenantID, ok := h.scopeTenantID(c, identity); ok && tenantID != "" {
+		_ = h.removeTenantProvider(c.Request.Context(), tenantID, name)
+	}
+	h.recordAudit(c, "provider.delete", "provider", name, gin.H{"name": name})
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"name": name, "deleted": true}})
 }
 
 type CreateAPIKeyRequest struct {
@@ -227,6 +322,7 @@ type UpdateAPIKeyRequest struct {
 	ProjectID        *string   `json:"project_id"`
 	Status           *string   `json:"status"`
 	BudgetUSD        *float64  `json:"budget_usd"`
+	BudgetPolicy     *string   `json:"budget_policy"`
 	RateLimitQPS     *int      `json:"rate_limit_qps"`
 	AllowedModels    *[]string `json:"allowed_models"`
 	AllowedProviders *[]string `json:"allowed_providers"`
@@ -254,6 +350,7 @@ func (h *AdminHandler) UpdateAPIKey(c *gin.Context) {
 		ProjectID:        req.ProjectID,
 		Status:           req.Status,
 		BudgetUSD:        req.BudgetUSD,
+		BudgetPolicy:     req.BudgetPolicy,
 		RateLimitQPS:     req.RateLimitQPS,
 		AllowedModels:    req.AllowedModels,
 		AllowedProviders: req.AllowedProviders,
@@ -736,10 +833,11 @@ func (h *AdminHandler) GetTenant(c *gin.Context) {
 }
 
 type UpdateTenantRequest struct {
-	Name      *string                         `json:"name"`
-	Status    *string                         `json:"status"`
-	BudgetUSD *float64                        `json:"budget_usd"`
-	Policy    *repository.ServicePolicyConfig `json:"policy"`
+	Name         *string                         `json:"name"`
+	Status       *string                         `json:"status"`
+	BudgetUSD    *float64                        `json:"budget_usd"`
+	BudgetPolicy *string                         `json:"budget_policy"`
+	Policy       *repository.ServicePolicyConfig `json:"policy"`
 }
 
 func (h *AdminHandler) UpdateTenant(c *gin.Context) {
@@ -750,10 +848,11 @@ func (h *AdminHandler) UpdateTenant(c *gin.Context) {
 	}
 
 	tenant, err := h.store.UpdateTenant(c.Request.Context(), c.Param("id"), repository.UpdateTenantParams{
-		Name:      req.Name,
-		Status:    req.Status,
-		BudgetUSD: req.BudgetUSD,
-		Policy:    req.Policy,
+		Name:         req.Name,
+		Status:       req.Status,
+		BudgetUSD:    req.BudgetUSD,
+		BudgetPolicy: req.BudgetPolicy,
+		Policy:       req.Policy,
 	})
 	if err != nil {
 		if err == repository.ErrNotFound {
@@ -1020,10 +1119,11 @@ func (h *AdminHandler) GetProjectUsage(c *gin.Context) {
 }
 
 type UpdateProjectRequest struct {
-	Name      *string                         `json:"name"`
-	Status    *string                         `json:"status"`
-	BudgetUSD *float64                        `json:"budget_usd"`
-	Policy    *repository.ServicePolicyConfig `json:"policy"`
+	Name         *string                         `json:"name"`
+	Status       *string                         `json:"status"`
+	BudgetUSD    *float64                        `json:"budget_usd"`
+	BudgetPolicy *string                         `json:"budget_policy"`
+	Policy       *repository.ServicePolicyConfig `json:"policy"`
 }
 
 func (h *AdminHandler) UpdateProject(c *gin.Context) {
@@ -1038,10 +1138,11 @@ func (h *AdminHandler) UpdateProject(c *gin.Context) {
 		return
 	}
 	project, err := h.store.UpdateProject(c.Request.Context(), tenantID, c.Param("id"), repository.UpdateProjectParams{
-		Name:      req.Name,
-		Status:    req.Status,
-		BudgetUSD: req.BudgetUSD,
-		Policy:    req.Policy,
+		Name:         req.Name,
+		Status:       req.Status,
+		BudgetUSD:    req.BudgetUSD,
+		BudgetPolicy: req.BudgetPolicy,
+		Policy:       req.Policy,
 	})
 	if err != nil {
 		if err == repository.ErrNotFound {
@@ -1052,6 +1153,60 @@ func (h *AdminHandler) UpdateProject(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": projectToResponse(*project)})
+}
+
+func (h *AdminHandler) ListResponses(c *gin.Context) {
+	identity, _ := middleware.Identity(c)
+	tenantID, ok := h.scopeTenantID(c, identity)
+	if !ok {
+		return
+	}
+	filter := repository.ResponseFilter{
+		ProviderName: c.Query("provider_name"),
+		Model:        c.Query("model"),
+		Status:       c.Query("status"),
+		ProjectID:    c.Query("project_id"),
+		APIKeyID:     c.Query("api_key_id"),
+		UserID:       c.Query("user_id"),
+		Query:        c.Query("q"),
+		Limit:        100,
+	}
+	if raw := c.Query("limit"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			filter.Limit = parsed
+		}
+	}
+	if raw := c.Query("offset"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 0 {
+			filter.Offset = parsed
+		}
+	}
+	if raw := c.Query("start_time"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid start_time"})
+			return
+		}
+		filter.StartTime = parsed
+	}
+	if raw := c.Query("end_time"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid end_time"})
+			return
+		}
+		filter.EndTime = parsed
+	}
+	items, err := h.store.ListResponses(c.Request.Context(), tenantID, filter)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	result := make([]gin.H, 0, len(items))
+	for _, item := range items {
+		result = append(result, responseToResponse(item))
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
 }
 
 func (h *AdminHandler) GetResponseTrace(c *gin.Context) {
@@ -1085,6 +1240,24 @@ func (h *AdminHandler) GetResponseTrace(c *gin.Context) {
 		"response_id": record.ID,
 		"trace":       trace,
 	}})
+}
+
+func (h *AdminHandler) GetBudgets(c *gin.Context) {
+	identity, _ := middleware.Identity(c)
+	tenantID, ok := h.scopeTenantID(c, identity)
+	if !ok {
+		return
+	}
+
+	apiKeyID := c.Query("api_key_id")
+	projectID := c.Query("project_id")
+
+	status, err := h.store.GetBudgetStatus(c.Request.Context(), tenantID, projectID, apiKeyID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": status})
 }
 
 func (h *AdminHandler) GetUsageSummary(c *gin.Context) {
@@ -1165,7 +1338,11 @@ func validProviderHealthStatus(value string) bool {
 }
 
 func providerRegistryToResponse(record repository.ProviderRegistryRecord) gin.H {
-	return gin.H{
+	response := gin.H{
+		"name":                       record.Name,
+		"type":                       record.Type,
+		"base_url":                   record.BaseURL,
+		"model":                      record.Model,
 		"vendor":                     record.Vendor,
 		"endpoint":                   record.Endpoint,
 		"enabled":                    record.Enabled,
@@ -1180,7 +1357,197 @@ func providerRegistryToResponse(record repository.ProviderRegistryRecord) gin.H 
 		"supports_images":            record.SupportsImages,
 		"supports_structured_output": record.SupportsStructuredOutput,
 		"supports_long_context":      record.SupportsLongContext,
+		"supports_embeddings":        record.SupportsEmbeddings,
+		"created_at":                 record.CreatedAt,
+		"updated_at":                 record.UpdatedAt,
 	}
+	if record.RuntimeConfig != nil {
+		response["timeout"] = record.RuntimeConfig.Timeout
+		response["max_tokens"] = record.RuntimeConfig.MaxTokens
+		response["price_input"] = record.RuntimeConfig.PriceInput
+		response["price_output"] = record.RuntimeConfig.PriceOutput
+		response["grpc_target"] = record.RuntimeConfig.GRPCTarget
+		response["grpc_use_tls"] = record.RuntimeConfig.GRPCUseTLS
+		response["grpc_authority"] = record.RuntimeConfig.GRPCAuthority
+		response["headers"] = record.RuntimeConfig.Headers
+		response["extra_body"] = record.RuntimeConfig.ExtraBody
+		response["has_api_key"] = record.RuntimeConfig.APIKey != ""
+	}
+	return response
+}
+
+type providerCapabilityOverrides struct {
+	SupportsChat             *bool
+	SupportsResponses        *bool
+	SupportsMessages         *bool
+	SupportsStream           *bool
+	SupportsTools            *bool
+	SupportsImages           *bool
+	SupportsStructuredOutput *bool
+	SupportsLongContext      *bool
+	SupportsEmbeddings       *bool
+}
+
+func providerConfigFromCreateRequest(req CreateProviderRequest) config.ProviderConfig {
+	weight := req.RoutingWeight
+	if weight <= 0 {
+		weight = 1
+	}
+	return config.ProviderConfig{
+		Name:          req.Name,
+		Type:          req.Type,
+		Vendor:        req.Vendor,
+		BaseURL:       req.BaseURL,
+		GRPCTarget:    req.GRPCTarget,
+		GRPCUseTLS:    req.GRPCUseTLS,
+		GRPCAuthority: req.GRPCAuthority,
+		Endpoint:      req.Endpoint,
+		APIKey:        req.APIKey,
+		Model:         req.Model,
+		Weight:        weight,
+		PriceInput:    req.PriceInput,
+		PriceOutput:   req.PriceOutput,
+		MaxTokens:     req.MaxTokens,
+		Timeout:       req.Timeout,
+		Enabled:       req.Enabled,
+		Headers:       req.Headers,
+		ExtraBody:     req.ExtraBody,
+	}
+}
+
+func mergeProviderUpdate(current repository.ProviderRegistryRecord, req UpdateProviderRequest) repository.ProviderRegistryRecord {
+	next := current
+	if req.Type != nil {
+		next.Type = *req.Type
+	}
+	if req.Vendor != nil {
+		next.Vendor = *req.Vendor
+	}
+	if req.BaseURL != nil {
+		next.BaseURL = *req.BaseURL
+	}
+	if req.Endpoint != nil {
+		next.Endpoint = *req.Endpoint
+	}
+	if req.Model != nil {
+		next.Model = *req.Model
+	}
+	if req.Enabled != nil {
+		next.Enabled = *req.Enabled
+	}
+	if req.Drain != nil {
+		next.Drain = *req.Drain
+	}
+	if req.HealthStatus != nil {
+		next.HealthStatus = *req.HealthStatus
+	}
+	if req.RoutingWeight != nil {
+		next.RoutingWeight = *req.RoutingWeight
+	}
+	if next.RuntimeConfig == nil {
+		next.RuntimeConfig = &repository.ProviderRuntimeConfig{Enabled: next.Enabled}
+	}
+	if req.GRPCTarget != nil {
+		next.RuntimeConfig.GRPCTarget = *req.GRPCTarget
+	}
+	if req.GRPCUseTLS != nil {
+		next.RuntimeConfig.GRPCUseTLS = *req.GRPCUseTLS
+	}
+	if req.GRPCAuthority != nil {
+		next.RuntimeConfig.GRPCAuthority = *req.GRPCAuthority
+	}
+	if req.APIKey != nil {
+		next.RuntimeConfig.APIKey = *req.APIKey
+	}
+	if req.PriceInput != nil {
+		next.RuntimeConfig.PriceInput = *req.PriceInput
+	}
+	if req.PriceOutput != nil {
+		next.RuntimeConfig.PriceOutput = *req.PriceOutput
+	}
+	if req.MaxTokens != nil {
+		next.RuntimeConfig.MaxTokens = *req.MaxTokens
+	}
+	if req.Timeout != nil {
+		next.RuntimeConfig.Timeout = *req.Timeout
+	}
+	if req.Headers != nil {
+		next.RuntimeConfig.Headers = req.Headers
+	}
+	if req.ExtraBody != nil {
+		next.RuntimeConfig.ExtraBody = req.ExtraBody
+	}
+	next.RuntimeConfig.Enabled = next.Enabled
+	applyProviderCapabilityOverrides(&next, providerCapabilityOverrides{
+		SupportsChat:             req.SupportsChat,
+		SupportsResponses:        req.SupportsResponses,
+		SupportsMessages:         req.SupportsMessages,
+		SupportsStream:           req.SupportsStream,
+		SupportsTools:            req.SupportsTools,
+		SupportsImages:           req.SupportsImages,
+		SupportsStructuredOutput: req.SupportsStructuredOutput,
+		SupportsLongContext:      req.SupportsLongContext,
+		SupportsEmbeddings:       req.SupportsEmbeddings,
+	})
+	return next
+}
+
+func applyProviderCapabilityOverrides(record *repository.ProviderRegistryRecord, overrides providerCapabilityOverrides) {
+	if overrides.SupportsChat != nil {
+		record.SupportsChat = *overrides.SupportsChat
+	}
+	if overrides.SupportsResponses != nil {
+		record.SupportsResponses = *overrides.SupportsResponses
+	}
+	if overrides.SupportsMessages != nil {
+		record.SupportsMessages = *overrides.SupportsMessages
+	}
+	if overrides.SupportsStream != nil {
+		record.SupportsStream = *overrides.SupportsStream
+	}
+	if overrides.SupportsTools != nil {
+		record.SupportsTools = *overrides.SupportsTools
+	}
+	if overrides.SupportsImages != nil {
+		record.SupportsImages = *overrides.SupportsImages
+	}
+	if overrides.SupportsStructuredOutput != nil {
+		record.SupportsStructuredOutput = *overrides.SupportsStructuredOutput
+	}
+	if overrides.SupportsLongContext != nil {
+		record.SupportsLongContext = *overrides.SupportsLongContext
+	}
+	if overrides.SupportsEmbeddings != nil {
+		record.SupportsEmbeddings = *overrides.SupportsEmbeddings
+	}
+}
+
+func (h *AdminHandler) appendTenantProvider(ctx context.Context, tenantID, name string) error {
+	names, err := h.store.ListTenantProviders(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	for _, item := range names {
+		if item == name {
+			return nil
+		}
+	}
+	names = append(names, name)
+	return h.store.ReplaceTenantProviders(ctx, tenantID, names)
+}
+
+func (h *AdminHandler) removeTenantProvider(ctx context.Context, tenantID, name string) error {
+	names, err := h.store.ListTenantProviders(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	filtered := make([]string, 0, len(names))
+	for _, item := range names {
+		if item != name {
+			filtered = append(filtered, item)
+		}
+	}
+	return h.store.ReplaceTenantProviders(ctx, tenantID, filtered)
 }
 
 func userToResponse(user repository.UserRecord) gin.H {
@@ -1214,9 +1581,10 @@ func projectToResponse(project repository.ProjectRecord) gin.H {
 		"slug":        project.Slug,
 		"name":        project.Name,
 		"status":      project.Status,
-		"budget_usd":  project.BudgetUSD,
-		"spent_usd":   project.SpentUSD,
-		"policy":      project.Policy,
+		"budget_usd":    project.BudgetUSD,
+		"spent_usd":     project.SpentUSD,
+		"budget_policy": project.BudgetPolicy,
+		"policy":        project.Policy,
 		"created_at":  project.CreatedAt,
 		"updated_at":  project.UpdatedAt,
 	}
@@ -1228,9 +1596,10 @@ func tenantToResponse(tenant repository.TenantRecord) gin.H {
 		"slug":       tenant.Slug,
 		"name":       tenant.Name,
 		"status":     tenant.Status,
-		"budget_usd": tenant.BudgetUSD,
-		"spent_usd":  tenant.SpentUSD,
-		"policy":     tenant.Policy,
+		"budget_usd":    tenant.BudgetUSD,
+		"spent_usd":     tenant.SpentUSD,
+		"budget_policy": tenant.BudgetPolicy,
+		"policy":        tenant.Policy,
 		"created_at": tenant.CreatedAt,
 		"updated_at": tenant.UpdatedAt,
 	}
@@ -1271,6 +1640,7 @@ func apiKeyToResponse(record repository.APIKeyRecord) gin.H {
 		"status":            record.Status,
 		"budget_usd":        record.BudgetUSD,
 		"spent_usd":         record.SpentUSD,
+		"budget_policy":     record.BudgetPolicy,
 		"rate_limit_qps":    record.RateLimitQPS,
 		"allowed_models":    record.AllowedModels,
 		"allowed_providers": record.AllowedProviders,
@@ -1347,6 +1717,21 @@ func usageFilterToResponse(filter repository.UsageFilter) gin.H {
 		"model":      filter.Model,
 		"start_time": zeroTimeOrValue(filter.StartTime),
 		"end_time":   zeroTimeOrValue(filter.EndTime),
+	}
+}
+
+func responseToResponse(record repository.ResponseRecord) gin.H {
+	return gin.H{
+		"id":           record.ID,
+		"tenant_id":    record.TenantID,
+		"project_id":   record.ProjectID,
+		"user_id":      record.UserID,
+		"api_key_id":   record.APIKeyID,
+		"provider_name": record.ProviderName,
+		"model":        record.Model,
+		"status":       record.Status,
+		"created_at":   record.CreatedAt,
+		"updated_at":   record.UpdatedAt,
 	}
 }
 

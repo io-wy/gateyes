@@ -113,6 +113,22 @@ func (f *fakeIdentityStore) ConsumeTenantBudget(ctx context.Context, tenantID st
 	return true, nil
 }
 
+func (f *fakeIdentityStore) CheckAPIKeyBudget(ctx context.Context, apiKeyID string, estimatedCost float64) (*repository.BudgetCheckResult, error) {
+	return &repository.BudgetCheckResult{Allowed: true, Scope: "api_key"}, nil
+}
+
+func (f *fakeIdentityStore) CheckProjectBudget(ctx context.Context, projectID string, estimatedCost float64) (*repository.BudgetCheckResult, error) {
+	return &repository.BudgetCheckResult{Allowed: true, Scope: "project"}, nil
+}
+
+func (f *fakeIdentityStore) CheckTenantBudget(ctx context.Context, tenantID string, estimatedCost float64) (*repository.BudgetCheckResult, error) {
+	return &repository.BudgetCheckResult{Allowed: true, Scope: "tenant"}, nil
+}
+
+func (f *fakeIdentityStore) GetBudgetStatus(ctx context.Context, tenantID, projectID, apiKeyID string) ([]repository.BudgetStatus, error) {
+	return nil, nil
+}
+
 func (f *fakeIdentityStore) EnsureBootstrapKey(ctx context.Context, params repository.BootstrapAPIKeyParams) error {
 	return nil
 }
@@ -201,6 +217,10 @@ func (f *fakeIdentityStore) GetResponse(ctx context.Context, tenantID string, id
 	return nil, nil
 }
 
+func (f *fakeIdentityStore) ListResponses(ctx context.Context, tenantID string, filter repository.ResponseFilter) ([]repository.ResponseRecord, error) {
+	return nil, nil
+}
+
 func (f *fakeIdentityStore) ListProviderRegistry(ctx context.Context) ([]repository.ProviderRegistryRecord, error) {
 	return nil, nil
 }
@@ -215,6 +235,9 @@ func (f *fakeIdentityStore) UpsertProviderRegistry(ctx context.Context, record r
 
 func (f *fakeIdentityStore) UpdateProviderRegistry(ctx context.Context, name string, params repository.UpdateProviderRegistryParams) (*repository.ProviderRegistryRecord, error) {
 	return nil, nil
+}
+func (f *fakeIdentityStore) DeleteProviderRegistry(ctx context.Context, name string) error {
+	return nil
 }
 
 func (f *fakeIdentityStore) CreateProject(ctx context.Context, params repository.CreateProjectParams) (*repository.ProjectRecord, error) {

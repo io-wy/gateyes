@@ -26,6 +26,7 @@ func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mw *mi
 	engine := gin.New()
 	engine.Use(gin.Recovery())
 	engine.Use(middleware.Correlation())
+	engine.Use(middleware.OtelTrace())
 	engine.Use(gin.Logger())
 
 	engine.GET("/health", h.Health)
@@ -45,6 +46,7 @@ func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mw *mi
 		llm.POST("/responses", h.Responses)
 		llm.POST("/chat/completions", h.Chat)
 		llm.POST("/messages", h.AnthropicMessages)
+		llm.POST("/embeddings", h.Embeddings)
 	}
 
 	serviceRoutes := engine.Group("/service/:prefix")
@@ -62,9 +64,11 @@ func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mw *mi
 	{
 		admin.GET("/dashboard", adminH.Dashboard)
 		admin.GET("/providers", adminH.GetProviders)
+		admin.POST("/providers", adminH.CreateProvider)
 		admin.GET("/providers/:name", adminH.GetProvider)
 		admin.GET("/providers/:name/stats", adminH.GetProviderStats)
 		admin.PUT("/providers/:name", adminH.UpdateProvider)
+		admin.DELETE("/providers/:name", adminH.DeleteProvider)
 		admin.GET("/audit", adminH.ListAuditLogs)
 		admin.GET("/services", adminH.ListServices)
 		admin.POST("/services", adminH.CreateService)
@@ -97,7 +101,9 @@ func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mw *mi
 		admin.GET("/projects/:id", adminH.GetProject)
 		admin.GET("/projects/:id/usage", adminH.GetProjectUsage)
 		admin.PUT("/projects/:id", adminH.UpdateProject)
+		admin.GET("/responses", adminH.ListResponses)
 		admin.GET("/responses/:id/trace", adminH.GetResponseTrace)
+		admin.GET("/budgets", adminH.GetBudgets)
 		admin.GET("/usage/summary", adminH.GetUsageSummary)
 		admin.GET("/usage/breakdown", adminH.GetUsageBreakdown)
 		admin.GET("/usage/trend", adminH.GetUsageTrend)

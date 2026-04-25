@@ -10,7 +10,9 @@ import (
 	"strings"
 
 	"github.com/gateyes/gateway/internal/repository"
+	"github.com/gateyes/gateway/internal/service/alert"
 	"github.com/gateyes/gateway/internal/service/auth"
+	"github.com/gateyes/gateway/internal/service/budget"
 	"github.com/gateyes/gateway/internal/service/limiter"
 	"github.com/gateyes/gateway/internal/service/provider"
 	responseSvc "github.com/gateyes/gateway/internal/service/responses"
@@ -31,6 +33,8 @@ type Dependencies struct {
 	Store     repository.Store
 	Auth      *auth.Auth
 	Limiter   *limiter.Limiter
+	BudgetSvc *budget.Service
+	AlertSvc  *alert.AlertService
 	Responses *responseSvc.Service
 }
 
@@ -38,6 +42,8 @@ type Service struct {
 	store     repository.Store
 	auth      *auth.Auth
 	limiter   *limiter.Limiter
+	budgetSvc *budget.Service
+	alertSvc  *alert.AlertService
 	responses *responseSvc.Service
 }
 
@@ -71,6 +77,8 @@ func New(deps *Dependencies) *Service {
 		store:     deps.Store,
 		auth:      deps.Auth,
 		limiter:   deps.Limiter,
+		budgetSvc: deps.BudgetSvc,
+		alertSvc:  deps.AlertSvc,
 		responses: deps.Responses,
 	}
 }
@@ -402,8 +410,38 @@ func (s *Service) precheck(ctx context.Context, identity *repository.AuthIdentit
 			return auth.ErrQuotaExceeded
 		}
 	}
+	if s.budgetSvc != nil {
+		budgetResult, err := s.budgetSvc.Check(ctx, budget.CheckRequest{
+			Identity:      identity,
+			EstimatedCost: 0,
+			ProviderName:  "",
+			Model:         req.Model,
+		})
+		if err != nil {
+			return fmt.Errorf("budget check: %w", err)
+		}
+		if !budgetResult.Allowed {
+			return budgetResult.RejectError
+		}
+		if budgetResult.AlertSent && s.alertSvc != nil {
+			scope := firstSoftAlertScope(budgetResult.Scopes)
+			s.alertSvc.NotifyBudgetExhausted(ctx, alert.BudgetExhausted{
+				TenantID:    identity.TenantID,
+				ProjectID:   identity.ProjectID,
+				APIKeyID:    identity.APIKeyID,
+				Model:       req.Model,
+				BudgetScope: scope,
+			})
+		}
+	}
 	if s.limiter != nil && s.auth != nil {
 		if !s.limiter.Allow(ctx, identity.APIKey, s.auth.EffectiveRateLimitQPS(identity), req.EstimateAdmissionTokens()) {
+			return ErrRateLimited
+		}
+		if !s.limiter.CheckTenant(identity.TenantID, req.EstimateAdmissionTokens()) {
+			return ErrRateLimited
+		}
+		if !s.limiter.CheckModel(req.Model, req.EstimateAdmissionTokens()) {
 			return ErrRateLimited
 		}
 	}
@@ -901,4 +939,13 @@ func firstNonEmpty(values ...string) string {
 
 func generatePlaceholderKey(seed string) string {
 	return "bootstrap-" + strings.ReplaceAll(seed, "-", "")
+}
+
+func firstSoftAlertScope(scopes []budget.ScopeResult) string {
+	for _, s := range scopes {
+		if s.Policy == repository.BudgetPolicySoftAlert {
+			return s.Scope
+		}
+	}
+	return "unknown"
 }

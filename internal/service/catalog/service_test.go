@@ -99,7 +99,7 @@ func newCatalogTestEnv(t *testing.T, providers []config.ProviderConfig) *catalog
 		providerMgr.ApplyRegistry(records)
 	}
 
-	routerSvc := router.NewRouter(config.RouterConfig{Strategy: "round_robin"})
+	routerSvc := router.NewRouter(config.RouterConfig{Strategy: "round_robin"}, nil)
 	routerSvc.SetProviders(providerMgr.List())
 	limiterSvc := limiter.NewLimiter(config.LimiterConfig{
 		GlobalQPS:           100,

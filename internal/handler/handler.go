@@ -208,6 +208,7 @@ func (h *Handler) Models(c *gin.Context) {
 				"images":            !hasRegistry || record.SupportsImages,
 				"structured_output": !hasRegistry || record.SupportsStructuredOutput,
 				"long_context":      hasRegistry && record.SupportsLongContext,
+				"embeddings":        hasRegistry && record.SupportsEmbeddings,
 			},
 			"health_status":  registryString(hasRegistry, record.HealthStatus, "unknown"),
 			"enabled":        !hasRegistry || record.Enabled,
@@ -216,6 +217,67 @@ func (h *Handler) Models(c *gin.Context) {
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"data": models})
+}
+
+func (h *Handler) Embeddings(c *gin.Context) {
+	start := time.Now()
+	defer h.metrics.TrackInFlight(metricsSurfaceEmbeddings)()
+
+	var req provider.EmbeddingRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.metrics.RecordError(metricsSurfaceEmbeddings, "", metricsResultClientError, "invalid_request")
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": err.Error(), "type": "invalid_request_error"}})
+		return
+	}
+
+	identity, ok := middleware.Identity(c)
+	if !ok {
+		h.metrics.RecordError(metricsSurfaceEmbeddings, "", metricsResultAuthError, "invalid_api_key")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"message": "invalid API key", "type": "invalid_request_error"}})
+		return
+	}
+
+	providerNames, err := h.deps.Store.ListTenantProviders(c.Request.Context(), identity.TenantID)
+	if err != nil {
+		h.logRequestFailed(c, metricsSurfaceEmbeddings, "", http.StatusInternalServerError, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error(), "type": "internal_error"}})
+		return
+	}
+
+	var selected provider.Provider
+	for _, name := range providerNames {
+		p, ok := h.deps.ProviderMgr.Get(name)
+		if !ok {
+			continue
+		}
+		record, hasRegistry := h.deps.ProviderMgr.Registry(name)
+		if !hasRegistry || !record.SupportsEmbeddings {
+			continue
+		}
+		if len(identity.APIKeyProviders) > 0 && !stringInSlice(identity.APIKeyProviders, p.Name()) {
+			continue
+		}
+		if len(identity.APIKeyModels) > 0 && !stringInSlice(identity.APIKeyModels, p.Model()) {
+			continue
+		}
+		selected = p
+		break
+	}
+
+	if selected == nil {
+		h.metrics.RecordError(metricsSurfaceEmbeddings, "", metricsResultUpstream, "no_embedding_provider")
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "no embedding provider available for this request", "type": "invalid_request_error"}})
+		return
+	}
+
+	result, err := selected.CreateEmbedding(c.Request.Context(), &req)
+	if err != nil {
+		h.renderServiceError(c, metricsSurfaceEmbeddings, selected.Name(), err)
+		return
+	}
+
+	h.logRequestCompleted(c, metricsSurfaceEmbeddings, selected.Name(), http.StatusOK, time.Since(start))
+	c.JSON(http.StatusOK, result)
 }
 
 func (h *Handler) Metrics(c *gin.Context) {
