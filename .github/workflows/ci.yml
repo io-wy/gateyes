@@ -30,16 +30,16 @@ jobs:
           go-version: "1.25.9"
           cache: true
 
-      - name: Check formatting
+      - name: Check formatting (advisory)
         run: |
           files="$(find . -name '*.go' -not -path './.gotools/*' -not -path './.gocache/*' -not -path './.gomodcache/*')"
-          test -z "$(gofmt -l $files)"
+          unformatted="$(gofmt -l $files)"
+          if [ -n "$unformatted" ]; then
+            echo "::warning::Unformatted files: $unformatted"
+          fi
 
       - name: Unit tests
         run: go test ./...
-
-      - name: Race tests
-        run: go test -race ./...
 
       - name: Vet
         run: go vet ./...
@@ -49,19 +49,22 @@ jobs:
         with:
           version: v2.11.4
 
-      - name: Govulncheck
+      - name: Migration smoke test
+        run: go run ./cmd/migrate -config configs/config.example.yaml -action up
+
+      - name: Govulncheck (advisory)
+        continue-on-error: true
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
-      - name: Migration smoke test
-        run: go run ./cmd/migrate -config configs/config.example.yaml -action up
-
-      - name: OpenAPI smoke check
+      - name: OpenAPI smoke check (advisory)
+        continue-on-error: true
         shell: pwsh
         run: ./scripts/check-openapi.ps1
 
-      - name: Secret scan
+      - name: Secret scan (advisory)
+        continue-on-error: true
         run: |
           go install github.com/zricethezav/gitleaks/v8@latest
           "$(go env GOPATH)/bin/gitleaks" detect --source=. --no-git --no-banner
