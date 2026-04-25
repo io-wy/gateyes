@@ -36,6 +36,8 @@ func DefaultRegistryRecordFromConfig(cfg config.ProviderConfig) repository.Provi
 		SupportsImages:           true,
 		SupportsStructuredOutput: providerType != "anthropic",
 		SupportsLongContext:      cfg.MaxTokens >= 32000,
+		SupportsEmbeddings:       providerType == "openai" || providerType == "azure" || providerType == "",
+		RuntimeConfig:            runtimeConfigFromProviderConfig(cfg),
 	}
 
 	switch providerType {
@@ -59,6 +61,22 @@ func DefaultRegistryRecordFromConfig(cfg config.ProviderConfig) repository.Provi
 	}
 
 	return record
+}
+
+func runtimeConfigFromProviderConfig(cfg config.ProviderConfig) *repository.ProviderRuntimeConfig {
+	return &repository.ProviderRuntimeConfig{
+		GRPCTarget:    cfg.GRPCTarget,
+		GRPCUseTLS:    cfg.GRPCUseTLS,
+		GRPCAuthority: cfg.GRPCAuthority,
+		APIKey:        cfg.APIKey,
+		PriceInput:    cfg.PriceInput,
+		PriceOutput:   cfg.PriceOutput,
+		MaxTokens:     cfg.MaxTokens,
+		Timeout:       cfg.Timeout,
+		Enabled:       cfg.Enabled,
+		Headers:       cfg.Headers,
+		ExtraBody:     cfg.ExtraBody,
+	}
 }
 
 func registryAllowsRequest(record repository.ProviderRegistryRecord, req *ResponseRequest) bool {

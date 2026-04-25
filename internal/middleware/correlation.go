@@ -3,9 +3,12 @@ package middleware
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/gateyes/gateway/internal/trace"
 )
 
 func Correlation() gin.HandlerFunc {
@@ -30,7 +33,15 @@ func Correlation() gin.HandlerFunc {
 		SetRequestContext(c, requestCtx)
 		c.Writer.Header().Set(RequestIDHeader, requestID)
 		c.Writer.Header().Set(TraceparentHeader, traceparent)
+
+		ctx := trace.StartSpan(c.Request.Context(), traceID, "http_request")
+		c.Request = c.Request.WithContext(ctx)
 		c.Next()
+		trace.FinishSpan(c.Request.Context(), map[string]string{
+			"method": c.Request.Method,
+			"path":   c.Request.URL.Path,
+			"status": strconv.Itoa(c.Writer.Status()),
+		})
 	}
 }
 

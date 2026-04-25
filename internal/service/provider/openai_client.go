@@ -141,3 +141,43 @@ func joinOpenAIPath(baseURL, path string) string {
 	}
 	return base + path
 }
+
+func (p *openAIProvider) CreateEmbedding(ctx context.Context, req *EmbeddingRequest) (*EmbeddingResponse, error) {
+	payload := map[string]any{
+		"model": req.Model,
+		"input": req.Input,
+	}
+	body, _ := json.Marshal(payload)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, joinOpenAIPath(p.cfg.BaseURL, "/v1/embeddings"), bytes.NewReader(body))
+	if err != nil {
+		return nil, newProviderConfigError("provider.openai.new_embedding_request", err.Error())
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
+	applyProviderProfile(p.cfg, payload, httpReq.Header)
+
+	body, _ = json.Marshal(payload)
+	httpReq.Body = io.NopCloser(bytes.NewReader(body))
+	httpReq.ContentLength = int64(len(body))
+
+	httpResp, err := p.client.Do(httpReq)
+	if err != nil {
+		return nil, newProviderTransportError("provider.openai.create_embedding", err)
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode != http.StatusOK {
+		return nil, newUpstreamStatusError(httpResp)
+	}
+
+	respBody, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return nil, newProviderParseError("provider.openai.read_embedding_response", err, "read upstream embedding body")
+	}
+
+	var result EmbeddingResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, newProviderParseError("provider.openai.parse_embedding_response", err, "decode embedding response")
+	}
+	return &result, nil
+}

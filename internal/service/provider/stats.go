@@ -10,6 +10,11 @@ type Stats struct {
 	providerStats map[string]*ProviderStats
 }
 
+type tokenBucket struct {
+	timestamp int64
+	tokens    int64
+}
+
 type ProviderStats struct {
 	Name            string    `json:"name"`
 	Type            string    `json:"type"`
@@ -28,6 +33,7 @@ type ProviderStats struct {
 	UpdatedAt       time.Time `json:"updated_at"`
 	latencySum      int64
 	latencyCount    int64
+	buckets         [60]tokenBucket
 }
 
 func NewStats() *Stats {
@@ -46,6 +52,12 @@ func (s *Stats) Register(p Provider) {
 		Status:    "healthy",
 		UpdatedAt: time.Now(),
 	}
+}
+
+func (s *Stats) Unregister(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.providerStats, name)
 }
 
 func (s *Stats) RecordRequest(name string, success bool, tokens int, latencyMs int64) {
@@ -78,6 +90,13 @@ func (s *Stats) RecordRequest(name string, success bool, tokens int, latencyMs i
 	if latencyMs > stats.MaxLatencyMs {
 		stats.MaxLatencyMs = latencyMs
 	}
+
+	now := time.Now().Unix()
+	idx := now % 60
+	if stats.buckets[idx].timestamp != now {
+		stats.buckets[idx] = tokenBucket{timestamp: now, tokens: 0}
+	}
+	stats.buckets[idx].tokens += int64(tokens)
 }
 
 func (s *Stats) IncrementLoad(name string) {
@@ -123,6 +142,36 @@ func (s *Stats) List() []*ProviderStats {
 		result = append(result, stats)
 	}
 	return result
+}
+
+func (s *Stats) TPM(name string) int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	stats, ok := s.providerStats[name]
+	if !ok {
+		return 0
+	}
+
+	cutoff := time.Now().Unix() - 60
+	var total int64
+	for _, b := range stats.buckets {
+		if b.timestamp >= cutoff {
+			total += b.tokens
+		}
+	}
+	return total
+}
+
+func (s *Stats) CurrentLoad(name string) int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	stats, ok := s.providerStats[name]
+	if !ok {
+		return 0
+	}
+	return stats.CurrentLoad
 }
 
 func (s *Stats) GlobalStats() (int64, int64, int64, int64, float64) {

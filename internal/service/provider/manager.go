@@ -47,6 +47,8 @@ func NewManager(cfg []config.ProviderConfig) (*Manager, error) {
 }
 
 func (m *Manager) Get(name string) (Provider, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	p, ok := m.providers[name]
 	return p, ok
 }
@@ -121,6 +123,8 @@ func (m *Manager) FilterRoutableByNames(names []string, req *ResponseRequest) []
 }
 
 func (m *Manager) List() []Provider {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	result := make([]Provider, 0, len(m.providers))
 	for _, provider := range m.providers {
 		result = append(result, provider)
@@ -133,6 +137,8 @@ func (m *Manager) ListByNames(names []string) []Provider {
 		return nil
 	}
 
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	result := make([]Provider, 0, len(names))
 	for _, name := range names {
 		if provider, ok := m.providers[name]; ok {
@@ -146,9 +152,67 @@ func (m *Manager) CloseIdleConnections() {
 	if m == nil {
 		return
 	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	for _, instance := range m.providers {
 		if closer, ok := instance.(interface{ CloseIdleConnections() }); ok {
 			closer.CloseIdleConnections()
+		}
+	}
+}
+
+func (m *Manager) UpsertRuntimeProvider(record repository.ProviderRegistryRecord) error {
+	if m == nil {
+		return nil
+	}
+	cfg := providerConfigFromRegistry(record)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if record.Enabled {
+		instance, err := newProvider(cfg)
+		if err != nil {
+			return err
+		}
+		if existing, ok := m.providers[record.Name]; ok {
+			closeProviderIdleConnections(existing)
+		}
+		m.providers[record.Name] = instance
+		if m.Stats != nil {
+			m.Stats.Register(instance)
+			m.Stats.SetStatus(record.Name, firstNonEmptyHealth(record.HealthStatus))
+		}
+		if m.defaultProvider == "" {
+			m.defaultProvider = record.Name
+		}
+	} else {
+		if existing, ok := m.providers[record.Name]; ok {
+			closeProviderIdleConnections(existing)
+			delete(m.providers, record.Name)
+		}
+	}
+	m.registry[record.Name] = record
+	return nil
+}
+
+func (m *Manager) RemoveRuntimeProvider(name string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if existing, ok := m.providers[name]; ok {
+		closeProviderIdleConnections(existing)
+		delete(m.providers, name)
+	}
+	delete(m.registry, name)
+	if m.Stats != nil {
+		m.Stats.Unregister(name)
+	}
+	if m.defaultProvider == name {
+		m.defaultProvider = ""
+		for candidate := range m.providers {
+			m.defaultProvider = candidate
+			break
 		}
 	}
 }
@@ -186,4 +250,58 @@ func firstNonEmptyHealth(value string) string {
 		return ProviderHealthHealthy
 	}
 	return value
+}
+
+func providerConfigFromRegistry(record repository.ProviderRegistryRecord) config.ProviderConfig {
+	cfg := config.ProviderConfig{
+		Name:     record.Name,
+		Type:     record.Type,
+		Vendor:   record.Vendor,
+		BaseURL:  record.BaseURL,
+		Endpoint: record.Endpoint,
+		Model:    record.Model,
+		Weight:   record.RoutingWeight,
+		Enabled:  record.Enabled,
+	}
+	if record.RuntimeConfig != nil {
+		cfg.GRPCTarget = record.RuntimeConfig.GRPCTarget
+		cfg.GRPCUseTLS = record.RuntimeConfig.GRPCUseTLS
+		cfg.GRPCAuthority = record.RuntimeConfig.GRPCAuthority
+		cfg.APIKey = record.RuntimeConfig.APIKey
+		cfg.PriceInput = record.RuntimeConfig.PriceInput
+		cfg.PriceOutput = record.RuntimeConfig.PriceOutput
+		cfg.MaxTokens = record.RuntimeConfig.MaxTokens
+		cfg.Timeout = record.RuntimeConfig.Timeout
+		cfg.Headers = cloneStringMap(record.RuntimeConfig.Headers)
+		cfg.ExtraBody = cloneAnyMap(record.RuntimeConfig.ExtraBody)
+	}
+	return cfg
+}
+
+func closeProviderIdleConnections(instance Provider) {
+	if closer, ok := instance.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func cloneAnyMap(values map[string]any) map[string]any {
+	if len(values) == 0 {
+		return nil
+	}
+	cloned := make(map[string]any, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
 }

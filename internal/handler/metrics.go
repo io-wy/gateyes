@@ -1,9 +1,11 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -32,12 +34,19 @@ type Metrics struct {
 	llmFallbacks         *prometheus.CounterVec
 	providerRequests     *prometheus.CounterVec
 	providerCircuitState *prometheus.GaugeVec
+
+	providerCurrentLoad  *prometheus.GaugeVec
+	providerTPM          *prometheus.GaugeVec
+	providerHealthStatus *prometheus.GaugeVec
 }
+
+var registerGoCollectorOnce sync.Once
 
 const (
 	metricsSurfaceResponses       = "responses"
 	metricsSurfaceChatCompletions = "chat_completions"
 	metricsSurfaceMessages        = "messages"
+	metricsSurfaceEmbeddings      = "embeddings"
 	metricsSurfaceModels          = "models"
 	metricsSurfaceAdmin           = "admin"
 
@@ -70,6 +79,13 @@ func NewMetricsFromConfig(cfg config.MetricsConfig) *Metrics {
 	}
 
 	metrics.handler = promhttp.Handler()
+	registerGoCollectorOnce.Do(func() {
+		if err := prometheus.Register(prometheus.NewGoCollector()); err != nil {
+			if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
+				panic(err)
+			}
+		}
+	})
 	metrics.llmRequests = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "llm_requests_total"}, []string{"surface", "result", "provider"})
 	metrics.llmInflightRequests = promauto.NewGaugeVec(prometheus.GaugeOpts{Namespace: namespace, Name: "llm_inflight_requests"}, []string{"surface"})
 	metrics.llmRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
@@ -99,6 +115,9 @@ func NewMetricsFromConfig(cfg config.MetricsConfig) *Metrics {
 	metrics.llmFallbacks = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "llm_fallbacks_total"}, []string{"provider"})
 	metrics.providerRequests = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "provider_requests_total"}, []string{"provider", "result"})
 	metrics.providerCircuitState = promauto.NewGaugeVec(prometheus.GaugeOpts{Namespace: namespace, Name: "provider_circuit_state"}, []string{"tenant_id", "provider"})
+	metrics.providerCurrentLoad = promauto.NewGaugeVec(prometheus.GaugeOpts{Namespace: namespace, Name: "provider_current_load"}, []string{"provider"})
+	metrics.providerTPM = promauto.NewGaugeVec(prometheus.GaugeOpts{Namespace: namespace, Name: "provider_tpm"}, []string{"provider"})
+	metrics.providerHealthStatus = promauto.NewGaugeVec(prometheus.GaugeOpts{Namespace: namespace, Name: "provider_health_status"}, []string{"provider"})
 	return metrics
 }
 
@@ -198,6 +217,48 @@ func normalizeMetricsProvider(providerName string) string {
 
 func NormalizeMetricsProvider(providerName string) string {
 	return normalizeMetricsProvider(providerName)
+}
+
+func (m *Metrics) StartProviderStatsExporter(ctx context.Context, stats *provider.Stats, interval time.Duration) {
+	if m == nil || !m.enabled || stats == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			m.exportProviderStats(stats)
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (m *Metrics) exportProviderStats(stats *provider.Stats) {
+	for _, item := range stats.List() {
+		providerLabel := normalizeMetricsProvider(item.Name)
+		m.providerCurrentLoad.WithLabelValues(providerLabel).Set(float64(item.CurrentLoad))
+		m.providerTPM.WithLabelValues(providerLabel).Set(float64(stats.TPM(item.Name)))
+		statusValue := providerHealthStatusValue(item.Status)
+		m.providerHealthStatus.WithLabelValues(providerLabel).Set(float64(statusValue))
+	}
+}
+
+func providerHealthStatusValue(status string) int {
+	switch status {
+	case "healthy":
+		return 0
+	case "degraded":
+		return 1
+	case "unhealthy":
+		return 2
+	default:
+		return 3
+	}
 }
 
 func classifyMetricsError(err error, httpErrType string) (result, errorClass string) {

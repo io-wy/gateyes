@@ -180,10 +180,30 @@ type Provider interface {
 	Type() string
 	BaseURL() string
 	Model() string
+	Weight() int
 	UnitCost() float64
 	Cost(promptTokens, completionTokens int) float64
 	CreateResponse(ctx context.Context, req *ResponseRequest) (*Response, error)
 	StreamResponse(ctx context.Context, req *ResponseRequest) (<-chan ResponseEvent, <-chan error)
+	CreateEmbedding(ctx context.Context, req *EmbeddingRequest) (*EmbeddingResponse, error)
+}
+
+type EmbeddingRequest struct {
+	Model string `json:"model"`
+	Input any    `json:"input"`
+}
+
+type EmbeddingData struct {
+	Object    string    `json:"object"`
+	Index     int       `json:"index"`
+	Embedding []float64 `json:"embedding"`
+}
+
+type EmbeddingResponse struct {
+	Object string          `json:"object"`
+	Data   []EmbeddingData `json:"data"`
+	Model  string          `json:"model"`
+	Usage  Usage           `json:"usage"`
 }
 
 func (r *ResponseRequest) InputMessages() []Message {

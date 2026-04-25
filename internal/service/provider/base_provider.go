@@ -1,6 +1,8 @@
 package provider
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 
 	"github.com/gateyes/gateway/internal/config"
@@ -37,6 +39,10 @@ func (p *baseProvider) Model() string {
 	return p.cfg.Model
 }
 
+func (p *baseProvider) Weight() int {
+	return p.cfg.Weight
+}
+
 func (p *baseProvider) UnitCost() float64 {
 	return p.cfg.PriceInput + p.cfg.PriceOutput
 }
@@ -50,4 +56,8 @@ func (p *baseProvider) CloseIdleConnections() {
 		return
 	}
 	p.client.CloseIdleConnections()
+}
+
+func (p *baseProvider) CreateEmbedding(ctx context.Context, req *EmbeddingRequest) (*EmbeddingResponse, error) {
+	return nil, fmt.Errorf("provider %s does not support embeddings", p.cfg.Name)
 }
