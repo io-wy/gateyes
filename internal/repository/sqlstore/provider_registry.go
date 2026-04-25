@@ -3,6 +3,7 @@ package sqlstore
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -15,7 +16,7 @@ func (s *Store) ListProviderRegistry(ctx context.Context) ([]repository.Provider
 SELECT name, type, vendor, base_url, endpoint, model,
        enabled, drain, health_status, routing_weight,
        supports_chat, supports_responses, supports_messages, supports_stream,
-       supports_tools, supports_images, supports_structured_output, supports_long_context,
+       supports_tools, supports_images, supports_structured_output, supports_long_context, supports_embeddings, config_body,
        created_at, updated_at
 FROM provider_registry
 ORDER BY name`)
@@ -43,7 +44,7 @@ func (s *Store) GetProviderRegistry(ctx context.Context, name string) (*reposito
 SELECT name, type, vendor, base_url, endpoint, model,
        enabled, drain, health_status, routing_weight,
        supports_chat, supports_responses, supports_messages, supports_stream,
-       supports_tools, supports_images, supports_structured_output, supports_long_context,
+       supports_tools, supports_images, supports_structured_output, supports_long_context, supports_embeddings, config_body,
        created_at, updated_at
 FROM provider_registry
 WHERE name = ?
@@ -67,6 +68,10 @@ func (s *Store) UpsertProviderRegistry(ctx context.Context, record repository.Pr
 	if record.UpdatedAt.IsZero() {
 		record.UpdatedAt = now
 	}
+	configBody, err := encodeProviderRuntimeConfig(record.RuntimeConfig)
+	if err != nil {
+		return fmt.Errorf("encode provider runtime config: %w", err)
+	}
 
 	existing, err := s.GetProviderRegistry(ctx, record.Name)
 	switch err {
@@ -77,7 +82,7 @@ UPDATE provider_registry
 SET type = ?, vendor = ?, base_url = ?, endpoint = ?, model = ?,
     enabled = ?, drain = ?, health_status = ?, routing_weight = ?,
     supports_chat = ?, supports_responses = ?, supports_messages = ?, supports_stream = ?,
-    supports_tools = ?, supports_images = ?, supports_structured_output = ?, supports_long_context = ?,
+    supports_tools = ?, supports_images = ?, supports_structured_output = ?, supports_long_context = ?, supports_embeddings = ?, config_body = ?,
     updated_at = ?
 WHERE name = ?`),
 			record.Type,
@@ -97,6 +102,8 @@ WHERE name = ?`),
 			boolToIntFlag(record.SupportsImages),
 			boolToIntFlag(record.SupportsStructuredOutput),
 			boolToIntFlag(record.SupportsLongContext),
+			boolToIntFlag(record.SupportsEmbeddings),
+			configBody,
 			record.UpdatedAt,
 			record.Name,
 		)
@@ -110,9 +117,9 @@ INSERT INTO provider_registry (
 	name, type, vendor, base_url, endpoint, model,
 	enabled, drain, health_status, routing_weight,
 	supports_chat, supports_responses, supports_messages, supports_stream,
-	supports_tools, supports_images, supports_structured_output, supports_long_context,
+	supports_tools, supports_images, supports_structured_output, supports_long_context, supports_embeddings, config_body,
 	created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 			record.Name,
 			record.Type,
 			record.Vendor,
@@ -131,6 +138,8 @@ INSERT INTO provider_registry (
 			boolToIntFlag(record.SupportsImages),
 			boolToIntFlag(record.SupportsStructuredOutput),
 			boolToIntFlag(record.SupportsLongContext),
+			boolToIntFlag(record.SupportsEmbeddings),
+			configBody,
 			record.CreatedAt,
 			record.UpdatedAt,
 		)
@@ -199,6 +208,10 @@ func (s *Store) UpdateProviderRegistry(ctx context.Context, name string, params 
 		sets = append(sets, "supports_long_context = ?")
 		args = append(args, boolToIntFlag(*params.SupportsLongContext))
 	}
+	if params.SupportsEmbeddings != nil {
+		sets = append(sets, "supports_embeddings = ?")
+		args = append(args, boolToIntFlag(*params.SupportsEmbeddings))
+	}
 	sets = append(sets, "updated_at = ?")
 	args = append(args, time.Now().UTC(), current.Name)
 
@@ -209,6 +222,20 @@ WHERE name = ?`, strings.Join(sets, ", "))), args...); err != nil {
 		return nil, fmt.Errorf("update provider registry: %w", err)
 	}
 	return s.GetProviderRegistry(ctx, name)
+}
+
+func (s *Store) DeleteProviderRegistry(ctx context.Context, name string) error {
+	result, err := s.db.Conn.ExecContext(ctx, s.db.Rebind(`
+DELETE FROM provider_registry
+WHERE name = ?`), name)
+	if err != nil {
+		return fmt.Errorf("delete provider registry: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err == nil && affected == 0 {
+		return repository.ErrNotFound
+	}
+	return nil
 }
 
 type rowScanner interface {
@@ -228,6 +255,8 @@ func scanProviderRegistryRecord(scanner rowScanner) (*repository.ProviderRegistr
 		supportsImages      int
 		supportsStructured  int
 		supportsLongContext int
+		supportsEmbeddings  int
+		configBody          string
 	)
 	if err := scanner.Scan(
 		&record.Name,
@@ -248,6 +277,8 @@ func scanProviderRegistryRecord(scanner rowScanner) (*repository.ProviderRegistr
 		&supportsImages,
 		&supportsStructured,
 		&supportsLongContext,
+		&supportsEmbeddings,
+		&configBody,
 		&record.CreatedAt,
 		&record.UpdatedAt,
 	); err != nil {
@@ -263,7 +294,35 @@ func scanProviderRegistryRecord(scanner rowScanner) (*repository.ProviderRegistr
 	record.SupportsImages = supportsImages == 1
 	record.SupportsStructuredOutput = supportsStructured == 1
 	record.SupportsLongContext = supportsLongContext == 1
+	record.SupportsEmbeddings = supportsEmbeddings == 1
+	runtimeConfig, err := decodeProviderRuntimeConfig(configBody)
+	if err != nil {
+		return nil, err
+	}
+	record.RuntimeConfig = runtimeConfig
 	return &record, nil
+}
+
+func encodeProviderRuntimeConfig(cfg *repository.ProviderRuntimeConfig) (string, error) {
+	if cfg == nil {
+		return "{}", nil
+	}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+func decodeProviderRuntimeConfig(raw string) (*repository.ProviderRuntimeConfig, error) {
+	if raw == "" || raw == "{}" {
+		return nil, nil
+	}
+	var cfg repository.ProviderRuntimeConfig
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
 }
 
 func boolToIntFlag(value bool) int {

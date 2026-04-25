@@ -14,6 +14,10 @@ const (
 	RoleSuperAdmin  = "super_admin"
 	RoleTenantAdmin = "tenant_admin"
 	RoleTenantUser  = "tenant_user"
+
+	BudgetPolicyHardReject = "hard_reject"
+	BudgetPolicySoftAlert  = "soft_alert"
+	BudgetPolicyGrace      = "grace"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -41,6 +45,13 @@ type UserStore interface {
 	Stats(ctx context.Context, tenantID string) (*UserStats, error)
 }
 
+type BudgetCheckResult struct {
+	Allowed   bool
+	Scope     string
+	Policy    string
+	Remaining float64
+}
+
 type IdentityStore interface {
 	Authenticate(ctx context.Context, key string) (*AuthIdentity, error)
 	TouchAPIKey(ctx context.Context, apiKeyID string, at time.Time) error
@@ -48,6 +59,10 @@ type IdentityStore interface {
 	ConsumeAPIKeyBudget(ctx context.Context, apiKeyID string, cost float64) (bool, error)
 	ConsumeProjectBudget(ctx context.Context, projectID string, cost float64) (bool, error)
 	ConsumeTenantBudget(ctx context.Context, tenantID string, cost float64) (bool, error)
+	CheckAPIKeyBudget(ctx context.Context, apiKeyID string, estimatedCost float64) (*BudgetCheckResult, error)
+	CheckProjectBudget(ctx context.Context, projectID string, estimatedCost float64) (*BudgetCheckResult, error)
+	CheckTenantBudget(ctx context.Context, tenantID string, estimatedCost float64) (*BudgetCheckResult, error)
+	GetBudgetStatus(ctx context.Context, tenantID, projectID, apiKeyID string) ([]BudgetStatus, error)
 	EnsureBootstrapKey(ctx context.Context, params BootstrapAPIKeyParams) error
 }
 
@@ -109,6 +124,21 @@ type ResponseStore interface {
 	CreateResponse(ctx context.Context, record ResponseRecord) error
 	UpdateResponse(ctx context.Context, record ResponseRecord) error
 	GetResponse(ctx context.Context, tenantID string, id string) (*ResponseRecord, error)
+	ListResponses(ctx context.Context, tenantID string, filter ResponseFilter) ([]ResponseRecord, error)
+}
+
+type ResponseFilter struct {
+	ProviderName string
+	Model        string
+	Status       string
+	ProjectID    string
+	APIKeyID     string
+	UserID       string
+	Query        string
+	StartTime    time.Time
+	EndTime      time.Time
+	Limit        int
+	Offset       int
 }
 
 type ProjectStore interface {
@@ -123,18 +153,20 @@ type ProviderRegistryStore interface {
 	GetProviderRegistry(ctx context.Context, name string) (*ProviderRegistryRecord, error)
 	UpsertProviderRegistry(ctx context.Context, record ProviderRegistryRecord) error
 	UpdateProviderRegistry(ctx context.Context, name string, params UpdateProviderRegistryParams) (*ProviderRegistryRecord, error)
+	DeleteProviderRegistry(ctx context.Context, name string) error
 }
 
 type TenantRecord struct {
-	ID        string
-	Slug      string
-	Name      string
-	Status    string
-	BudgetUSD float64
-	SpentUSD  float64
-	Policy    *ServicePolicyConfig
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID           string
+	Slug         string
+	Name         string
+	Status       string
+	BudgetUSD    float64
+	SpentUSD     float64
+	BudgetPolicy string
+	Policy       *ServicePolicyConfig
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 type UserRecord struct {
@@ -179,8 +211,10 @@ type AuthIdentity struct {
 	ProjectStatus      string
 	ProjectBudgetUSD   float64
 	ProjectSpentUSD    float64
+	ProjectBudgetPolicy string
 	APIKeyBudgetUSD    float64
 	APIKeySpentUSD     float64
+	APIKeyBudgetPolicy string
 	UserID             string
 	UserName           string
 	UserEmail          string
@@ -190,11 +224,23 @@ type AuthIdentity struct {
 	TenantStatus       string
 	TenantBudgetUSD    float64
 	TenantSpentUSD     float64
+	TenantBudgetPolicy string
 	Role               string
 	Quota              int
 	Used               int
 	QPS                int
 	Models             []string
+}
+
+type BudgetStatus struct {
+	Scope       string  `json:"scope"`
+	ID          string  `json:"id"`
+	BudgetUSD   float64 `json:"budget_usd"`
+	SpentUSD    float64 `json:"spent_usd"`
+	OverageUSD  float64 `json:"overage_usd"`
+	Policy      string  `json:"policy"`
+	Utilization float64 `json:"utilization"`
+	IsExhausted bool    `json:"is_exhausted"`
 }
 
 type CreateUserParams struct {
@@ -246,10 +292,11 @@ type EnsureTenantParams struct {
 }
 
 type UpdateTenantParams struct {
-	Name      *string
-	Status    *string
-	BudgetUSD *float64
-	Policy    *ServicePolicyConfig
+	Name         *string
+	Status       *string
+	BudgetUSD    *float64
+	BudgetPolicy *string
+	Policy       *ServicePolicyConfig
 }
 
 type APIKeyRecord struct {
@@ -265,6 +312,7 @@ type APIKeyRecord struct {
 	Status           string
 	BudgetUSD        float64
 	SpentUSD         float64
+	BudgetPolicy     string
 	RateLimitQPS     int
 	AllowedModels    []string
 	AllowedProviders []string
@@ -298,6 +346,7 @@ type UpdateAPIKeyParams struct {
 	ProjectID        *string
 	Status           *string
 	BudgetUSD        *float64
+	BudgetPolicy     *string
 	RateLimitQPS     *int
 	AllowedModels    *[]string
 	AllowedProviders *[]string
@@ -311,17 +360,18 @@ type RotateAPIKeyParams struct {
 }
 
 type ProjectRecord struct {
-	ID         string
-	TenantID   string
-	TenantSlug string
-	Slug       string
-	Name       string
-	Status     string
-	BudgetUSD  float64
-	SpentUSD   float64
-	Policy     *ServicePolicyConfig
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	ID           string
+	TenantID     string
+	TenantSlug   string
+	Slug         string
+	Name         string
+	Status       string
+	BudgetUSD    float64
+	SpentUSD     float64
+	BudgetPolicy string
+	Policy       *ServicePolicyConfig
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 type CreateProjectParams struct {
@@ -334,10 +384,11 @@ type CreateProjectParams struct {
 }
 
 type UpdateProjectParams struct {
-	Name      *string
-	Status    *string
-	BudgetUSD *float64
-	Policy    *ServicePolicyConfig
+	Name         *string
+	Status       *string
+	BudgetUSD    *float64
+	BudgetPolicy *string
+	Policy       *ServicePolicyConfig
 }
 
 type UsageRecord struct {
@@ -642,8 +693,24 @@ type ProviderRegistryRecord struct {
 	SupportsImages           bool
 	SupportsStructuredOutput bool
 	SupportsLongContext      bool
+	SupportsEmbeddings       bool
+	RuntimeConfig            *ProviderRuntimeConfig
 	CreatedAt                time.Time
 	UpdatedAt                time.Time
+}
+
+type ProviderRuntimeConfig struct {
+	GRPCTarget    string            `json:"grpc_target,omitempty"`
+	GRPCUseTLS    bool              `json:"grpc_use_tls,omitempty"`
+	GRPCAuthority string            `json:"grpc_authority,omitempty"`
+	APIKey        string            `json:"api_key,omitempty"`
+	PriceInput    float64           `json:"price_input,omitempty"`
+	PriceOutput   float64           `json:"price_output,omitempty"`
+	MaxTokens     int               `json:"max_tokens,omitempty"`
+	Timeout       int               `json:"timeout,omitempty"`
+	Enabled       bool              `json:"enabled,omitempty"`
+	Headers       map[string]string `json:"headers,omitempty"`
+	ExtraBody     map[string]any    `json:"extra_body,omitempty"`
 }
 
 type UpdateProviderRegistryParams struct {
@@ -659,6 +726,7 @@ type UpdateProviderRegistryParams struct {
 	SupportsImages           *bool
 	SupportsStructuredOutput *bool
 	SupportsLongContext      *bool
+	SupportsEmbeddings       *bool
 }
 
 func IsAdminRole(role string) bool {

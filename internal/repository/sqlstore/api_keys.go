@@ -60,7 +60,7 @@ func (s *Store) ListAPIKeys(ctx context.Context, tenantID string, filter reposit
 	query := `
 SELECT ak.id, u.tenant_id, t.slug, ak.user_id, u.name, u.email,
 	COALESCE(ak.project_id, ''), COALESCE(p.slug, ''), ak.key, ak.status,
-	ak.budget_usd, ak.spent_usd, ak.rate_limit_qps, ak.allowed_models, ak.allowed_providers, ak.allowed_services,
+	ak.budget_usd, ak.spent_usd, ak.budget_policy, ak.rate_limit_qps, ak.allowed_models, ak.allowed_providers, ak.allowed_services,
 	ak.last_used_at, ak.revoked_at, ak.created_at, ak.updated_at
 FROM api_keys ak
 JOIN users u ON u.id = ak.user_id
@@ -111,7 +111,7 @@ func (s *Store) GetAPIKey(ctx context.Context, tenantID string, idOrKey string) 
 	query := `
 SELECT ak.id, u.tenant_id, t.slug, ak.user_id, u.name, u.email,
 	COALESCE(ak.project_id, ''), COALESCE(p.slug, ''), ak.key, ak.status,
-	ak.budget_usd, ak.spent_usd, ak.rate_limit_qps, ak.allowed_models, ak.allowed_providers, ak.allowed_services,
+	ak.budget_usd, ak.spent_usd, ak.budget_policy, ak.rate_limit_qps, ak.allowed_models, ak.allowed_providers, ak.allowed_services,
 	ak.last_used_at, ak.revoked_at, ak.created_at, ak.updated_at
 FROM api_keys ak
 JOIN users u ON u.id = ak.user_id
@@ -160,6 +160,10 @@ func (s *Store) UpdateAPIKey(ctx context.Context, tenantID string, idOrKey strin
 	if params.BudgetUSD != nil {
 		sets = append(sets, "budget_usd = ?")
 		args = append(args, *params.BudgetUSD)
+	}
+	if params.BudgetPolicy != nil {
+		sets = append(sets, "budget_policy = ?")
+		args = append(args, *params.BudgetPolicy)
 	}
 	if params.RateLimitQPS != nil {
 		sets = append(sets, "rate_limit_qps = ?")
@@ -234,6 +238,7 @@ func scanAPIKeyRecord(scanner rowScanner) (*repository.APIKeyRecord, error) {
 		&record.Status,
 		&record.BudgetUSD,
 		&record.SpentUSD,
+		&record.BudgetPolicy,
 		&record.RateLimitQPS,
 		&allowedModelsRaw,
 		&allowedProvidersRaw,

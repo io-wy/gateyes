@@ -701,3 +701,75 @@ func TestAuditLogLifecycle(t *testing.T) {
 		t.Fatalf("ListAuditLogs() = %+v, want one matching audit record", items)
 	}
 }
+
+func TestListResponsesSupportsOperatorFilters(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	tenant, err := store.EnsureTenant(ctx, repository.EnsureTenantParams{
+		ID:     "tenant-response-filter",
+		Slug:   "tenant-response-filter",
+		Name:   "Tenant Response Filter",
+		Status: repository.StatusActive,
+	})
+	if err != nil {
+		t.Fatalf("EnsureTenant() error: %v", err)
+	}
+	project, err := store.CreateProject(ctx, repository.CreateProjectParams{
+		TenantID: tenant.ID,
+		Slug:     "proj-filter",
+		Name:     "Project Filter",
+		Status:   repository.StatusActive,
+	})
+	if err != nil {
+		t.Fatalf("CreateProject() error: %v", err)
+	}
+
+	now := time.Now().UTC()
+	records := []repository.ResponseRecord{
+		{
+			ID:           "resp-openai-ok",
+			TenantID:     tenant.ID,
+			ProjectID:    project.ID,
+			ProviderName: "openai-a",
+			Model:        "gpt-test",
+			Status:       "completed",
+			RequestBody:  []byte(`{"input":"hello alpha"}`),
+			ResponseBody: []byte(`{"output":"match keyword"}`),
+			CreatedAt:    now.Add(-2 * time.Hour),
+			UpdatedAt:    now.Add(-2 * time.Hour),
+		},
+		{
+			ID:           "resp-anthropic-fail",
+			TenantID:     tenant.ID,
+			ProjectID:    "",
+			ProviderName: "anthropic-a",
+			Model:        "claude-test",
+			Status:       "error",
+			RequestBody:  []byte(`{"input":"other"}`),
+			ResponseBody: []byte(`{"error":"boom"}`),
+			CreatedAt:    now.Add(-1 * time.Hour),
+			UpdatedAt:    now.Add(-1 * time.Hour),
+		},
+	}
+	for _, record := range records {
+		if err := store.CreateResponse(ctx, record); err != nil {
+			t.Fatalf("CreateResponse(%s) error: %v", record.ID, err)
+		}
+	}
+
+	items, err := store.ListResponses(ctx, tenant.ID, repository.ResponseFilter{
+		ProviderName: "openai-a",
+		Model:        "gpt-test",
+		Status:       "completed",
+		ProjectID:    project.ID,
+		Query:        "keyword",
+		Limit:        10,
+	})
+	if err != nil {
+		t.Fatalf("ListResponses(filtered) error: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "resp-openai-ok" {
+		t.Fatalf("ListResponses(filtered) = %+v, want resp-openai-ok", items)
+	}
+}

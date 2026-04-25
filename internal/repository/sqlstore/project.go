@@ -49,7 +49,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 
 func (s *Store) ListProjects(ctx context.Context, tenantID string) ([]repository.ProjectRecord, error) {
 	query := `
-SELECT p.id, p.tenant_id, t.slug, p.slug, p.name, p.status, p.budget_usd, p.spent_usd, p.policy_body, p.created_at, p.updated_at
+SELECT p.id, p.tenant_id, t.slug, p.slug, p.name, p.status, p.budget_usd, p.spent_usd, p.budget_policy, p.policy_body, p.created_at, p.updated_at
 FROM projects p
 JOIN tenants t ON t.id = p.tenant_id`
 	args := make([]any, 0, 1)
@@ -105,6 +105,10 @@ func (s *Store) UpdateProject(ctx context.Context, tenantID string, idOrSlug str
 		sets = append(sets, "budget_usd = ?")
 		args = append(args, *params.BudgetUSD)
 	}
+	if params.BudgetPolicy != nil {
+		sets = append(sets, "budget_policy = ?")
+		args = append(args, *params.BudgetPolicy)
+	}
 	if params.Policy != nil {
 		policyBody, err := encodeServicePolicy(params.Policy)
 		if err != nil {
@@ -127,7 +131,7 @@ WHERE id = ?`, strings.Join(sets, ", "))), args...); err != nil {
 
 func (s *Store) loadProject(ctx context.Context, tenantID string, idOrSlug string) (*repository.ProjectRecord, error) {
 	query := `
-SELECT p.id, p.tenant_id, t.slug, p.slug, p.name, p.status, p.budget_usd, p.spent_usd, p.policy_body, p.created_at, p.updated_at
+SELECT p.id, p.tenant_id, t.slug, p.slug, p.name, p.status, p.budget_usd, p.spent_usd, p.budget_policy, p.policy_body, p.created_at, p.updated_at
 FROM projects p
 JOIN tenants t ON t.id = p.tenant_id
 WHERE (p.id = ? OR p.slug = ?)`
@@ -163,6 +167,7 @@ func scanProjectRecord(scanner rowScanner) (*repository.ProjectRecord, error) {
 		&record.Status,
 		&record.BudgetUSD,
 		&record.SpentUSD,
+		&record.BudgetPolicy,
 		&policyBody,
 		&record.CreatedAt,
 		&record.UpdatedAt,

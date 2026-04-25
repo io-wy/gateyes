@@ -207,6 +207,47 @@ func TestProviderRegistryCRUD(t *testing.T) {
 	}
 }
 
+func TestProviderRegistryPersistsRuntimeConfig(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	record := repository.ProviderRegistryRecord{
+		Name:          "runtime-openai",
+		Type:          "openai",
+		Vendor:        "",
+		BaseURL:       "https://runtime.example/v1",
+		Endpoint:      "chat",
+		Model:         "runtime-model",
+		Enabled:       true,
+		HealthStatus:  "healthy",
+		RoutingWeight: 4,
+		RuntimeConfig: &repository.ProviderRuntimeConfig{
+			GRPCTarget:    "",
+			GRPCUseTLS:    false,
+			GRPCAuthority: "",
+			APIKey:        "runtime-secret",
+			PriceInput:    0.1,
+			PriceOutput:   0.2,
+			MaxTokens:     256,
+			Timeout:       5,
+			Enabled:       true,
+			Headers:       map[string]string{"X-Test": "yes"},
+			ExtraBody:     map[string]any{"reasoning_effort": "medium"},
+		},
+	}
+	if err := store.UpsertProviderRegistry(ctx, record); err != nil {
+		t.Fatalf("UpsertProviderRegistry(runtime config) error: %v", err)
+	}
+
+	got, err := store.GetProviderRegistry(ctx, record.Name)
+	if err != nil {
+		t.Fatalf("GetProviderRegistry(runtime config) error: %v", err)
+	}
+	if got.RuntimeConfig == nil || got.RuntimeConfig.APIKey != "runtime-secret" || got.RuntimeConfig.Headers["X-Test"] != "yes" {
+		t.Fatalf("GetProviderRegistry(runtime config) = %+v, want persisted runtime config", got)
+	}
+}
+
 func TestProjectCRUDAndProjectAwareIdentity(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

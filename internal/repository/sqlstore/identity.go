@@ -14,11 +14,11 @@ import (
 
 func (s *Store) Authenticate(ctx context.Context, key string) (*repository.AuthIdentity, error) {
 	row := s.db.Conn.QueryRowContext(ctx, s.db.Rebind(`
-SELECT ak.id, ak.key, ak.secret_hash, ak.status, ak.project_id, ak.budget_usd, ak.spent_usd,
+SELECT ak.id, ak.key, ak.secret_hash, ak.status, ak.project_id, ak.budget_usd, ak.spent_usd, ak.budget_policy,
 	ak.allowed_models, ak.allowed_providers, ak.allowed_services, ak.rate_limit_qps,
 	u.id, u.name, u.email, u.status, u.quota, u.used, u.qps, u.role,
-	t.id, t.slug, t.status, t.budget_usd, t.spent_usd,
-	COALESCE(p.slug, ''), COALESCE(p.name, ''), COALESCE(p.status, ''), COALESCE(p.budget_usd, 0), COALESCE(p.spent_usd, 0)
+	t.id, t.slug, t.status, t.budget_usd, t.spent_usd, t.budget_policy,
+	COALESCE(p.slug, ''), COALESCE(p.name, ''), COALESCE(p.status, ''), COALESCE(p.budget_usd, 0), COALESCE(p.spent_usd, 0), COALESCE(p.budget_policy, 'hard_reject')
 FROM api_keys ak
 JOIN users u ON u.id = ak.user_id
 JOIN tenants t ON t.id = u.tenant_id
@@ -38,6 +38,7 @@ LIMIT 1`), key)
 		&identity.ProjectID,
 		&identity.APIKeyBudgetUSD,
 		&identity.APIKeySpentUSD,
+		&identity.APIKeyBudgetPolicy,
 		&apiKeyModelsRaw,
 		&apiKeyProvidersRaw,
 		&apiKeyServicesRaw,
@@ -55,11 +56,13 @@ LIMIT 1`), key)
 		&identity.TenantStatus,
 		&identity.TenantBudgetUSD,
 		&identity.TenantSpentUSD,
+		&identity.TenantBudgetPolicy,
 		&identity.ProjectSlug,
 		&identity.ProjectName,
 		&identity.ProjectStatus,
 		&identity.ProjectBudgetUSD,
 		&identity.ProjectSpentUSD,
+		&identity.ProjectBudgetPolicy,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, repository.ErrNotFound
@@ -286,4 +289,94 @@ func defaultRole(role string) string {
 		return repository.RoleTenantUser
 	}
 	return role
+}
+
+func (s *Store) CheckAPIKeyBudget(ctx context.Context, apiKeyID string, estimatedCost float64) (*repository.BudgetCheckResult, error) {
+	return s.checkBudget(ctx, "api_keys", apiKeyID, estimatedCost)
+}
+
+func (s *Store) CheckProjectBudget(ctx context.Context, projectID string, estimatedCost float64) (*repository.BudgetCheckResult, error) {
+	if projectID == "" {
+		return &repository.BudgetCheckResult{Allowed: true, Scope: "project", Policy: repository.BudgetPolicyHardReject}, nil
+	}
+	return s.checkBudget(ctx, "projects", projectID, estimatedCost)
+}
+
+func (s *Store) CheckTenantBudget(ctx context.Context, tenantID string, estimatedCost float64) (*repository.BudgetCheckResult, error) {
+	return s.checkBudget(ctx, "tenants", tenantID, estimatedCost)
+}
+
+func (s *Store) checkBudget(ctx context.Context, table, id string, estimatedCost float64) (*repository.BudgetCheckResult, error) {
+	var budget, spent float64
+	var policy string
+	if err := s.db.Conn.QueryRowContext(ctx, s.db.Rebind(
+		fmt.Sprintf(`SELECT budget_usd, spent_usd, budget_policy FROM %s WHERE id = ?`, table)), id,
+	).Scan(&budget, &spent, &policy); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return &repository.BudgetCheckResult{Allowed: true, Scope: table, Policy: policy}, nil
+		}
+		return nil, fmt.Errorf("check %s budget: %w", table, err)
+	}
+	if budget <= 0 {
+		return &repository.BudgetCheckResult{Allowed: true, Scope: table, Policy: policy, Remaining: -1}, nil
+	}
+	remaining := budget - spent - estimatedCost
+	allowed := remaining >= 0
+	return &repository.BudgetCheckResult{Allowed: allowed, Scope: table, Policy: policy, Remaining: remaining}, nil
+}
+
+func (s *Store) GetBudgetStatus(ctx context.Context, tenantID, projectID, apiKeyID string) ([]repository.BudgetStatus, error) {
+	var result []repository.BudgetStatus
+	if tenantID != "" {
+		var budget, spent, overage float64
+		var policy string
+		if err := s.db.Conn.QueryRowContext(ctx, s.db.Rebind(
+			`SELECT budget_usd, spent_usd, overage_usd, budget_policy FROM tenants WHERE id = ?`), tenantID,
+		).Scan(&budget, &spent, &overage, &policy); err == nil {
+			utilization := 0.0
+			if budget > 0 {
+				utilization = spent / budget
+			}
+			result = append(result, repository.BudgetStatus{
+				Scope: "tenant", ID: tenantID, BudgetUSD: budget, SpentUSD: spent,
+				OverageUSD: overage, Policy: policy, Utilization: utilization,
+				IsExhausted: budget > 0 && spent >= budget,
+			})
+		}
+	}
+	if projectID != "" {
+		var budget, spent, overage float64
+		var policy string
+		if err := s.db.Conn.QueryRowContext(ctx, s.db.Rebind(
+			`SELECT budget_usd, spent_usd, overage_usd, budget_policy FROM projects WHERE id = ?`), projectID,
+		).Scan(&budget, &spent, &overage, &policy); err == nil {
+			utilization := 0.0
+			if budget > 0 {
+				utilization = spent / budget
+			}
+			result = append(result, repository.BudgetStatus{
+				Scope: "project", ID: projectID, BudgetUSD: budget, SpentUSD: spent,
+				OverageUSD: overage, Policy: policy, Utilization: utilization,
+				IsExhausted: budget > 0 && spent >= budget,
+			})
+		}
+	}
+	if apiKeyID != "" {
+		var budget, spent, overage float64
+		var policy string
+		if err := s.db.Conn.QueryRowContext(ctx, s.db.Rebind(
+			`SELECT budget_usd, spent_usd, overage_usd, budget_policy FROM api_keys WHERE id = ?`), apiKeyID,
+		).Scan(&budget, &spent, &overage, &policy); err == nil {
+			utilization := 0.0
+			if budget > 0 {
+				utilization = spent / budget
+			}
+			result = append(result, repository.BudgetStatus{
+				Scope: "api_key", ID: apiKeyID, BudgetUSD: budget, SpentUSD: spent,
+				OverageUSD: overage, Policy: policy, Utilization: utilization,
+				IsExhausted: budget > 0 && spent >= budget,
+			})
+		}
+	}
+	return result, nil
 }

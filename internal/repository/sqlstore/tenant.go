@@ -76,6 +76,10 @@ func (s *Store) UpdateTenant(ctx context.Context, idOrSlug string, params reposi
 		sets = append(sets, "budget_usd = ?")
 		args = append(args, *params.BudgetUSD)
 	}
+	if params.BudgetPolicy != nil {
+		sets = append(sets, "budget_policy = ?")
+		args = append(args, *params.BudgetPolicy)
+	}
 	if params.Policy != nil {
 		policyBody, err := encodeServicePolicy(params.Policy)
 		if err != nil {

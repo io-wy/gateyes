@@ -124,7 +124,7 @@ LIMIT 1`
 
 func (s *Store) loadTenant(ctx context.Context, idOrSlug string) (*repository.TenantRecord, error) {
 	row := s.db.Conn.QueryRowContext(ctx, s.db.Rebind(`
-SELECT id, slug, name, status, budget_usd, spent_usd, policy_body, created_at, updated_at
+SELECT id, slug, name, status, budget_usd, spent_usd, budget_policy, policy_body, created_at, updated_at
 FROM tenants
 WHERE id = ?
    OR slug = ?
@@ -139,6 +139,7 @@ LIMIT 1`), idOrSlug, idOrSlug)
 		&tenant.Status,
 		&tenant.BudgetUSD,
 		&tenant.SpentUSD,
+		&tenant.BudgetPolicy,
 		&policyBody,
 		&tenant.CreatedAt,
 		&tenant.UpdatedAt,
