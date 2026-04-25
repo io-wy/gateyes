@@ -38,6 +38,22 @@ func (f *fakeIdentityStore) ConsumeTenantBudget(ctx context.Context, tenantID st
 	return true, nil
 }
 
+func (f *fakeIdentityStore) CheckAPIKeyBudget(ctx context.Context, apiKeyID string, estimatedCost float64) (*repository.BudgetCheckResult, error) {
+	return &repository.BudgetCheckResult{Allowed: true, Scope: "api_key"}, nil
+}
+
+func (f *fakeIdentityStore) CheckProjectBudget(ctx context.Context, projectID string, estimatedCost float64) (*repository.BudgetCheckResult, error) {
+	return &repository.BudgetCheckResult{Allowed: true, Scope: "project"}, nil
+}
+
+func (f *fakeIdentityStore) CheckTenantBudget(ctx context.Context, tenantID string, estimatedCost float64) (*repository.BudgetCheckResult, error) {
+	return &repository.BudgetCheckResult{Allowed: true, Scope: "tenant"}, nil
+}
+
+func (f *fakeIdentityStore) GetBudgetStatus(ctx context.Context, tenantID, projectID, apiKeyID string) ([]repository.BudgetStatus, error) {
+	return nil, nil
+}
+
 func (f *fakeIdentityStore) EnsureBootstrapKey(ctx context.Context, params repository.BootstrapAPIKeyParams) error {
 	if f.err != nil {
 		return f.err

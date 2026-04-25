@@ -17,24 +17,35 @@ import (
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/repository/sqlstore"
 	"github.com/gateyes/gateway/internal/service/alert"
+	"github.com/gateyes/gateway/internal/service/budget"
 	"github.com/gateyes/gateway/internal/service/catalog"
 	"github.com/gateyes/gateway/internal/service/limiter"
 	"github.com/gateyes/gateway/internal/service/provider"
 	responseSvc "github.com/gateyes/gateway/internal/service/responses"
 	"github.com/gateyes/gateway/internal/service/router"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 )
 
 func main() {
 	configPath := flag.String("config", "configs/config.yaml", "path to config file")
 	flag.Parse()
 
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	slog.SetDefault(slog.New(middleware.NewTraceHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))))
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		slog.Warn("failed to load config, using defaults", "error", err)
 		cfg = config.DefaultConfig()
 	}
+
+	shutdownTracer := initTracer(cfg.Tracing)
+	defer shutdownTracer()
 
 	database, err := db.Open(cfg.Database)
 	if err != nil {
@@ -62,7 +73,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := store.ReplaceTenantProviders(context.Background(), defaultTenant.ID, enabledProviderNames(cfg.Providers)); err != nil {
+	if err := seedTenantProviders(context.Background(), store, defaultTenant.ID, enabledProviderNames(cfg.Providers)); err != nil {
 		slog.Error("failed to seed default tenant providers", "error", err)
 		os.Exit(1)
 	}
@@ -94,18 +105,25 @@ func main() {
 		slog.Error("failed to load provider registry", "error", err)
 		os.Exit(1)
 	} else {
+		for _, record := range records {
+			if err := providerMgr.UpsertRuntimeProvider(record); err != nil {
+				slog.Error("failed to hydrate runtime provider", "provider", record.Name, "error", err)
+				os.Exit(1)
+			}
+		}
 		providerMgr.ApplyRegistry(records)
 	}
 
 	limiterSvc := limiter.NewLimiter(cfg.Limiter)
-	routerSvc := router.NewRouter(cfg.Router)
+	routerSvc := router.NewRouter(cfg.Router, providerMgr.Stats)
 	routerSvc.SetProviders(providerMgr.List())
 
 	// 初始化配额预警服务
 	alertSvc := alert.NewAlertService(cfg.Alert, store)
 	healthChecker := provider.NewHealthChecker(cfg.HealthCheck, store, providerMgr, alertSvc)
+	budgetSvc := budget.New(store)
 
-	httpMiddleware := middleware.New(store, limiterSvc, metrics)
+	httpMiddleware := middleware.New(store, limiterSvc, budgetSvc, alertSvc, metrics)
 	responsesService := responseSvc.New(&responseSvc.Dependencies{
 		Config:      cfg,
 		Store:       store,
@@ -113,11 +131,14 @@ func main() {
 		ProviderMgr: providerMgr,
 		Router:      routerSvc,
 		Alert:       alertSvc,
+		Limiter:     limiterSvc,
 	})
 	catalogSvc := catalog.New(&catalog.Dependencies{
 		Store:     store,
 		Auth:      httpMiddleware.AuthService(),
 		Limiter:   limiterSvc,
+		BudgetSvc: budgetSvc,
+		AlertSvc:  alertSvc,
 		Responses: responsesService,
 	})
 
@@ -135,6 +156,8 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	go metrics.StartProviderStatsExporter(ctx, providerMgr.Stats, 5*time.Second)
 
 	go func() {
 		slog.Info("gateway listening", "addr", cfg.Server.ListenAddr)
@@ -159,7 +182,58 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("shutdown error", "error", err)
 	}
+	limiterSvc.Stop()
 	providerMgr.CloseIdleConnections()
+}
+
+func initTracer(cfg config.TracingConfig) func() {
+	if !cfg.Enabled {
+		return func() {}
+	}
+
+	var exporter sdktrace.SpanExporter
+	var err error
+
+	switch cfg.Exporter {
+	case "otlp":
+		opts := []otlptracehttp.Option{}
+		if cfg.Endpoint != "" {
+			opts = append(opts, otlptracehttp.WithEndpointURL(cfg.Endpoint))
+		}
+		exporter, err = otlptracehttp.New(context.Background(), opts...)
+		if err != nil {
+			slog.Warn("failed to create OTLP trace exporter", "error", err)
+			return func() {}
+		}
+	default:
+		exporter, err = stdouttrace.New(stdouttrace.WithPrettyPrint())
+		if err != nil {
+			slog.Warn("failed to create stdout trace exporter", "error", err)
+			return func() {}
+		}
+	}
+
+	provider := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter),
+		sdktrace.WithResource(resource.NewWithAttributes(
+			semconv.SchemaURL,
+			semconv.ServiceName("gateyes-gateway"),
+			semconv.ServiceVersion("1.0.0"),
+		)),
+	)
+	otel.SetTracerProvider(provider)
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	))
+
+	return func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := provider.Shutdown(ctx); err != nil {
+			slog.Warn("failed to shutdown tracer provider", "error", err)
+		}
+	}
 }
 
 func seedConfiguredAPIKeys(ctx context.Context, store repository.IdentityStore, tenantID string, configured []config.APIKeyConfig) error {
@@ -207,8 +281,36 @@ func enabledProviderNames(providers []config.ProviderConfig) []string {
 	return names
 }
 
+func seedTenantProviders(ctx context.Context, store repository.TenantStore, tenantID string, names []string) error {
+	existing, err := store.ListTenantProviders(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	merged := append([]string(nil), existing...)
+	seen := make(map[string]struct{}, len(existing))
+	for _, name := range existing {
+		seen[name] = struct{}{}
+	}
+	for _, name := range names {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		merged = append(merged, name)
+	}
+	return store.ReplaceTenantProviders(ctx, tenantID, merged)
+}
+
 func seedProviderRegistry(ctx context.Context, store repository.ProviderRegistryStore, providers []config.ProviderConfig) error {
 	for _, item := range providers {
+		existing, err := store.GetProviderRegistry(ctx, item.Name)
+		if err == nil {
+			if existing.RuntimeConfig != nil {
+				continue
+			}
+		} else if err != repository.ErrNotFound {
+			return err
+		}
 		if err := store.UpsertProviderRegistry(ctx, provider.DefaultRegistryRecordFromConfig(item)); err != nil {
 			return err
 		}
