@@ -20,6 +20,7 @@ func (m *mockProvider) Name() string      { return m.name }
 func (m *mockProvider) Type() string      { return "mock" }
 func (m *mockProvider) BaseURL() string   { return "http://test.com" }
 func (m *mockProvider) Model() string     { return m.model }
+func (m *mockProvider) Weight() int       { return 0 }
 func (m *mockProvider) UnitCost() float64 { return m.cost }
 func (m *mockProvider) Cost(prompt, completion int) float64 {
 	return float64(prompt+completion) * m.cost
@@ -30,12 +31,15 @@ func (m *mockProvider) CreateResponse(ctx context.Context, req *provider.Respons
 func (m *mockProvider) StreamResponse(ctx context.Context, req *provider.ResponseRequest) (<-chan provider.ResponseEvent, <-chan error) {
 	return nil, nil
 }
+func (m *mockProvider) CreateEmbedding(ctx context.Context, req *provider.EmbeddingRequest) (*provider.EmbeddingResponse, error) {
+	return nil, nil
+}
 
 func TestRouter_RoundRobin(t *testing.T) {
 	cfg := config.RouterConfig{
 		Strategy: "round_robin",
 	}
-	r := NewRouter(cfg)
+	r := NewRouter(cfg, nil)
 
 	providers := []provider.Provider{
 		&mockProvider{name: "p1", model: "m1", cost: 1.0},
@@ -63,7 +67,7 @@ func TestRouter_Random(t *testing.T) {
 	cfg := config.RouterConfig{
 		Strategy: "random",
 	}
-	r := NewRouter(cfg)
+	r := NewRouter(cfg, nil)
 
 	providers := []provider.Provider{
 		&mockProvider{name: "p1", model: "m1", cost: 1.0},
@@ -86,15 +90,18 @@ func TestRouter_Random(t *testing.T) {
 }
 
 func TestRouter_LeastLoad(t *testing.T) {
-	cfg := config.RouterConfig{
-		Strategy: "least_load",
-	}
-	r := NewRouter(cfg)
-
+	stats := provider.NewStats()
 	p1 := &mockProvider{name: "p1", model: "m1", cost: 1.0}
 	p2 := &mockProvider{name: "p2", model: "m2", cost: 1.0}
 	p3 := &mockProvider{name: "p3", model: "m3", cost: 1.0}
+	stats.Register(p1)
+	stats.Register(p2)
+	stats.Register(p3)
 
+	cfg := config.RouterConfig{
+		Strategy: "least_load",
+	}
+	r := NewRouter(cfg, stats)
 	providers := []provider.Provider{p1, p2, p3}
 	r.SetProviders(providers)
 
@@ -105,8 +112,8 @@ func TestRouter_LeastLoad(t *testing.T) {
 	}
 
 	// 增加 p1 负载
-	r.IncLoad("p1")
-	r.IncLoad("p1")
+	stats.IncrementLoad("p1")
+	stats.IncrementLoad("p1")
 
 	// 现在应该选择 p2 或 p3
 	p = r.Select("model1", "")
@@ -115,11 +122,40 @@ func TestRouter_LeastLoad(t *testing.T) {
 	}
 }
 
+func TestRouter_LeastTPM(t *testing.T) {
+	stats := provider.NewStats()
+	p1 := &mockProvider{name: "p1", model: "m1", cost: 1.0}
+	p2 := &mockProvider{name: "p2", model: "m2", cost: 1.0}
+	stats.Register(p1)
+	stats.Register(p2)
+
+	// p1 产生大量 token，p2 产生少量 token
+	stats.RecordRequest("p1", true, 1000, 100)
+	stats.RecordRequest("p2", true, 100, 100)
+
+	cfg := config.RouterConfig{
+		Strategy: "least_tpm",
+	}
+	r := NewRouter(cfg, stats)
+	r.SetProviders([]provider.Provider{p1, p2})
+
+	ordered := r.OrderCandidates(r.List(), RouteContext{})
+	if len(ordered) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(ordered))
+	}
+	if ordered[0].Name() != "p2" {
+		t.Errorf("expected p2 first (lower TPM), got %s", ordered[0].Name())
+	}
+	if ordered[1].Name() != "p1" {
+		t.Errorf("expected p1 second (higher TPM), got %s", ordered[1].Name())
+	}
+}
+
 func TestRouter_CostBased(t *testing.T) {
 	cfg := config.RouterConfig{
 		Strategy: "cost_based",
 	}
-	r := NewRouter(cfg)
+	r := NewRouter(cfg, nil)
 
 	providers := []provider.Provider{
 		&mockProvider{name: "p1", model: "m1", cost: 1.0}, // 最贵
@@ -139,7 +175,7 @@ func TestRouter_Sticky(t *testing.T) {
 	cfg := config.RouterConfig{
 		Strategy: "sticky",
 	}
-	r := NewRouter(cfg)
+	r := NewRouter(cfg, nil)
 
 	providers := []provider.Provider{
 		&mockProvider{name: "p1", model: "m1", cost: 1.0},
@@ -166,7 +202,7 @@ func TestRouter_StickyEmptySession(t *testing.T) {
 	cfg := config.RouterConfig{
 		Strategy: "sticky",
 	}
-	r := NewRouter(cfg)
+	r := NewRouter(cfg, nil)
 
 	providers := []provider.Provider{
 		&mockProvider{name: "p1", model: "m1", cost: 1.0},
@@ -185,7 +221,7 @@ func TestRouter_EmptyProviders(t *testing.T) {
 	cfg := config.RouterConfig{
 		Strategy: "round_robin",
 	}
-	r := NewRouter(cfg)
+	r := NewRouter(cfg, nil)
 	r.SetProviders(nil)
 
 	p := r.Select("model1", "")
@@ -198,7 +234,7 @@ func TestRouter_SelectFrom(t *testing.T) {
 	cfg := config.RouterConfig{
 		Strategy: "round_robin",
 	}
-	r := NewRouter(cfg)
+	r := NewRouter(cfg, nil)
 
 	allProviders := []provider.Provider{
 		&mockProvider{name: "p1", model: "m1", cost: 1.0},
@@ -214,34 +250,6 @@ func TestRouter_SelectFrom(t *testing.T) {
 	if p.Name() != "p1" && p.Name() != "p3" {
 		t.Errorf("should select from candidates only, got %s", p.Name())
 	}
-}
-
-func TestRouter_LoadManagement(t *testing.T) {
-	cfg := config.RouterConfig{
-		Strategy: "round_robin",
-	}
-	r := NewRouter(cfg)
-
-	providers := []provider.Provider{
-		&mockProvider{name: "p1", model: "m1", cost: 1.0},
-		&mockProvider{name: "p2", model: "m2", cost: 1.0},
-	}
-	r.SetProviders(providers)
-
-	r.IncLoad("p1")
-	r.IncLoad("p1")
-	r.IncLoad("p2")
-
-	// 增加负载
-	r.IncLoad("p1")
-
-	// 减少负载
-	r.DecLoad("p1")
-	r.DecLoad("p1")
-	r.DecLoad("p1") // 尝试减少到负数，应该被保护
-
-	// 验证负载不会变负（通过 least_load 验证）
-	// 如果负载变成负数，least_load 会出问题
 }
 
 func TestRouter_OrderCandidatesRuleEngineFiltersProviders(t *testing.T) {
@@ -261,7 +269,7 @@ func TestRouter_OrderCandidatesRuleEngineFiltersProviders(t *testing.T) {
 			}},
 		},
 	}
-	r := NewRouter(cfg)
+	r := NewRouter(cfg, nil)
 	r.SetProviders([]provider.Provider{
 		&mockProvider{name: "p1", model: "m1", cost: 1.0},
 		&mockProvider{name: "p2", model: "m2", cost: 0.5},
@@ -293,7 +301,7 @@ func TestRouter_OrderCandidatesRuleEngineRegexMatch(t *testing.T) {
 			}},
 		},
 	}
-	r := NewRouter(cfg)
+	r := NewRouter(cfg, nil)
 	r.SetProviders([]provider.Provider{
 		&mockProvider{name: "general", model: "m1", cost: 1.0},
 		&mockProvider{name: "coder", model: "m2", cost: 1.0},
@@ -323,7 +331,7 @@ func TestRouter_OrderCandidatesRuleEngineStructuredOutput(t *testing.T) {
 			}},
 		},
 	}
-	r := NewRouter(cfg)
+	r := NewRouter(cfg, nil)
 	r.SetProviders([]provider.Provider{
 		&mockProvider{name: "general", model: "m1", cost: 1.0},
 		&mockProvider{name: "json-safe", model: "m2", cost: 1.0},
@@ -345,7 +353,7 @@ func TestRouter_OrderCandidatesMLRankPlaceholderIsNoop(t *testing.T) {
 			Method:  "ml_rank",
 		},
 	}
-	r := NewRouter(cfg)
+	r := NewRouter(cfg, nil)
 	r.SetProviders([]provider.Provider{
 		&mockProvider{name: "p1", model: "m1", cost: 1.0},
 		&mockProvider{name: "p2", model: "m2", cost: 1.0},

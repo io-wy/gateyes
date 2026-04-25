@@ -9,6 +9,7 @@ import (
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/provider"
 	routeSvc "github.com/gateyes/gateway/internal/service/router"
+	"github.com/gateyes/gateway/internal/trace"
 )
 
 type routeTrace struct {
@@ -42,6 +43,15 @@ type routeTraceAttempt struct {
 }
 
 func (s *Service) planCandidates(ctx context.Context, identity *repository.AuthIdentity, sessionID string, req *provider.ResponseRequest) ([]provider.Provider, *routeTrace) {
+	traceID := "unknown"
+	if parentSpan, ok := trace.SpanFromContext(ctx); ok {
+		traceID = parentSpan.TraceID
+	}
+	ctx = trace.StartSpan(ctx, traceID, "plan_candidates")
+	defer trace.FinishSpan(ctx, map[string]string{
+		"model": req.Model,
+	})
+
 	trace := &routeTrace{
 		TenantID:       identity.TenantID,
 		ProjectID:      identity.ProjectID,

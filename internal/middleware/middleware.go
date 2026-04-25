@@ -4,7 +4,9 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/gateyes/gateway/internal/repository"
+	"github.com/gateyes/gateway/internal/service/alert"
 	"github.com/gateyes/gateway/internal/service/auth"
+	"github.com/gateyes/gateway/internal/service/budget"
 	"github.com/gateyes/gateway/internal/service/limiter"
 )
 
@@ -18,11 +20,11 @@ type Middleware struct {
 	guard *GuardMiddleware
 }
 
-func New(store repository.Store, limiterSvc *limiter.Limiter, metrics MetricsRecorder) *Middleware {
+func New(store repository.Store, limiterSvc *limiter.Limiter, budgetSvc *budget.Service, alertSvc *alert.AlertService, metrics MetricsRecorder) *Middleware {
 	authMW := NewAuthMiddleware(store, metrics)
 	return &Middleware{
 		auth:  authMW,
-		guard: NewGuardMiddleware(authMW.Service(), limiterSvc, metrics),
+		guard: NewGuardMiddleware(authMW.Service(), limiterSvc, budgetSvc, alertSvc, metrics),
 	}
 }
 

@@ -12,15 +12,17 @@ import (
 type Router struct {
 	cfg       config.RouterConfig
 	providers []provider.Provider
+	stats     *provider.Stats
 	index     int
-	loads     map[string]int64
+	rrWeights map[string]int
 	mu        sync.Mutex
 }
 
-func NewRouter(cfg config.RouterConfig) *Router {
+func NewRouter(cfg config.RouterConfig, stats *provider.Stats) *Router {
 	return &Router{
-		cfg:   cfg,
-		loads: make(map[string]int64),
+		cfg:       cfg,
+		stats:     stats,
+		rrWeights: make(map[string]int),
 	}
 }
 
@@ -28,6 +30,15 @@ func (r *Router) SetProviders(providers []provider.Provider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.providers = providers
+	valid := make(map[string]struct{}, len(providers))
+	for _, p := range providers {
+		valid[p.Name()] = struct{}{}
+	}
+	for name := range r.rrWeights {
+		if _, ok := valid[name]; !ok {
+			delete(r.rrWeights, name)
+		}
+	}
 }
 
 func (r *Router) Select(model, sessionID string) provider.Provider {
@@ -121,30 +132,75 @@ func (r *Router) orderByStrategyLocked(candidates []provider.Provider, sessionID
 
 	switch r.cfg.Strategy {
 	case "round_robin":
-		start := r.index % len(ordered)
-		result := append([]provider.Provider(nil), ordered[start:]...)
-		result = append(result, ordered[:start]...)
-		r.index = (r.index + 1) % len(ordered)
-		return result
+		return r.weightedRoundRobin(ordered)
 	case "least_load":
 		sort.SliceStable(ordered, func(i, j int) bool {
-			loadI := r.loads[ordered[i].Name()]
-			loadJ := r.loads[ordered[j].Name()]
-			return loadI < loadJ
+			var loadI, loadJ int64
+			if r.stats != nil {
+				loadI = r.stats.CurrentLoad(ordered[i].Name())
+				loadJ = r.stats.CurrentLoad(ordered[j].Name())
+			}
+			if loadI != loadJ {
+				return loadI < loadJ
+			}
+			return ordered[i].Weight() > ordered[j].Weight()
+		})
+		return ordered
+	case "least_tpm":
+		sort.SliceStable(ordered, func(i, j int) bool {
+			var tpmI, tpmJ int64
+			if r.stats != nil {
+				tpmI = r.stats.TPM(ordered[i].Name())
+				tpmJ = r.stats.TPM(ordered[j].Name())
+			}
+			if tpmI != tpmJ {
+				return tpmI < tpmJ
+			}
+			return ordered[i].Weight() > ordered[j].Weight()
 		})
 		return ordered
 	case "cost_based":
 		sort.SliceStable(ordered, func(i, j int) bool {
-			return ordered[i].UnitCost() < ordered[j].UnitCost()
+			if ordered[i].UnitCost() != ordered[j].UnitCost() {
+				return ordered[i].UnitCost() < ordered[j].UnitCost()
+			}
+			return ordered[i].Weight() > ordered[j].Weight()
 		})
 		return ordered
 	case "sticky":
 		if sessionID == "" {
-			start := r.index % len(ordered)
-			result := append([]provider.Provider(nil), ordered[start:]...)
-			result = append(result, ordered[:start]...)
-			r.index = (r.index + 1) % len(ordered)
-			return result
+			return r.weightedRoundRobin(ordered)
+		}
+		totalWeight := 0
+		for _, p := range ordered {
+			w := p.Weight()
+			if w <= 0 {
+				w = 1
+			}
+			totalWeight += w
+		}
+		if totalWeight > 0 {
+			hash := 0
+			for _, ch := range sessionID {
+				hash = hash*31 + int(ch)
+			}
+			pick := hash % totalWeight
+			if pick < 0 {
+				pick = -pick
+			}
+			cum := 0
+			for i, p := range ordered {
+				w := p.Weight()
+				if w <= 0 {
+					w = 1
+				}
+				cum += w
+				if pick < cum {
+					result := append([]provider.Provider{p}, ordered[:i]...)
+					result = append(result, ordered[i+1:]...)
+					return result
+				}
+			}
 		}
 		hash := 0
 		for _, ch := range sessionID {
@@ -158,6 +214,33 @@ func (r *Router) orderByStrategyLocked(candidates []provider.Provider, sessionID
 		result = append(result, ordered[:start]...)
 		return result
 	case "random":
+		totalWeight := 0
+		for _, p := range ordered {
+			w := p.Weight()
+			if w <= 0 {
+				w = 1
+			}
+			totalWeight += w
+		}
+		if totalWeight > 0 {
+			pick := rand.Intn(totalWeight)
+			cum := 0
+			for i, p := range ordered {
+				w := p.Weight()
+				if w <= 0 {
+					w = 1
+				}
+				cum += w
+				if pick < cum {
+					result := append([]provider.Provider{p}, ordered[:i]...)
+					result = append(result, ordered[i+1:]...)
+					rand.Shuffle(len(result)-1, func(a, b int) {
+						result[a+1], result[b+1] = result[b+1], result[a+1]
+					})
+					return result
+				}
+			}
+		}
 		rand.Shuffle(len(ordered), func(i, j int) {
 			ordered[i], ordered[j] = ordered[j], ordered[i]
 		})
@@ -170,26 +253,38 @@ func (r *Router) orderByStrategyLocked(candidates []provider.Provider, sessionID
 	}
 }
 
-func (r *Router) IncLoad(name string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.loads[name]++
-}
-
-func (r *Router) DecLoad(name string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.loads[name] > 0 {
-		r.loads[name]--
+func (r *Router) weightedRoundRobin(candidates []provider.Provider) []provider.Provider {
+	if len(candidates) <= 1 {
+		return candidates
 	}
+	totalWeight := 0
+	for _, p := range candidates {
+		w := p.Weight()
+		if w <= 0 {
+			w = 1
+		}
+		totalWeight += w
+	}
+	maxIdx := 0
+	maxVal := -1
+	for i, p := range candidates {
+		w := p.Weight()
+		if w <= 0 {
+			w = 1
+		}
+		r.rrWeights[p.Name()] += w
+		if r.rrWeights[p.Name()] > maxVal {
+			maxVal = r.rrWeights[p.Name()]
+			maxIdx = i
+		}
+	}
+	selected := candidates[maxIdx]
+	r.rrWeights[selected.Name()] -= totalWeight
+	result := append([]provider.Provider{selected}, candidates[:maxIdx]...)
+	result = append(result, candidates[maxIdx+1:]...)
+	return result
 }
 
 func (r *Router) Strategy() string {
 	return r.cfg.Strategy
-}
-
-func (r *Router) Load(name string) int64 {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.loads[name]
 }

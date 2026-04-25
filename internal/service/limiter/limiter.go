@@ -8,14 +8,69 @@ import (
 	"github.com/gateyes/gateway/internal/config"
 )
 
+type bucketMap struct {
+	buckets map[string]*TokenBucket
+	mu      sync.RWMutex
+}
+
+func newBucketMap() *bucketMap {
+	return &bucketMap{buckets: make(map[string]*TokenBucket)}
+}
+
+func (bm *bucketMap) getOrCreate(key string, rate, burst int) *TokenBucket {
+	bm.mu.RLock()
+	if b, ok := bm.buckets[key]; ok {
+		bm.mu.RUnlock()
+		return b
+	}
+	bm.mu.RUnlock()
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
+	if b, ok := bm.buckets[key]; ok {
+		return b
+	}
+	b := NewTokenBucket(rate, burst)
+	bm.buckets[key] = b
+	return b
+}
+
+func (bm *bucketMap) tryConsume(key string, n, rate, burst int) bool {
+	if rate <= 0 || burst <= 0 {
+		return true
+	}
+	return bm.getOrCreate(key, rate, burst).TryConsume(n)
+}
+
+func (bm *bucketMap) refillAll() {
+	bm.mu.RLock()
+	defer bm.mu.RUnlock()
+	for _, b := range bm.buckets {
+		b.TryConsume(0)
+	}
+}
+
+const userTokenTTL = 10 * time.Minute
+
+type userBucket struct {
+	bucket     *TokenBucket
+	lastAccess time.Time
+}
+
 type Limiter struct {
-	cfg         config.LimiterConfig
-	globalToken *TokenBucket
-	userTokens  map[string]*TokenBucket
-	queue       chan *Request
-	wg          sync.WaitGroup
-	stopCh      chan struct{}
-	mu          sync.RWMutex
+	cfg            config.LimiterConfig
+	globalToken    *TokenBucket
+	globalRPM      *TokenBucket
+	userTokens     map[string]*userBucket
+	tenantTokens   *bucketMap
+	tenantRPM      *bucketMap
+	providerTokens *bucketMap
+	providerRPM    *bucketMap
+	modelTokens    *bucketMap
+	modelRPM       *bucketMap
+	queue          chan *Request
+	wg             sync.WaitGroup
+	stopCh         chan struct{}
+	mu             sync.RWMutex
 }
 
 type TokenBucket struct {
@@ -35,32 +90,47 @@ type Request struct {
 }
 
 func NewLimiter(cfg config.LimiterConfig) *Limiter {
-	// P4 fix: 拆分 burst 配置，GlobalTokenBurst 用于全局 token 桶，PerUserRequestBurst 用于用户请求桶
 	globalBurst := cfg.GlobalTokenBurst
 	if globalBurst <= 0 {
-		globalBurst = cfg.GlobalTPM / 60 // 兼容旧配置
+		globalBurst = cfg.GlobalTPM / 60
 		if globalBurst <= 0 {
 			globalBurst = 100
 		}
 	}
+	globalRPMRate := cfg.GlobalRPM / 60
+	if cfg.GlobalRPM > 0 && globalRPMRate <= 0 {
+		globalRPMRate = 1
+	}
+	globalRPMBurst := cfg.GlobalRPMBurst
+	if cfg.GlobalRPM > 0 && globalRPMBurst <= 0 {
+		globalRPMBurst = cfg.GlobalRPM / 60
+		if globalRPMBurst <= 0 {
+			globalRPMBurst = 10
+		}
+	}
 	perUserBurst := cfg.PerUserRequestBurst
 	if perUserBurst <= 0 {
-		perUserBurst = 100 // 默认值
+		perUserBurst = 100
 	}
 	cfg.PerUserRequestBurst = perUserBurst
 
 	l := &Limiter{
-		cfg:         cfg,
-		globalToken: NewTokenBucket(cfg.GlobalTPM/60, globalBurst),
-		userTokens:  make(map[string]*TokenBucket),
-		queue:       make(chan *Request, cfg.QueueSize),
-		stopCh:      make(chan struct{}),
+		cfg:            cfg,
+		globalToken:    NewTokenBucket(cfg.GlobalTPM/60, globalBurst),
+		globalRPM:      NewTokenBucket(globalRPMRate, globalRPMBurst),
+		userTokens:     make(map[string]*userBucket),
+		tenantTokens:   newBucketMap(),
+		tenantRPM:      newBucketMap(),
+		providerTokens: newBucketMap(),
+		providerRPM:    newBucketMap(),
+		modelTokens:    newBucketMap(),
+		modelRPM:       newBucketMap(),
+		queue:          make(chan *Request, cfg.QueueSize),
+		stopCh:         make(chan struct{}),
 	}
 
-	// 定期补充 token
+	l.wg.Add(2)
 	go l.refillLoop()
-
-	// 队列消费
 	go l.consumeLoop()
 
 	return l
@@ -98,17 +168,29 @@ func (t *TokenBucket) TryConsume(n int) bool {
 }
 
 func (l *Limiter) refillLoop() {
+	defer l.wg.Done()
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			l.globalToken.TryConsume(0) // trigger refill
-			l.mu.RLock()
-			for _, tb := range l.userTokens {
-				tb.TryConsume(0)
+			l.globalToken.TryConsume(0)
+			l.globalRPM.TryConsume(0)
+			l.mu.Lock()
+			now := time.Now()
+			for k, ub := range l.userTokens {
+				ub.bucket.TryConsume(0)
+				if now.Sub(ub.lastAccess) > userTokenTTL {
+					delete(l.userTokens, k)
+				}
 			}
-			l.mu.RUnlock()
+			l.mu.Unlock()
+			l.tenantTokens.refillAll()
+			l.tenantRPM.refillAll()
+			l.providerTokens.refillAll()
+			l.providerRPM.refillAll()
+			l.modelTokens.refillAll()
+			l.modelRPM.refillAll()
 		case <-l.stopCh:
 			return
 		}
@@ -116,6 +198,7 @@ func (l *Limiter) refillLoop() {
 }
 
 func (l *Limiter) consumeLoop() {
+	defer l.wg.Done()
 	for {
 		select {
 		case req := <-l.queue:
@@ -130,10 +213,14 @@ func (l *Limiter) consumeLoop() {
 			req.sendResult(allowed)
 		case <-l.stopCh:
 			// P7 fix: stop 时 drain 队列，给剩余请求返回 false
-			for req := range l.queue {
-				req.sendResult(false)
+			for {
+				select {
+				case req := <-l.queue:
+					req.sendResult(false)
+				default:
+					return
+				}
 			}
-			return
 		}
 	}
 }
@@ -151,6 +238,11 @@ func (l *Limiter) check(key string, userQPS, tokens int) bool {
 		return false
 	}
 
+	// global RPM check
+	if l.cfg.GlobalRPM > 0 && !l.globalRPM.TryConsume(1) {
+		return false
+	}
+
 	// user check: 按请求数限流
 	// P1 fix: userQPS > 0 时使用用户配置，否则 fallback 到全局默认
 	rate := l.cfg.GlobalQPS
@@ -159,19 +251,26 @@ func (l *Limiter) check(key string, userQPS, tokens int) bool {
 	}
 
 	l.mu.RLock()
-	userTB, exists := l.userTokens[key]
+	ub, exists := l.userTokens[key]
 	l.mu.RUnlock()
 
 	if !exists {
 		l.mu.Lock()
 		if _, ok := l.userTokens[key]; !ok {
-			l.userTokens[key] = NewTokenBucket(rate, l.cfg.PerUserRequestBurst)
+			l.userTokens[key] = &userBucket{
+				bucket:     NewTokenBucket(rate, l.cfg.PerUserRequestBurst),
+				lastAccess: time.Now(),
+			}
 		}
-		userTB = l.userTokens[key]
+		ub = l.userTokens[key]
 		l.mu.Unlock()
 	}
 
-	return userTB.TryConsume(1) // per request limit
+	ok := ub.bucket.TryConsume(1)
+	if ok {
+		ub.lastAccess = time.Now()
+	}
+	return ok
 }
 
 func (l *Limiter) Allow(ctx context.Context, key string, userQPS, admissionTokens int) bool {
@@ -203,4 +302,37 @@ func (l *Limiter) Stop() {
 
 func (l *Limiter) QueueSize() int {
 	return len(l.queue)
+}
+
+// CheckTenant 检查租户维度限流（token + RPM）
+func (l *Limiter) CheckTenant(tenantID string, tokens int) bool {
+	if tenantID == "" {
+		return true
+	}
+	if !l.tenantTokens.tryConsume(tenantID, tokens, l.cfg.TenantTPM/60, l.cfg.TenantTPMBurst) {
+		return false
+	}
+	return l.tenantRPM.tryConsume(tenantID, 1, l.cfg.TenantRPM/60, l.cfg.TenantRPMBurst)
+}
+
+// CheckProvider 检查 provider 维度限流（token + RPM）
+func (l *Limiter) CheckProvider(provider string, tokens int) bool {
+	if provider == "" {
+		return true
+	}
+	if !l.providerTokens.tryConsume(provider, tokens, l.cfg.ProviderTPM/60, l.cfg.ProviderTPMBurst) {
+		return false
+	}
+	return l.providerRPM.tryConsume(provider, 1, l.cfg.ProviderRPM/60, l.cfg.ProviderRPMBurst)
+}
+
+// CheckModel 检查 model 维度限流（token + RPM）
+func (l *Limiter) CheckModel(model string, tokens int) bool {
+	if model == "" {
+		return true
+	}
+	if !l.modelTokens.tryConsume(model, tokens, l.cfg.ModelTPM/60, l.cfg.ModelTPMBurst) {
+		return false
+	}
+	return l.modelRPM.tryConsume(model, 1, l.cfg.ModelRPM/60, l.cfg.ModelRPMBurst)
 }

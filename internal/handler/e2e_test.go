@@ -20,6 +20,7 @@ import (
 	"github.com/gateyes/gateway/internal/middleware"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/repository/sqlstore"
+	"github.com/gateyes/gateway/internal/service/budget"
 	"github.com/gateyes/gateway/internal/service/catalog"
 	"github.com/gateyes/gateway/internal/service/limiter"
 	"github.com/gateyes/gateway/internal/service/provider"
@@ -476,7 +477,7 @@ func newGatewayE2EEnv(t *testing.T) *gatewayE2EEnv {
 	if err != nil {
 		t.Fatalf("new provider manager: %v", err)
 	}
-	routerSvc := router.NewRouter(cfgObj.Router)
+	routerSvc := router.NewRouter(cfgObj.Router, nil)
 	routerSvc.SetProviders(providerMgr.List())
 	limiterSvc := limiter.NewLimiter(config.LimiterConfig{
 		GlobalQPS:           100,
@@ -486,7 +487,8 @@ func newGatewayE2EEnv(t *testing.T) *gatewayE2EEnv {
 		QueueSize:           128,
 	})
 	t.Cleanup(limiterSvc.Stop)
-	mw := middleware.New(store, limiterSvc, metrics)
+	budgetSvc := budget.New(store)
+	mw := middleware.New(store, limiterSvc, budgetSvc, nil, metrics)
 	responseService := responseSvc.New(&responseSvc.Dependencies{
 		Config:      cfgObj,
 		Store:       store,

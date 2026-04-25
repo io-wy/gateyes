@@ -699,7 +699,7 @@ func newResponsesTestEnv(t *testing.T, cfg responsesTestEnvConfig) *responsesTes
 	if routerCfg.Strategy == "" {
 		routerCfg.Strategy = "round_robin"
 	}
-	routerSvc := router.NewRouter(routerCfg)
+	routerSvc := router.NewRouter(routerCfg, nil)
 	routerSvc.SetProviders(providerMgr.List())
 
 	service := New(&Dependencies{
@@ -709,6 +709,7 @@ func newResponsesTestEnv(t *testing.T, cfg responsesTestEnvConfig) *responsesTes
 		ProviderMgr: providerMgr,
 		Router:      routerSvc,
 		Alert:       nil,
+		Limiter:     nil,
 	})
 
 	return &responsesTestEnv{

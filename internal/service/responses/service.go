@@ -12,11 +12,15 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/gateyes/gateway/internal/config"
+	"github.com/gateyes/gateway/internal/middleware"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/alert"
 	"github.com/gateyes/gateway/internal/service/auth"
+	"github.com/gateyes/gateway/internal/service/limiter"
 	"github.com/gateyes/gateway/internal/service/provider"
 	"github.com/gateyes/gateway/internal/service/router"
+	"go.opentelemetry.io/otel/attribute"
+	"github.com/gateyes/gateway/internal/trace"
 )
 
 var (
@@ -33,6 +37,7 @@ type Dependencies struct {
 	ProviderMgr *provider.Manager
 	Router      *router.Router
 	Alert       *alert.AlertService
+	Limiter     *limiter.Limiter
 }
 
 type Service struct {
@@ -42,6 +47,7 @@ type Service struct {
 	providerMgr    *provider.Manager
 	router         *router.Router
 	alert          *alert.AlertService
+	limiter        *limiter.Limiter
 	circuitBreaker *CircuitBreaker
 }
 
@@ -85,6 +91,7 @@ func New(deps *Dependencies) *Service {
 		providerMgr:    deps.ProviderMgr,
 		router:         deps.Router,
 		alert:          deps.Alert,
+		limiter:        deps.Limiter,
 		circuitBreaker: NewCircuitBreaker(deps.Config.CircuitBreaker),
 	}
 }
@@ -128,6 +135,12 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 		tenantID := identity.TenantID
 		providerName := p.Name()
 
+		// provider 维度限流检查
+		if s.limiter != nil && !s.limiter.CheckProvider(providerName, req.EstimateAdmissionTokens()) {
+			appendRouteAttempt(trace, providerName, 0, "rate_limited", fmt.Errorf("provider rate limited"))
+			continue
+		}
+
 		// 跳过熔断中的 provider 时计数
 		if s.circuitBreaker != nil && !s.circuitBreaker.IsAvailable(tenantID, providerName) {
 			continue
@@ -158,7 +171,6 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 			estimatedPromptTokens: req.EstimatePromptTokens(),
 		}
 
-		s.router.IncLoad(providerName)
 		s.providerMgr.Stats.IncrementLoad(providerName)
 
 		resp, retries, err := s.callWithRetry(ctx, identity, exec)
@@ -167,7 +179,6 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 
 		if err != nil {
 			appendRouteAttempt(exec.routeTrace, providerName, retries, "error", err)
-			s.router.DecLoad(providerName)
 			s.providerMgr.Stats.DecrementLoad(providerName)
 			if s.circuitBreaker != nil {
 				s.circuitBreaker.RecordFailure(tenantID, providerName)
@@ -179,7 +190,6 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 			continue
 		}
 
-		s.router.DecLoad(providerName)
 		s.providerMgr.Stats.DecrementLoad(providerName)
 		if s.circuitBreaker != nil {
 			s.circuitBreaker.RecordSuccess(tenantID, providerName)
@@ -321,12 +331,17 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 	for _, p := range candidates {
 		providerName := p.Name()
 
+		// provider 维度限流检查
+		if s.limiter != nil && !s.limiter.CheckProvider(providerName, req.EstimateAdmissionTokens()) {
+			appendRouteAttempt(trace, providerName, 0, "rate_limited", fmt.Errorf("provider rate limited"))
+			continue
+		}
+
 		// 检查 circuit breaker
 		if s.circuitBreaker != nil && !s.circuitBreaker.IsAvailable(tenantID, providerName) {
 			continue
 		}
 
-		s.router.IncLoad(providerName)
 		s.providerMgr.Stats.IncrementLoad(providerName)
 
 		// 更新 response 记录的 provider
@@ -394,7 +409,6 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 					if budgetErr := validateVisibleOutputBudget(fallbackExec, finalResponse); budgetErr != nil && !hasSentPayload {
 						_ = s.recordOutputBudgetError(ctx, identity, fallbackExec, finalResponse, latencyMs, providerName)
 						s.providerMgr.Stats.RecordRequest(providerName, true, finalResponse.Usage.TotalTokens, latencyMs)
-						s.router.DecLoad(providerName)
 						s.providerMgr.Stats.DecrementLoad(providerName)
 						if s.circuitBreaker != nil {
 							s.circuitBreaker.RecordSuccess(tenantID, providerName)
@@ -403,7 +417,6 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 						return
 					}
 					s.finalizeStream(ctx, identity, responseID, providerName, req.Model, finalResponse, latencyMs, trace, out, !hasSentPayload)
-					s.router.DecLoad(providerName)
 					s.providerMgr.Stats.DecrementLoad(providerName)
 					if s.circuitBreaker != nil {
 						s.circuitBreaker.RecordSuccess(tenantID, providerName)
@@ -440,7 +453,6 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 				appendRouteAttempt(trace, providerName, 0, "error", err)
 				latencyMs := time.Since(startedAt).Milliseconds()
 				s.handleStreamError(ctx, identity, responseID, providerName, req.Model, latencyMs, err)
-				s.router.DecLoad(providerName)
 				s.providerMgr.Stats.DecrementLoad(providerName)
 				if s.circuitBreaker != nil {
 					s.circuitBreaker.RecordFailure(tenantID, providerName)
@@ -476,7 +488,6 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 				return
 			case <-ctx.Done():
 				s.handleStreamCancellation(ctx, identity, req, responseID, p, trace, finalResponse, assistantText, streamedOutputs, streamUsage, startedAt)
-				s.router.DecLoad(providerName)
 				s.providerMgr.Stats.DecrementLoad(providerName)
 				errCh <- ctx.Err()
 				return
@@ -505,7 +516,6 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 							appendRouteAttempt(trace, providerName, retryCfg.MaxRetries, "budget_rejected", budgetErr)
 							_ = s.recordOutputBudgetError(ctx, identity, fallbackExec, finalResponse, latencyMs, providerName)
 							s.providerMgr.Stats.RecordRequest(providerName, true, finalResponse.Usage.TotalTokens, latencyMs)
-							s.router.DecLoad(providerName)
 							s.providerMgr.Stats.DecrementLoad(providerName)
 							if s.circuitBreaker != nil {
 								s.circuitBreaker.RecordSuccess(tenantID, providerName)
@@ -515,7 +525,6 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 						}
 						appendRouteAttempt(trace, providerName, retryCfg.MaxRetries, "success", nil)
 						s.finalizeStream(ctx, identity, responseID, providerName, req.Model, finalResponse, latencyMs, trace, out, !hasSentPayload)
-						s.router.DecLoad(providerName)
 						s.providerMgr.Stats.DecrementLoad(providerName)
 						if s.circuitBreaker != nil {
 							s.circuitBreaker.RecordSuccess(tenantID, providerName)
@@ -552,7 +561,6 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 					appendRouteAttempt(trace, providerName, retryCfg.MaxRetries, "error", err)
 					latencyMs := time.Since(startedAt).Milliseconds()
 					s.handleStreamError(ctx, identity, responseID, providerName, req.Model, latencyMs, err)
-					s.router.DecLoad(providerName)
 					s.providerMgr.Stats.DecrementLoad(providerName)
 					if s.circuitBreaker != nil {
 						s.circuitBreaker.RecordFailure(tenantID, providerName)
@@ -568,7 +576,6 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 					return
 				case <-ctx.Done():
 					s.handleStreamCancellation(ctx, identity, req, responseID, p, trace, finalResponse, assistantText, streamedOutputs, streamUsage, startedAt)
-					s.router.DecLoad(providerName)
 					s.providerMgr.Stats.DecrementLoad(providerName)
 					errCh <- ctx.Err()
 					return
@@ -576,7 +583,6 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 			}
 
 		nextProvider:
-			s.router.DecLoad(providerName)
 			s.providerMgr.Stats.DecrementLoad(providerName)
 			continue
 		}
@@ -899,10 +905,8 @@ func (s *Service) runStream(ctx context.Context, identity *repository.AuthIdenti
 	defer close(out)
 	defer close(errCh)
 
-	s.router.IncLoad(exec.provider.Name())
 	s.providerMgr.Stats.IncrementLoad(exec.provider.Name())
 	defer func() {
-		s.router.DecLoad(exec.provider.Name())
 		s.providerMgr.Stats.DecrementLoad(exec.provider.Name())
 	}()
 
@@ -1420,6 +1424,22 @@ func isRetryable(err error) bool {
 }
 
 func (s *Service) callWithRetry(ctx context.Context, identity *repository.AuthIdentity, exec *execution) (*provider.Response, int, error) {
+	traceID := "unknown"
+	if parentSpan, ok := trace.SpanFromContext(ctx); ok {
+		traceID = parentSpan.TraceID
+	}
+	ctx = trace.StartSpan(ctx, traceID, "provider_call")
+	defer trace.FinishSpan(ctx, map[string]string{
+		"provider": exec.provider.Name(),
+		"model":    exec.provider.Model(),
+	})
+
+	ctx, otelSpan := middleware.StartSpan(ctx, "provider_call",
+		attribute.String("provider", exec.provider.Name()),
+		attribute.String("model", exec.provider.Model()),
+	)
+	defer otelSpan.End()
+
 	retryCfg := s.cfg.Retry
 	var lastErr error
 	retryCount := 0

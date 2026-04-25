@@ -231,3 +231,130 @@ func TestLimiter_UserQPSConfig(t *testing.T) {
 		t.Error("user configured QPS should allow more requests than global default")
 	}
 }
+
+func TestLimiter_MultiDimension(t *testing.T) {
+	cfg := config.LimiterConfig{
+		GlobalQPS:           10000,
+		GlobalTPM:           1000000,
+		GlobalTokenBurst:    1000,
+		GlobalRPM:           600,
+		GlobalRPMBurst:      60,
+		PerUserRequestBurst: 100,
+		TenantTPM:           100,
+		TenantTPMBurst:      10,
+		TenantRPM:           60,
+		TenantRPMBurst:      5,
+		ProviderTPM:         100,
+		ProviderTPMBurst:    10,
+		ProviderRPM:         60,
+		ProviderRPMBurst:    5,
+		ModelTPM:            100,
+		ModelTPMBurst:       10,
+		ModelRPM:            60,
+		ModelRPMBurst:       5,
+		QueueSize:           1000,
+	}
+	l := NewLimiter(cfg)
+	defer l.Stop()
+
+	ctx := context.Background()
+
+	// 基础请求应通过
+	if !l.Allow(ctx, "key1", 0, 1) {
+		t.Error("should allow within all limits")
+	}
+
+	// tenant 限流
+	if !l.CheckTenant("tenant-a", 5) {
+		t.Error("tenant should allow within burst")
+	}
+	// 消耗完 tenant burst
+	for i := 0; i < 10; i++ {
+		l.CheckTenant("tenant-a", 1)
+	}
+	if l.CheckTenant("tenant-a", 1) {
+		t.Error("tenant should be rate limited after burst exhausted")
+	}
+
+	// provider 限流
+	if !l.CheckProvider("openai", 5) {
+		t.Error("provider should allow within burst")
+	}
+	for i := 0; i < 10; i++ {
+		l.CheckProvider("openai", 1)
+	}
+	if l.CheckProvider("openai", 1) {
+		t.Error("provider should be rate limited after burst exhausted")
+	}
+
+	// model 限流
+	if !l.CheckModel("gpt-4", 5) {
+		t.Error("model should allow within burst")
+	}
+	for i := 0; i < 10; i++ {
+		l.CheckModel("gpt-4", 1)
+	}
+	if l.CheckModel("gpt-4", 1) {
+		t.Error("model should be rate limited after burst exhausted")
+	}
+
+	// 不同维度互不影响
+	if !l.CheckTenant("tenant-b", 1) {
+		t.Error("different tenant should not be affected")
+	}
+	if !l.CheckProvider("anthropic", 1) {
+		t.Error("different provider should not be affected")
+	}
+	if !l.CheckModel("claude", 1) {
+		t.Error("different model should not be affected")
+	}
+}
+
+func TestLimiter_DisabledDimension(t *testing.T) {
+	cfg := config.LimiterConfig{
+		GlobalQPS:           10000,
+		GlobalTPM:           1000000,
+		GlobalTokenBurst:    1000,
+		PerUserRequestBurst: 100,
+		TenantTPM:           0, // disabled
+		TenantRPM:           0, // disabled
+		QueueSize:           1000,
+	}
+	l := NewLimiter(cfg)
+	defer l.Stop()
+
+	// disabled dimension should always allow
+	for i := 0; i < 1000; i++ {
+		if !l.CheckTenant("tenant-x", 1) {
+			t.Fatal("disabled tenant limit should always allow")
+		}
+	}
+}
+
+func TestLimiter_GlobalRPM(t *testing.T) {
+	cfg := config.LimiterConfig{
+		GlobalQPS:           10000,
+		GlobalTPM:           1000000,
+		GlobalTokenBurst:    1000,
+		GlobalRPM:           5,
+		GlobalRPMBurst:      2,
+		PerUserRequestBurst: 100,
+		QueueSize:           1000,
+	}
+	l := NewLimiter(cfg)
+	defer l.Stop()
+
+	ctx := context.Background()
+
+	// burst=2，前 2 个应通过
+	if !l.Allow(ctx, "user1", 0, 1) {
+		t.Error("first request should pass")
+	}
+	if !l.Allow(ctx, "user2", 0, 1) {
+		t.Error("second request should pass")
+	}
+	// 第 3 个应被拒（RPM burst 已耗尽）
+	if l.Allow(ctx, "user3", 0, 1) {
+		t.Error("third request should be blocked by global RPM")
+	}
+}
