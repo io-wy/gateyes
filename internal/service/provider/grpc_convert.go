@@ -202,6 +202,9 @@ func buildVLLMGRPCPrompt(req *ResponseRequest) string {
 	if req.Options != nil && strings.TrimSpace(req.Options.System) != "" {
 		parts = append(parts, "system: "+strings.TrimSpace(req.Options.System))
 	}
+	if toolPrompt := formatVLLMToolsPrompt(req.Tools); toolPrompt != "" {
+		parts = append(parts, toolPrompt)
+	}
 	for _, message := range req.InputMessages() {
 		role := strings.ToLower(strings.TrimSpace(message.Role))
 		if role == "" {
@@ -219,6 +222,17 @@ func buildVLLMGRPCPrompt(req *ResponseRequest) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+func formatVLLMToolsPrompt(tools []any) string {
+	if len(tools) == 0 {
+		return ""
+	}
+	raw, err := json.Marshal(tools)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("You have access to the following tools. To use a tool, respond with a JSON object in this exact format:\n<tool_call>{\"name\": \"function_name\", \"arguments\": {\"key\": \"value\"}}</tool_call>\n\nAvailable tools:\n<tools>\n%s\n</tools>", string(raw))
 }
 
 func marshalVLLMJSONSchema(req *ResponseRequest) string {
@@ -335,6 +349,51 @@ func verifyTokenizerArchiveSHA(data []byte, expected string) error {
 		return fmt.Errorf("tokenizer archive sha256 mismatch: got=%s want=%s", got, expected)
 	}
 	return nil
+}
+
+func parseVLLMToolCalls(text string) ([]ToolCall, string) {
+	start := strings.Index(text, "<tool_call>")
+	if start == -1 {
+		return nil, text
+	}
+	end := strings.Index(text[start:], "</tool_call>")
+	if end == -1 {
+		return nil, text
+	}
+	jsonStr := text[start+len("<tool_call>") : start+end]
+	jsonStr = strings.TrimSpace(jsonStr)
+
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(jsonStr), &raw); err != nil {
+		return nil, text
+	}
+	name := ""
+	if n, ok := raw["name"].(string); ok {
+		name = n
+	}
+	args := ""
+	if a, ok := raw["arguments"]; ok {
+		b, _ := json.Marshal(a)
+		args = string(b)
+	}
+	if name == "" {
+		return nil, text
+	}
+
+	remaining := strings.TrimSpace(text[:start] + text[start+end+len("</tool_call>"):])
+	call := ToolCall{
+		ID:   generateToolCallID(),
+		Type: "function",
+		Function: FunctionCall{
+			Name:      name,
+			Arguments: args,
+		},
+	}
+	return []ToolCall{call}, remaining
+}
+
+func generateToolCallID() string {
+	return "call_" + fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
 func longestCommonPrefixLen(left, right string) int {

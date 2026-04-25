@@ -60,7 +60,12 @@ func (p *grpcProvider) StreamResponse(ctx context.Context, req *ResponseRequest)
 			message := dynamicpb.NewMessage(descriptors.generateResponse)
 			if err := stream.RecvMsg(message); err != nil {
 				if err == io.EOF {
-					resp := NewTextResponse("", req.Model, lastText, finalUsage)
+					var resp *Response
+					if calls, remaining := parseVLLMToolCalls(lastText); len(calls) > 0 {
+						resp = NewToolCallResponse("", req.Model, remaining, calls, finalUsage)
+					} else {
+						resp = NewTextResponse("", req.Model, lastText, finalUsage)
+					}
 					if finalReason == "abort" {
 						resp.Status = "cancelled"
 					}

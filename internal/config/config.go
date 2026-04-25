@@ -406,7 +406,7 @@ func DefaultConfig() *Config {
 		Database: DatabaseConfig{
 			Driver:                 "sqlite",
 			DSN:                    "gateyes.db",
-			AutoMigrate:            true,
+			AutoMigrate:            false,
 			MaxOpenConns:           10,
 			MaxIdleConns:           5,
 			ConnMaxLifetimeSeconds: 300,

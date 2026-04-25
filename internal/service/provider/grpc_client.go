@@ -85,6 +85,9 @@ func (p *grpcProvider) CreateResponse(ctx context.Context, req *ResponseRequest)
 		return nil, newProviderParseError("provider.grpc.decode_response", err, "decode vllm grpc output tokens")
 	}
 
+	if calls, remaining := parseVLLMToolCalls(text); len(calls) > 0 {
+		return NewToolCallResponse("", req.Model, remaining, calls, usage), nil
+	}
 	return NewTextResponse("", req.Model, text, usage), nil
 }
 
@@ -168,9 +171,6 @@ func (p *grpcProvider) outgoingMetadata() metadata.MD {
 func (p *grpcProvider) validateRequest(req *ResponseRequest) error {
 	if req == nil {
 		return newUpstreamError(http.StatusBadRequest, "grpc provider request cannot be nil")
-	}
-	if req.HasToolsRequested() {
-		return newUpstreamError(http.StatusBadRequest, "grpc vllm provider does not support tool calls yet")
 	}
 	if req.HasImageInput() {
 		return newUpstreamError(http.StatusBadRequest, "grpc vllm provider does not support image inputs yet")

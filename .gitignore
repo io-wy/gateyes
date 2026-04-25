@@ -21,3 +21,4 @@ tmp/
 test_doc/
 .gomodcache/
 .uv-cache/
+*.env

@@ -274,20 +274,6 @@ func TestGRPCProviderRejectsUnsupportedRequestShapes(t *testing.T) {
 		Timeout:    5,
 	}).(*grpcProvider)
 
-	t.Run("create response rejects tools", func(t *testing.T) {
-		_, err := provider.CreateResponse(context.Background(), &ResponseRequest{
-			Model: "public-model",
-			Messages: []Message{{
-				Role:    "user",
-				Content: TextBlocks("hello"),
-			}},
-			Tools: []any{map[string]any{"type": "function"}},
-		})
-		if err == nil || !strings.Contains(err.Error(), "does not support tool calls yet") {
-			t.Fatalf("CreateResponse(tools) error = %v, want tool-calls-not-supported", err)
-		}
-	})
-
 	t.Run("stream response rejects image input", func(t *testing.T) {
 		events, errs := provider.StreamResponse(context.Background(), &ResponseRequest{
 			Model: "public-model",

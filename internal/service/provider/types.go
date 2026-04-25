@@ -361,6 +361,35 @@ func NewTextResponse(id, model, text string, usage Usage) *Response {
 	}
 }
 
+func NewToolCallResponse(id, model, text string, calls []ToolCall, usage Usage) *Response {
+	output := []ResponseOutput{{
+		Type:   "message",
+		Role:   "assistant",
+		Status: "completed",
+		Content: []ResponseContent{{
+			Type: "output_text",
+			Text: text,
+		}},
+	}}
+	for _, call := range calls {
+		output = append(output, ResponseOutput{
+			Type:   "function_call",
+			CallID: call.ID,
+			Name:   call.Function.Name,
+			Args:   call.Function.Arguments,
+		})
+	}
+	return &Response{
+		ID:      id,
+		Object:  "response",
+		Created: time.Now().Unix(),
+		Model:   model,
+		Status:  "completed",
+		Output:  output,
+		Usage:   usage,
+	}
+}
+
 func CloneRequestOptions(value *RequestOptions) *RequestOptions {
 	if value == nil {
 		return nil
