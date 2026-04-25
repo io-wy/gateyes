@@ -1,0 +1,6 @@
+# openai-primary 敏感配置
+# 支持 KEY=VALUE 格式，# 开头为注释，值可用单/双引号包裹
+
+API_KEY=sk-your-openai-api-key
+BASE_URL=https://api.openai.com
+MODEL=gpt-4o

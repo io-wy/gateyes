@@ -1,3 +1,6 @@
+# gRPC Provider 配置示例（vLLM / TGI 等）
+# 敏感字段外置到 .env.vllm 文件
+
 server:
   listenAddr: ":8083"
   readTimeout: 30
@@ -28,12 +31,6 @@ limiter:
 alert:
   enabled: true
   quotaThreshold: 0.8
-  webhookURL: ""
-  webhookSecret: ""
-  providerStateURL: ""
-  budgetExhaustedURL: ""
-  requestEventURL: ""
-  errorEventURL: ""
 
 healthCheck:
   enabled: true
@@ -56,27 +53,25 @@ providers:
   - name: vllm-grpc-qwen
     type: grpc
     vendor: vllm
-    grpcTarget: ${VLLM_GRPC_TARGET}
     grpcUseTLS: false
     grpcAuthority: ""
-    apiKey: ${VLLM_GRPC_API_KEY}
-    model: ${VLLM_GRPC_MODEL}
     priceInput: 0
     priceOutput: 0
     maxTokens: 131072
     timeout: 120
     enabled: true
+    envFile: .env.vllm
     headers:
       x-tenant: gateyes-live
 
 apiKeys:
-  - key: ${GATEYES_BOOTSTRAP_TEST_KEY}
-    secret: ${GATEYES_BOOTSTRAP_TEST_SECRET}
+  - key: bootstrap-key-001
+    secret: bootstrap-secret-001
     quota: 1000000
     qps: 1000
     models: []
 
 admin:
   defaultTenant: default
-  bootstrapKey: ${GATEYES_ADMIN_BOOTSTRAP_KEY}
-  bootstrapSecret: ${GATEYES_ADMIN_BOOTSTRAP_SECRET}
+  bootstrapKey: admin-key-001
+  bootstrapSecret: admin-secret-001

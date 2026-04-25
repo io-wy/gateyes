@@ -1,0 +1,5 @@
+# anthropic-primary 敏感配置
+
+API_KEY=sk-your-anthropic-api-key
+BASE_URL=https://api.anthropic.com
+MODEL=claude-3-5-sonnet-20241022

@@ -1,3 +1,8 @@
+# Gateyes Gateway 完整配置示例
+# 敏感字段（apiKey / baseURL / model / grpcTarget 等）建议外置到 .env 文件
+# .env 文件默认按 providers 数组顺序自动映射：.env1 -> providers[0], .env2 -> providers[1]...
+# 也可通过 envFile 字段显式指定自定义路径
+
 server:
   listenAddr: ":8083"
   readTimeout: 30
@@ -18,24 +23,56 @@ metrics:
   enabled: true
 
 router:
-  strategy: round_robin
+  strategy: least_load          # round_robin | random | least_load | least_tpm | cost_based | sticky | ml_rank
+  ranker:
+    enabled: false
+    method: none                # none | ml_rank
+  ruleEngine:
+    enabled: true
+    rules:
+      - name: long-context-to-claude
+        match:
+          minPromptTokens: 8000
+        action:
+          providers: [anthropic-primary]
+      - name: image-requests-to-openai
+        match:
+          hasImages: true
+        action:
+          providers: [openai-primary]
 
 limiter:
   globalQPS: 1000
   globalTPM: 1000000
   globalTokenBurst: 100000
+  globalRPM: 0
+  globalRPMBurst: 0
   perUserRequestBurst: 100
+  tenantTPM: 500000
+  tenantTPMBurst: 50000
+  tenantRPM: 1000
+  tenantRPMBurst: 100
+  providerTPM: 300000
+  providerTPMBurst: 30000
+  providerRPM: 600
+  providerRPMBurst: 60
+  modelTPM: 200000
+  modelTPMBurst: 20000
+  modelRPM: 400
+  modelRPMBurst: 40
   queueSize: 1000
 
 alert:
   enabled: true
   quotaThreshold: 0.8
-  webhookURL: ""
-  webhookSecret: ""
-  providerStateURL: ""
-  budgetExhaustedURL: ""
-  requestEventURL: ""
-  errorEventURL: ""
+  channels:
+    - name: ops-webhook
+      type: webhook
+      target: "https://hooks.example.com/gateyes"
+      secret: ""
+      labels:
+        severity: critical
+  dedupWindowSeconds: 300
 
 healthCheck:
   enabled: true
@@ -55,37 +92,65 @@ circuitBreaker:
   halfOpenMaxRequests: 1
 
 providers:
+  # providers[0] -> 自动读取 .env1
   - name: openai-primary
     type: openai
-    baseURL: ${OPENAI_BASE_URL}
+    vendor: openai
     endpoint: responses
-    apiKey: ${OPENAI_API_KEY}
-    model: ${OPENAI_MODEL}
+    weight: 10
     priceInput: 0.000005
     priceOutput: 0.000015
     maxTokens: 16384
     timeout: 60
     enabled: true
+    headers:
+      x-request-source: gateyes
 
+  # providers[1] -> 自动读取 .env2
   - name: anthropic-primary
     type: anthropic
-    baseURL: ${ANTHROPIC_BASE_URL}
-    apiKey: ${ANTHROPIC_API_KEY}
-    model: ${ANTHROPIC_MODEL}
+    vendor: anthropic
+    endpoint: chat
+    weight: 8
     priceInput: 0.000003
     priceOutput: 0.000015
-    maxTokens: 16384
+    maxTokens: 200000
+    timeout: 120
+    enabled: true
+
+  # providers[2] -> 自动读取 .env3
+  - name: azure-openai-eastus
+    type: azure
+    vendor: azure
+    endpoint: chat
+    weight: 5
+    priceInput: 0.000002
+    priceOutput: 0.000008
+    maxTokens: 128000
     timeout: 60
-    enabled: false
+    enabled: true
+
+  # providers[3] -> 显式指定 .env 文件路径
+  - name: vllm-grpc-qwen
+    type: grpc
+    vendor: vllm
+    grpcUseTLS: false
+    weight: 3
+    priceInput: 0
+    priceOutput: 0
+    maxTokens: 131072
+    timeout: 120
+    enabled: true
+    envFile: .env.vllm
 
 apiKeys:
-  - key: ${GATEYES_BOOTSTRAP_TEST_KEY}
-    secret: ${GATEYES_BOOTSTRAP_TEST_SECRET}
+  - key: bootstrap-key-001
+    secret: bootstrap-secret-001
     quota: 1000000
     qps: 1000
     models: []
 
 admin:
   defaultTenant: default
-  bootstrapKey: ${GATEYES_ADMIN_BOOTSTRAP_KEY}
-  bootstrapSecret: ${GATEYES_ADMIN_BOOTSTRAP_SECRET}
+  bootstrapKey: admin-key-001
+  bootstrapSecret: admin-secret-001

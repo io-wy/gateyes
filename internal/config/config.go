@@ -1,9 +1,11 @@
 package config
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -14,6 +16,7 @@ type Config struct {
 	Server         ServerConfig         `yaml:"server"`
 	Database       DatabaseConfig       `yaml:"database"`
 	Metrics        MetricsConfig        `yaml:"metrics"`
+	Tracing        TracingConfig        `yaml:"tracing"`
 	Router         RouterConfig         `yaml:"router"`
 	Limiter        LimiterConfig        `yaml:"limiter"`
 	Alert          AlertConfig          `yaml:"alert"`
@@ -45,6 +48,12 @@ type DatabaseConfig struct {
 type MetricsConfig struct {
 	Namespace string `yaml:"namespace"`
 	Enabled   bool   `yaml:"enabled"`
+}
+
+type TracingConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	Exporter string `yaml:"exporter"` // stdout, otlp
+	Endpoint string `yaml:"endpoint"` // OTLP endpoint, e.g. http://localhost:4318
 }
 
 type RouterConfig struct {
@@ -88,7 +97,21 @@ type LimiterConfig struct {
 	GlobalQPS           int `yaml:"globalQPS"`           // 全局默认 QPS
 	GlobalTPM           int `yaml:"globalTPM"`           // 全局每分钟 token 上限
 	GlobalTokenBurst    int `yaml:"globalTokenBurst"`    // 全局 token 桶突发容量
+	GlobalRPM           int `yaml:"globalRPM"`           // 全局每分钟请求上限
+	GlobalRPMBurst      int `yaml:"globalRPMBurst"`      // 全局 RPM 桶突发容量
 	PerUserRequestBurst int `yaml:"perUserRequestBurst"` // 每用户请求突发容量
+	TenantTPM           int `yaml:"tenantTPM"`           // 每租户每分钟 token 上限，0=禁用
+	TenantTPMBurst      int `yaml:"tenantTPMBurst"`      // 租户 token 桶突发容量
+	TenantRPM           int `yaml:"tenantRPM"`           // 每租户每分钟请求上限，0=禁用
+	TenantRPMBurst      int `yaml:"tenantRPMBurst"`      // 租户 RPM 桶突发容量
+	ProviderTPM         int `yaml:"providerTPM"`         // 每 provider 每分钟 token 上限，0=禁用
+	ProviderTPMBurst    int `yaml:"providerTPMBurst"`    // provider token 桶突发容量
+	ProviderRPM         int `yaml:"providerRPM"`         // 每 provider 每分钟请求上限，0=禁用
+	ProviderRPMBurst    int `yaml:"providerRPMBurst"`    // provider RPM 桶突发容量
+	ModelTPM            int `yaml:"modelTPM"`            // 每 model 每分钟 token 上限，0=禁用
+	ModelTPMBurst       int `yaml:"modelTPMBurst"`       // model token 桶突发容量
+	ModelRPM            int `yaml:"modelRPM"`            // 每 model 每分钟请求上限，0=禁用
+	ModelRPMBurst       int `yaml:"modelRPMBurst"`       // model RPM 桶突发容量
 	QueueSize           int `yaml:"queueSize"`           // 队列大小
 }
 
@@ -111,6 +134,7 @@ type ProviderConfig struct {
 	Enabled       bool              `yaml:"enabled"`
 	Headers       map[string]string `yaml:"headers"`
 	ExtraBody     map[string]any    `yaml:"extraBody"`
+	EnvFile       string            `yaml:"envFile"` // 敏感字段外置 .env 文件路径，空则自动尝试 .env1, .env2...
 }
 
 type APIKeyConfig struct {
@@ -128,14 +152,24 @@ type AdminConfig struct {
 }
 
 type AlertConfig struct {
-	Enabled            bool    `yaml:"enabled"`
-	QuotaThreshold     float64 `yaml:"quotaThreshold"` // 0.8 = 80%
-	WebhookURL         string  `yaml:"webhookURL"`
-	WebhookSecret      string  `yaml:"webhookSecret"`
-	ProviderStateURL   string  `yaml:"providerStateURL"`
-	BudgetExhaustedURL string  `yaml:"budgetExhaustedURL"`
-	RequestEventURL    string  `yaml:"requestEventURL"`
-	ErrorEventURL      string  `yaml:"errorEventURL"`
+	Enabled            bool                `yaml:"enabled"`
+	QuotaThreshold     float64             `yaml:"quotaThreshold"` // 0.8 = 80%
+	WebhookURL         string              `yaml:"webhookURL"`
+	WebhookSecret      string              `yaml:"webhookSecret"`
+	ProviderStateURL   string              `yaml:"providerStateURL"`
+	BudgetExhaustedURL string              `yaml:"budgetExhaustedURL"`
+	RequestEventURL    string              `yaml:"requestEventURL"`
+	ErrorEventURL      string              `yaml:"errorEventURL"`
+	Channels           []AlertChannelConfig `yaml:"channels"`
+	DedupWindowSeconds int                 `yaml:"dedupWindowSeconds"` // 聚合降噪窗口，默认 300
+}
+
+type AlertChannelConfig struct {
+	Name   string            `yaml:"name"`
+	Type   string            `yaml:"type"`   // webhook, slack
+	Target string            `yaml:"target"` // URL
+	Secret string            `yaml:"secret"`
+	Labels map[string]string `yaml:"labels"` // 用于路由过滤，如 severity=critical
 }
 
 type HealthCheckConfig struct {
@@ -169,6 +203,83 @@ func replaceEnvVars(data []byte) []byte {
 	})
 }
 
+func (c *Config) hydrateProviderEnvFiles(configPath string) error {
+	baseDir := filepath.Dir(configPath)
+	for i := range c.Providers {
+		p := &c.Providers[i]
+		envFile := p.EnvFile
+		if envFile == "" {
+			envFile = fmt.Sprintf(".env%d", i+1)
+		}
+		if !filepath.IsAbs(envFile) {
+			envFile = filepath.Join(baseDir, envFile)
+		}
+		envVars, err := loadEnvFile(envFile)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("load env file for provider %s: %w", p.Name, err)
+		}
+		applyEnvToProvider(envVars, p)
+	}
+	return nil
+}
+
+func loadEnvFile(path string) (map[string]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	vars := make(map[string]string)
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		if len(value) >= 2 {
+			if (value[0] == '"' && value[len(value)-1] == '"') ||
+				(value[0] == '\'' && value[len(value)-1] == '\'') {
+				value = value[1 : len(value)-1]
+			}
+		}
+		vars[key] = value
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return vars, nil
+}
+
+func applyEnvToProvider(env map[string]string, p *ProviderConfig) {
+	for k, v := range env {
+		if v == "" {
+			continue
+		}
+		switch strings.ToUpper(k) {
+		case "API_KEY":
+			p.APIKey = v
+		case "BASE_URL":
+			p.BaseURL = v
+		case "GRPC_TARGET":
+			p.GRPCTarget = v
+		case "GRPC_AUTHORITY":
+			p.GRPCAuthority = v
+		case "ENDPOINT":
+			p.Endpoint = v
+		case "MODEL":
+			p.Model = v
+		}
+	}
+}
+
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -190,6 +301,9 @@ func Load(path string) (*Config, error) {
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, err
 	}
+	if err := cfg.hydrateProviderEnvFiles(path); err != nil {
+		return nil, err
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -207,7 +321,7 @@ func (c *Config) Validate() error {
 	if !containsString([]string{"sqlite", "postgres", "mysql", ""}, c.Database.Driver) {
 		return fmt.Errorf("unsupported database.driver: %s", c.Database.Driver)
 	}
-	if !containsString([]string{"round_robin", "random", "least_load", "cost_based", "sticky", "ml_rank", ""}, c.Router.Strategy) {
+	if !containsString([]string{"round_robin", "random", "least_load", "least_tpm", "cost_based", "sticky", "ml_rank", ""}, c.Router.Strategy) {
 		return fmt.Errorf("unsupported router.strategy: %s", c.Router.Strategy)
 	}
 	if !containsString([]string{"", "none", "ml_rank"}, c.Router.Ranker.Method) {

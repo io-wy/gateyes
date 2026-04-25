@@ -53,12 +53,12 @@ circuitBreaker:
   halfOpenMaxRequests: 1
 
 providers:
+  # 敏感字段（apiKey / baseURL / model 等）可外置到 .env 文件
+  # 方式 1：不指定 envFile，自动按顺序读取 .env1, .env2...
+  # 方式 2：显式指定 envFile: .env.openai
   - name: openai-primary
     type: openai
-    baseURL: ${OPENAI_BASE_URL}
     endpoint: responses
-    apiKey: ${OPENAI_API_KEY}
-    model: ${OPENAI_MODEL}
     priceInput: 0.000005
     priceOutput: 0.000015
     maxTokens: 16384
@@ -67,9 +67,6 @@ providers:
 
   - name: anthropic-primary
     type: anthropic
-    baseURL: ${ANTHROPIC_BASE_URL}
-    apiKey: ${ANTHROPIC_API_KEY}
-    model: ${ANTHROPIC_MODEL}
     priceInput: 0.000003
     priceOutput: 0.000015
     maxTokens: 16384
