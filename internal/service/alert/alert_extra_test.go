@@ -11,7 +11,7 @@ import (
 	"github.com/gateyes/gateway/internal/repository"
 )
 
-func TestSendWebhookAddsSignatureHeader(t *testing.T) {
+func TestWebhookChannel_SendAddsSignatureHeader(t *testing.T) {
 	requests := make(chan *http.Request, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests <- r.Clone(context.Background())
@@ -19,24 +19,21 @@ func TestSendWebhookAddsSignatureHeader(t *testing.T) {
 	}))
 	defer server.Close()
 
-	svc := NewAlertService(config.AlertConfig{
-		Enabled:       true,
-		WebhookURL:    server.URL,
-		WebhookSecret: "secret",
-	}, nil)
-	svc.sendWebhook(context.Background(), QuotaAlert{
-		Type:      "quota_alert",
-		Timestamp: time.Now(),
-		Alert:     AlertData{TenantID: "tenant-1", UserID: "user-1"},
+	ch := NewWebhookChannel("test", server.URL, "secret", nil)
+	ch.Send(context.Background(), Alert{
+		Severity: SeverityWarning,
+		Type:     "quota_alert",
+		Key:      "test",
+		Payload:  map[string]any{"tenant_id": "tenant-1", "user_id": "user-1"},
 	})
 
 	select {
 	case req := <-requests:
 		if req.Header.Get("X-Signature") == "" {
-			t.Fatal("sendWebhook() missing X-Signature header")
+			t.Fatal("Send() missing X-Signature header")
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("sendWebhook() timed out waiting for request")
+		t.Fatal("Send() timed out waiting for request")
 	}
 }
 

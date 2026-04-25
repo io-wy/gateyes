@@ -12,29 +12,24 @@ import (
 	"github.com/gateyes/gateway/internal/repository"
 )
 
-func TestAlertService_ComputeSignature(t *testing.T) {
-	cfg := config.AlertConfig{
-		Enabled:        true,
-		QuotaThreshold: 0.8,
-		WebhookSecret:  "test-secret",
-	}
-	svc := NewAlertService(cfg, nil)
+func TestWebhookChannel_ComputeSignature(t *testing.T) {
+	ch := NewWebhookChannel("test", "http://test.com", "test-secret", nil)
 
 	body := []byte(`{"type":"quota_alert"}`)
-	signature := svc.computeSignature(body)
+	signature := ch.computeSignature(body)
 
 	if signature == "" {
 		t.Error("signature should not be empty")
 	}
 
 	// 相同内容应该产生相同签名
-	signature2 := svc.computeSignature(body)
+	signature2 := ch.computeSignature(body)
 	if signature != signature2 {
 		t.Error("same content should produce same signature")
 	}
 
 	// 不同内容应该产生不同签名
-	signature3 := svc.computeSignature([]byte(`{"type":"other"}`))
+	signature3 := ch.computeSignature([]byte(`{"type":"other"}`))
 	if signature == signature3 {
 		t.Error("different content should produce different signature")
 	}
@@ -163,14 +158,14 @@ func TestAlertService_AtThreshold(t *testing.T) {
 }
 
 func TestAlertService_AdditionalWebhookTypes(t *testing.T) {
-	requests := make(chan Event, 4)
+	requests := make(chan map[string]any, 4)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
-		var event Event
-		if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("decode webhook body: %v", err)
 		}
-		requests <- event
+		requests <- payload
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
@@ -202,10 +197,44 @@ func TestAlertService_AdditionalWebhookTypes(t *testing.T) {
 	deadline := time.After(2 * time.Second)
 	for len(received) < 4 {
 		select {
-		case event := <-requests:
-			received[event.Type] = true
+		case payload := <-requests:
+			received[payload["type"].(string)] = true
 		case <-deadline:
 			t.Fatalf("received webhook types = %#v, want provider_state_changed/budget_exhausted/request_event/error_event", received)
 		}
+	}
+}
+
+func TestAlertAggregator_Dedup(t *testing.T) {
+	agg := NewAlertAggregator(100 * time.Millisecond)
+
+	if !agg.ShouldSend("key1") {
+		t.Error("first send should be allowed")
+	}
+	if agg.ShouldSend("key1") {
+		t.Error("duplicate within window should be blocked")
+	}
+	if !agg.ShouldSend("key2") {
+		t.Error("different key should be allowed")
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	if !agg.ShouldSend("key1") {
+		t.Error("after window expires, send should be allowed again")
+	}
+}
+
+func TestAlertAggregator_Cleanup(t *testing.T) {
+	agg := NewAlertAggregator(50 * time.Millisecond)
+	agg.ShouldSend("old-key")
+
+	time.Sleep(100 * time.Millisecond)
+	agg.Cleanup()
+
+	agg.mu.RLock()
+	_, exists := agg.states["old-key"]
+	agg.mu.RUnlock()
+	if exists {
+		t.Error("expired key should be cleaned up")
 	}
 }
