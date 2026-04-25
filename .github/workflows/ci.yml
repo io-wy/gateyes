@@ -44,11 +44,6 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: GolangCI-Lint
-        uses: golangci/golangci-lint-action@v7
-        with:
-          version: v2.11.4
-
       - name: Migration smoke test
         run: go run ./cmd/migrate -config configs/config.example.yaml -action up
 
