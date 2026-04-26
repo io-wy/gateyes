@@ -2,6 +2,8 @@ package responses
 
 import (
 	"context"
+	"bytes"
+	"net/http"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -651,6 +653,25 @@ func (s *Service) finalizeStream(ctx context.Context, identity *repository.AuthI
 
 	s.providerMgr.Stats.RecordRequest(providerName, true, resp.Usage.TotalTokens, latencyMs)
 
+	if identity.CallbackURL != "" {
+		go s.sendCallback(identity.CallbackURL, map[string]any{
+			"event":          "request.completed",
+			"response_id":    responseID,
+			"tenant_id":      identity.TenantID,
+			"api_key_id":     identity.APIKeyID,
+			"virtual_key_id": identity.VirtualKeyID,
+			"provider_name":  providerName,
+			"model":          model,
+			"status":         "success",
+			"latency_ms":     latencyMs,
+			"usage": map[string]any{
+				"prompt_tokens":     resp.Usage.PromptTokens,
+				"completion_tokens": resp.Usage.CompletionTokens,
+				"total_tokens":      resp.Usage.TotalTokens,
+			},
+		})
+	}
+
 	if emitOutputs {
 		s.emitStreamPayloadFromResponse(out, resp)
 	}
@@ -812,14 +833,16 @@ func applyRecoveredStreamUsage(resp *provider.Response, usage *provider.Usage) {
 	if resp == nil || usage == nil {
 		return
 	}
-	if resp.Usage.PromptTokens == 0 {
+	if usage.PromptTokens > 0 {
 		resp.Usage.PromptTokens = usage.PromptTokens
 	}
-	if resp.Usage.CompletionTokens == 0 {
+	if usage.CompletionTokens > 0 {
 		resp.Usage.CompletionTokens = usage.CompletionTokens
 	}
-	if resp.Usage.TotalTokens == 0 {
+	if usage.TotalTokens > 0 {
 		resp.Usage.TotalTokens = usage.TotalTokens
+	} else if resp.Usage.PromptTokens > 0 && resp.Usage.CompletionTokens > 0 {
+		resp.Usage.TotalTokens = resp.Usage.PromptTokens + resp.Usage.CompletionTokens
 	}
 }
 
@@ -1096,6 +1119,26 @@ func (s *Service) persistSuccess(ctx context.Context, identity *repository.AuthI
 			"latency_ms":     latencyMs,
 			"total_tokens":   resp.Usage.TotalTokens,
 			"total_cost_usd": cost,
+		})
+	}
+
+	if identity.CallbackURL != "" {
+		go s.sendCallback(identity.CallbackURL, map[string]any{
+			"event":          "request.completed",
+			"response_id":    exec.responseID,
+			"tenant_id":      identity.TenantID,
+			"api_key_id":     identity.APIKeyID,
+			"virtual_key_id": identity.VirtualKeyID,
+			"provider_name":  exec.provider.Name(),
+			"model":          exec.requestedModel,
+			"status":         "success",
+			"latency_ms":     latencyMs,
+			"cost_usd":       cost,
+			"usage": map[string]any{
+				"prompt_tokens":     resp.Usage.PromptTokens,
+				"completion_tokens": resp.Usage.CompletionTokens,
+				"total_tokens":      resp.Usage.TotalTokens,
+			},
 		})
 	}
 
@@ -1562,4 +1605,19 @@ func errorString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+func (s *Service) sendCallback(url string, payload map[string]any) {
+	if url == "" {
+		return
+	}
+	body, _ := json.Marshal(payload)
+	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	resp.Body.Close()
 }
