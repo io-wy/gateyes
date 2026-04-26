@@ -64,14 +64,14 @@ func main() {
 			name:   "chat",
 			method: "POST",
 			path:   "/v1/chat/completions",
-			body:   `{"model":"gpt-4o","messages":[{"role":"user","content":"Hello, how are you?"}],"max_tokens":50}`,
+			body:   `{"model":"LongCat-Flash-Chat","messages":[{"role":"user","content":"Hello, how are you?"}],"max_tokens":50}`,
 			weight: 70,
 		},
 		{
 			name:   "responses",
 			method: "POST",
 			path:   "/v1/responses",
-			body:   `{"model":"gpt-4o","input":"What is the capital of France?","max_output_tokens":50}`,
+			body:   `{"model":"LongCat-Flash-Chat","input":"What is the capital of France?","max_output_tokens":50}`,
 			weight: 20,
 		},
 		{
@@ -173,8 +173,7 @@ func doRequest(client *http.Client, url, method, key, secret, body string) resul
 		return result{err: err, latency: time.Since(start)}
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+key)
-	req.Header.Set("X-API-Secret", secret)
+	req.Header.Set("Authorization", "Bearer "+key+":"+secret)
 
 	resp, err := client.Do(req)
 	latency := time.Since(start)
