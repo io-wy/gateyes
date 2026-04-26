@@ -16,7 +16,7 @@ func TestDriverNameSupportsKnownDrivers(t *testing.T) {
 	}{
 		{driver: "", want: "sqlite"},
 		{driver: "sqlite", want: "sqlite"},
-		{driver: "postgres", want: "postgres"},
+		{driver: "postgres", want: "pgx"},
 		{driver: "mysql", want: "mysql"},
 		{driver: "oracle", wantErr: true},
 	}

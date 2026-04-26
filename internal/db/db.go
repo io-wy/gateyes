@@ -11,7 +11,7 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 
 	"github.com/gateyes/gateway/internal/config"
@@ -90,11 +90,11 @@ func (d *DB) Rebind(query string) string {
 }
 
 func (d *DB) Migrate(ctx context.Context) error {
-	if _, err := d.Conn.ExecContext(ctx, `
-CREATE TABLE IF NOT EXISTS schema_migrations (
-	version TEXT PRIMARY KEY,
-	applied_at TIMESTAMP NOT NULL
-)`); err != nil {
+	versionCol := "TEXT"
+	if d.driver == "mysql" {
+		versionCol = "VARCHAR(255)"
+	}
+	if _, err := d.Conn.ExecContext(ctx, fmt.Sprintf(`CREATE TABLE IF NOT EXISTS schema_migrations (version %s PRIMARY KEY, applied_at TIMESTAMP NOT NULL)`, versionCol)); err != nil {
 		return fmt.Errorf("create schema_migrations: %w", err)
 	}
 
@@ -136,9 +136,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 			return fmt.Errorf("apply migration %s: %w", name, err)
 		}
 
-		if _, err := tx.ExecContext(ctx, d.Rebind(`
-INSERT INTO schema_migrations (version, applied_at)
-VALUES (?, ?)`), name, time.Now().UTC()); err != nil {
+		if _, err := tx.ExecContext(ctx, d.Rebind(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`), name, time.Now().UTC()); err != nil {
 			tx.Rollback()
 			return fmt.Errorf("record migration %s: %w", name, err)
 		}
@@ -153,10 +151,7 @@ VALUES (?, ?)`), name, time.Now().UTC()); err != nil {
 
 func (d *DB) isApplied(ctx context.Context, version string) (bool, error) {
 	var count int
-	if err := d.Conn.QueryRowContext(ctx, d.Rebind(`
-SELECT COUNT(1)
-FROM schema_migrations
-WHERE version = ?`), version).Scan(&count); err != nil {
+	if err := d.Conn.QueryRowContext(ctx, d.Rebind(`SELECT COUNT(1) FROM schema_migrations WHERE version = ?`), version).Scan(&count); err != nil {
 		return false, fmt.Errorf("check migration %s: %w", version, err)
 	}
 	return count > 0, nil
@@ -167,7 +162,7 @@ func driverName(driver string) (string, error) {
 	case "", "sqlite":
 		return "sqlite", nil
 	case "postgres":
-		return "postgres", nil
+		return "pgx", nil
 	case "mysql":
 		return "mysql", nil
 	default:
