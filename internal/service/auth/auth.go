@@ -27,23 +27,74 @@ func NewAuth(store repository.Store) *Auth {
 }
 
 func (a *Auth) Authenticate(ctx context.Context, key, secret string) (*repository.AuthIdentity, error) {
-	identity, err := a.store.Authenticate(ctx, key)
-	if err != nil {
-		if errors.Is(err, repository.ErrNotFound) {
-			return nil, ErrInvalidAPIKey
-		}
+	identity, err := a.authenticateAPIKey(ctx, key, secret)
+	if err == nil {
+		return identity, nil
+	}
+	if !errors.Is(err, repository.ErrNotFound) {
 		return nil, err
 	}
 
+	// fallback to virtual key
+	identity, err = a.authenticateVirtualKey(ctx, key, secret)
+	if err == nil {
+		return identity, nil
+	}
+	if errors.Is(err, repository.ErrNotFound) {
+		return nil, ErrInvalidAPIKey
+	}
+	return nil, err
+}
+
+func (a *Auth) authenticateAPIKey(ctx context.Context, key, secret string) (*repository.AuthIdentity, error) {
+	identity, err := a.store.Authenticate(ctx, key)
+	if err != nil {
+		return nil, err
+	}
 	if identity.APIStatus != repository.StatusActive || identity.UserStatus != repository.StatusActive || identity.TenantStatus != repository.StatusActive {
 		return nil, ErrInactiveAPIKey
 	}
-
 	if !repository.VerifySecret(secret, identity.SecretHash) {
 		return nil, ErrInvalidAPIKey
 	}
-
 	return identity, nil
+}
+
+func (a *Auth) authenticateVirtualKey(ctx context.Context, key, secret string) (*repository.AuthIdentity, error) {
+	vk, err := a.store.AuthenticateVirtualKey(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if !repository.VerifySecret(secret, vk.SecretHash) {
+		return nil, ErrInvalidAPIKey
+	}
+	// load parent api key identity
+	parent, err := a.store.Authenticate(ctx, vk.APIKeyID)
+	if err != nil {
+		return nil, ErrInvalidAPIKey
+	}
+	if parent.APIStatus != repository.StatusActive || parent.UserStatus != repository.StatusActive || parent.TenantStatus != repository.StatusActive {
+		return nil, ErrInactiveAPIKey
+	}
+
+	// overlay virtual key restrictions
+	parent.VirtualKeyID = vk.ID
+	if vk.BudgetUSD > 0 {
+		parent.VirtualKeyBudgetUSD = vk.BudgetUSD
+		parent.VirtualKeySpentUSD = vk.SpentUSD
+		parent.VirtualKeyBudgetPolicy = vk.BudgetPolicy
+	}
+	if vk.RateLimitQPS > 0 {
+		parent.APIKeyRateLimitQPS = vk.RateLimitQPS
+	}
+	if len(vk.AllowedModels) > 0 {
+		parent.APIKeyModels = vk.AllowedModels
+	}
+	if len(vk.AllowedProviders) > 0 {
+		parent.APIKeyProviders = vk.AllowedProviders
+	}
+	parent.CallbackURL = vk.CallbackURL
+	return parent, nil
 }
 
 func (a *Auth) Touch(ctx context.Context, identity *repository.AuthIdentity) error {
@@ -163,6 +214,15 @@ func (a *Auth) recordUsage(
 	}
 
 	if cost > 0 {
+		if identity.VirtualKeyID != "" {
+			ok, err := a.store.ConsumeVirtualKeyBudget(ctx, identity.VirtualKeyID, cost)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return ErrBudgetExceeded
+			}
+		}
 		ok, err := a.store.ConsumeAPIKeyBudget(ctx, identity.APIKeyID, cost)
 		if err != nil {
 			return err

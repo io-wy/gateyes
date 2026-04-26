@@ -17,6 +17,7 @@ type BudgetStore interface {
 	CheckAPIKeyBudget(ctx context.Context, apiKeyID string, estimatedCost float64) (*repository.BudgetCheckResult, error)
 	CheckProjectBudget(ctx context.Context, projectID string, estimatedCost float64) (*repository.BudgetCheckResult, error)
 	CheckTenantBudget(ctx context.Context, tenantID string, estimatedCost float64) (*repository.BudgetCheckResult, error)
+	CheckVirtualKeyBudget(ctx context.Context, virtualKeyID string, estimatedCost float64) (*repository.BudgetCheckResult, error)
 }
 
 type Service struct {
@@ -51,13 +52,14 @@ type ScopeResult struct {
 func (s *Service) Check(ctx context.Context, req CheckRequest) (CheckResult, error) {
 	result := CheckResult{Allowed: true, Scopes: make([]ScopeResult, 0, 3)}
 
-	// Check API Key -> Project -> Tenant in order
+	// Check Virtual Key -> API Key -> Project -> Tenant in order
 	scopes := []struct {
 		checkFunc func(context.Context, string, float64) (*repository.BudgetCheckResult, error)
 		id        string
 		name      string
 		policy    string
 	}{
+		{s.store.CheckVirtualKeyBudget, req.Identity.VirtualKeyID, "virtual_key", req.Identity.VirtualKeyBudgetPolicy},
 		{s.store.CheckAPIKeyBudget, req.Identity.APIKeyID, "api_key", req.Identity.APIKeyBudgetPolicy},
 		{s.store.CheckProjectBudget, req.Identity.ProjectID, "project", req.Identity.ProjectBudgetPolicy},
 		{s.store.CheckTenantBudget, req.Identity.TenantID, "tenant", req.Identity.TenantBudgetPolicy},

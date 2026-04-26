@@ -220,6 +220,9 @@ func (f *fakeIdentityStore) GetResponse(ctx context.Context, tenantID string, id
 func (f *fakeIdentityStore) ListResponses(ctx context.Context, tenantID string, filter repository.ResponseFilter) ([]repository.ResponseRecord, error) {
 	return nil, nil
 }
+func (f *fakeIdentityStore) CountResponses(ctx context.Context, tenantID string, filter repository.ResponseFilter) (int, error) {
+	return 0, nil
+}
 
 func (f *fakeIdentityStore) ListProviderRegistry(ctx context.Context) ([]repository.ProviderRegistryRecord, error) {
 	return nil, nil
@@ -342,6 +345,30 @@ func (f *fakeIdentityStore) CreateAuditLog(ctx context.Context, record repositor
 
 func (f *fakeIdentityStore) ListAuditLogs(ctx context.Context, tenantID string, filter repository.AuditLogFilter) ([]repository.AuditLogRecord, error) {
 	return nil, nil
+}
+func (f *fakeIdentityStore) CreateVirtualKey(ctx context.Context, params repository.CreateVirtualKeyParams) (*repository.VirtualKeyRecord, error) {
+	return nil, nil
+}
+func (f *fakeIdentityStore) ListVirtualKeys(ctx context.Context, tenantID string, filter repository.VirtualKeyFilter) ([]repository.VirtualKeyRecord, error) {
+	return nil, nil
+}
+func (f *fakeIdentityStore) GetVirtualKey(ctx context.Context, tenantID string, idOrKey string) (*repository.VirtualKeyRecord, error) {
+	return nil, nil
+}
+func (f *fakeIdentityStore) UpdateVirtualKey(ctx context.Context, tenantID string, idOrKey string, params repository.UpdateVirtualKeyParams) (*repository.VirtualKeyRecord, error) {
+	return nil, nil
+}
+func (f *fakeIdentityStore) DeleteVirtualKey(ctx context.Context, tenantID string, idOrKey string) error {
+	return nil
+}
+func (f *fakeIdentityStore) AuthenticateVirtualKey(ctx context.Context, key string) (*repository.VirtualKeyRecord, error) {
+	return nil, repository.ErrNotFound
+}
+func (f *fakeIdentityStore) CheckVirtualKeyBudget(ctx context.Context, virtualKeyID string, estimatedCost float64) (*repository.BudgetCheckResult, error) {
+	return &repository.BudgetCheckResult{Allowed: true}, nil
+}
+func (f *fakeIdentityStore) ConsumeVirtualKeyBudget(ctx context.Context, virtualKeyID string, cost float64) (bool, error) {
+	return true, nil
 }
 
 func baseIdentity() *repository.AuthIdentity {

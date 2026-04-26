@@ -23,8 +23,8 @@ FROM api_keys ak
 JOIN users u ON u.id = ak.user_id
 JOIN tenants t ON t.id = u.tenant_id
 LEFT JOIN projects p ON p.id = ak.project_id
-WHERE ak.key = ?
-LIMIT 1`), key)
+WHERE ak.key = ? OR ak.id = ?
+LIMIT 1`), key, key)
 
 	identity := &repository.AuthIdentity{}
 	var apiKeyModelsRaw string
@@ -132,6 +132,54 @@ WHERE id = ?
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("consume api key budget rows affected: %w", err)
+	}
+	return rowsAffected > 0, nil
+}
+
+func (s *Store) CheckVirtualKeyBudget(ctx context.Context, virtualKeyID string, estimatedCost float64) (*repository.BudgetCheckResult, error) {
+	if virtualKeyID == "" {
+		return &repository.BudgetCheckResult{Allowed: true}, nil
+	}
+	var budgetUSD, spentUSD float64
+	var policy string
+	if err := s.db.Conn.QueryRowContext(ctx, s.db.Rebind(`
+SELECT budget_usd, spent_usd, budget_policy FROM virtual_keys WHERE id = ?`), virtualKeyID).Scan(
+		&budgetUSD, &spentUSD, &policy,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return &repository.BudgetCheckResult{Allowed: true}, nil
+		}
+		return nil, fmt.Errorf("check virtual key budget: %w", err)
+	}
+	if budgetUSD <= 0 {
+		return &repository.BudgetCheckResult{Allowed: true, Policy: policy}, nil
+	}
+	remaining := budgetUSD - spentUSD - estimatedCost
+	return &repository.BudgetCheckResult{
+		Allowed:   remaining >= 0,
+		Scope:     "virtual_key",
+		Policy:    policy,
+		Remaining: remaining,
+	}, nil
+}
+
+func (s *Store) ConsumeVirtualKeyBudget(ctx context.Context, virtualKeyID string, cost float64) (bool, error) {
+	if virtualKeyID == "" || cost <= 0 {
+		return true, nil
+	}
+	result, err := s.db.Conn.ExecContext(ctx, s.db.Rebind(`
+UPDATE virtual_keys
+SET spent_usd = spent_usd + ?, updated_at = ?
+WHERE id = ?
+  AND (budget_usd <= 0 OR spent_usd + ? <= budget_usd)`),
+		cost, time.Now().UTC(), virtualKeyID, cost,
+	)
+	if err != nil {
+		return false, fmt.Errorf("consume virtual key budget: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("consume virtual key budget rows affected: %w", err)
 	}
 	return rowsAffected > 0, nil
 }

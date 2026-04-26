@@ -42,6 +42,16 @@ func (f *fakeBudgetStore) CheckTenantBudget(ctx context.Context, tenantID string
 	return &repository.BudgetCheckResult{Allowed: true, Scope: "tenant"}, nil
 }
 
+func (f *fakeBudgetStore) CheckVirtualKeyBudget(ctx context.Context, virtualKeyID string, estimatedCost float64) (*repository.BudgetCheckResult, error) {
+	if f.checkErr != nil {
+		return nil, f.checkErr
+	}
+	if r, ok := f.checkResults["virtual_key"]; ok {
+		return r, nil
+	}
+	return &repository.BudgetCheckResult{Allowed: true, Scope: "virtual_key"}, nil
+}
+
 func TestBudgetService_Allowed(t *testing.T) {
 	store := &fakeBudgetStore{}
 	svc := New(store)
