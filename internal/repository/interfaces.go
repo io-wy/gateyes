@@ -33,6 +33,7 @@ type Store interface {
 	ProjectStore
 	ServiceStore
 	AuditLogStore
+	VirtualKeyStore
 }
 
 type UserStore interface {
@@ -62,6 +63,8 @@ type IdentityStore interface {
 	CheckAPIKeyBudget(ctx context.Context, apiKeyID string, estimatedCost float64) (*BudgetCheckResult, error)
 	CheckProjectBudget(ctx context.Context, projectID string, estimatedCost float64) (*BudgetCheckResult, error)
 	CheckTenantBudget(ctx context.Context, tenantID string, estimatedCost float64) (*BudgetCheckResult, error)
+	CheckVirtualKeyBudget(ctx context.Context, virtualKeyID string, estimatedCost float64) (*BudgetCheckResult, error)
+	ConsumeVirtualKeyBudget(ctx context.Context, virtualKeyID string, cost float64) (bool, error)
 	GetBudgetStatus(ctx context.Context, tenantID, projectID, apiKeyID string) ([]BudgetStatus, error)
 	EnsureBootstrapKey(ctx context.Context, params BootstrapAPIKeyParams) error
 }
@@ -125,6 +128,7 @@ type ResponseStore interface {
 	UpdateResponse(ctx context.Context, record ResponseRecord) error
 	GetResponse(ctx context.Context, tenantID string, id string) (*ResponseRecord, error)
 	ListResponses(ctx context.Context, tenantID string, filter ResponseFilter) ([]ResponseRecord, error)
+	CountResponses(ctx context.Context, tenantID string, filter ResponseFilter) (int, error)
 }
 
 type ResponseFilter struct {
@@ -229,7 +233,12 @@ type AuthIdentity struct {
 	Quota              int
 	Used               int
 	QPS                int
-	Models             []string
+	Models              []string
+	VirtualKeyID        string
+	VirtualKeyBudgetUSD float64
+	VirtualKeySpentUSD  float64
+	VirtualKeyBudgetPolicy string
+	CallbackURL            string
 }
 
 type BudgetStatus struct {
@@ -727,6 +736,78 @@ type UpdateProviderRegistryParams struct {
 	SupportsStructuredOutput *bool
 	SupportsLongContext      *bool
 	SupportsEmbeddings       *bool
+}
+
+type VirtualKeyStore interface {
+	CreateVirtualKey(ctx context.Context, params CreateVirtualKeyParams) (*VirtualKeyRecord, error)
+	ListVirtualKeys(ctx context.Context, tenantID string, filter VirtualKeyFilter) ([]VirtualKeyRecord, error)
+	GetVirtualKey(ctx context.Context, tenantID string, idOrKey string) (*VirtualKeyRecord, error)
+	UpdateVirtualKey(ctx context.Context, tenantID string, idOrKey string, params UpdateVirtualKeyParams) (*VirtualKeyRecord, error)
+	DeleteVirtualKey(ctx context.Context, tenantID string, idOrKey string) error
+	AuthenticateVirtualKey(ctx context.Context, key string) (*VirtualKeyRecord, error)
+}
+
+type VirtualKeyRecord struct {
+	ID               string
+	TenantID         string
+	ProjectID        string
+	UserID           string
+	APIKeyID         string
+	Name             string
+	Key              string
+	SecretHash       string
+	Status           string
+	BudgetUSD        float64
+	SpentUSD         float64
+	BudgetPolicy     string
+	RateLimitQPS     int
+	AllowedModels    []string
+	AllowedProviders []string
+	Metadata         map[string]any
+	CallbackURL      string
+	ExpiresAt        *time.Time
+	RevokedAt        *time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+type VirtualKeyFilter struct {
+	UserID    string
+	ProjectID string
+	APIKeyID  string
+	Status    string
+}
+
+type CreateVirtualKeyParams struct {
+	TenantID         string
+	ProjectID        string
+	UserID           string
+	APIKeyID         string
+	Name             string
+	Key              string
+	SecretHash       string
+	BudgetUSD        float64
+	BudgetPolicy     string
+	RateLimitQPS     int
+	AllowedModels    []string
+	AllowedProviders []string
+	Metadata         map[string]any
+	CallbackURL      string
+	ExpiresAt        *time.Time
+}
+
+type UpdateVirtualKeyParams struct {
+	Name             *string
+	Status           *string
+	BudgetUSD        *float64
+	BudgetPolicy     *string
+	RateLimitQPS     *int
+	AllowedModels    *[]string
+	AllowedProviders *[]string
+	Metadata         *map[string]any
+	CallbackURL      *string
+	ExpiresAt        **time.Time
+	RevokedAt        **time.Time
 }
 
 func IsAdminRole(role string) bool {
