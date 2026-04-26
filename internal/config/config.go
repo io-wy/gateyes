@@ -263,10 +263,13 @@ func applyEnvToProvider(env map[string]string, p *ProviderConfig) {
 		if v == "" {
 			continue
 		}
-		switch strings.ToUpper(k) {
+		key := strings.ToUpper(k)
+		// Strip LLM_ prefix if present
+		key = strings.TrimPrefix(key, "LLM_")
+		switch key {
 		case "API_KEY":
 			p.APIKey = v
-		case "BASE_URL":
+		case "BASE_URL", "API_BASE":
 			p.BaseURL = v
 		case "GRPC_TARGET":
 			p.GRPCTarget = v
