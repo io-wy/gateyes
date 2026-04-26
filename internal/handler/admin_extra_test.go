@@ -726,3 +726,108 @@ func TestHandlerUtilityFunctions(t *testing.T) {
 		t.Fatal("handler helper functions returned unexpected result")
 	}
 }
+
+func TestAdminVirtualKeyLifecycle(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":      "chatcmpl-upstream",
+			"object":  "chat.completion",
+			"created": 1700000000,
+			"model":   "provider-model",
+			"choices": []map[string]any{{
+				"index": 0,
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": "vk hello",
+				},
+				"finish_reason": "stop",
+			}},
+			"usage": map[string]any{
+				"prompt_tokens":     3,
+				"completion_tokens": 5,
+				"total_tokens":      8,
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	env := newHandlerTestEnv(t, handlerTestEnvConfig{upstreamURL: upstream.URL})
+	token := seedAdminToken(t, env, repository.RoleTenantAdmin, "admin-vk-key", "admin-vk-secret").APIKey + ":" + "admin-vk-secret"
+
+	// Get the existing API key ID for the virtual key's parent
+	apiKeyList := performJSONRequest(t, env, http.MethodGet, "/admin/keys", token, "")
+	apiKeyData := decodeBodyMap(t, apiKeyList)["data"].([]any)
+	if len(apiKeyData) == 0 {
+		t.Fatal("need at least one API key for virtual key test")
+	}
+	apiKeyID := apiKeyData[0].(map[string]any)["id"].(string)
+
+	// Create virtual key
+	createBody := fmt.Sprintf(`{"user_id":"user-1","api_key_id":"%s","name":"test-vk","budget_usd":50.0,"rate_limit_qps":30,"allowed_models":["gpt-4"],"callback_url":"https://example.com/cb"}`, apiKeyID)
+	createResp := performJSONRequest(t, env, http.MethodPost, "/admin/virtual-keys", token, createBody)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("POST /admin/virtual-keys status = %d, want %d: %s", createResp.Code, http.StatusCreated, createResp.Body.String())
+	}
+	createPayload := decodeBodyMap(t, createResp)["data"].(map[string]any)
+	vkID := createPayload["id"].(string)
+	if _, ok := createPayload["secret"]; !ok {
+		t.Fatal("create response should include secret")
+	}
+	if _, ok := createPayload["token"]; !ok {
+		t.Fatal("create response should include token")
+	}
+
+	// List virtual keys
+	listResp := performJSONRequest(t, env, http.MethodGet, "/admin/virtual-keys", token, "")
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("GET /admin/virtual-keys status = %d, want %d: %s", listResp.Code, http.StatusOK, listResp.Body.String())
+	}
+	listPayload := decodeBodyMap(t, listResp)["data"].([]any)
+	if len(listPayload) == 0 {
+		t.Fatal("virtual keys list should not be empty")
+	}
+
+	// Get virtual key
+	getResp := performJSONRequest(t, env, http.MethodGet, "/admin/virtual-keys/"+vkID, token, "")
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("GET /admin/virtual-keys/:id status = %d, want %d: %s", getResp.Code, http.StatusOK, getResp.Body.String())
+	}
+	getPayload := decodeBodyMap(t, getResp)["data"].(map[string]any)
+	if getPayload["name"] != "test-vk" {
+		t.Fatalf("virtual key name = %v, want test-vk", getPayload["name"])
+	}
+
+	// Update virtual key
+	updateResp := performJSONRequest(t, env, http.MethodPut, "/admin/virtual-keys/"+vkID, token, `{"name":"renamed-vk","budget_usd":100.0}`)
+	if updateResp.Code != http.StatusOK {
+		t.Fatalf("PUT /admin/virtual-keys/:id status = %d, want %d: %s", updateResp.Code, http.StatusOK, updateResp.Body.String())
+	}
+	updatePayload := decodeBodyMap(t, updateResp)["data"].(map[string]any)
+	if updatePayload["name"] != "renamed-vk" {
+		t.Fatalf("updated name = %v, want renamed-vk", updatePayload["name"])
+	}
+
+	// Delete virtual key
+	deleteResp := performJSONRequest(t, env, http.MethodDelete, "/admin/virtual-keys/"+vkID, token, "")
+	if deleteResp.Code != http.StatusOK {
+		t.Fatalf("DELETE /admin/virtual-keys/:id status = %d, want %d: %s", deleteResp.Code, http.StatusOK, deleteResp.Body.String())
+	}
+
+	// Verify deletion
+	getResp2 := performJSONRequest(t, env, http.MethodGet, "/admin/virtual-keys/"+vkID, token, "")
+	if getResp2.Code != http.StatusNotFound {
+		t.Fatalf("GET deleted virtual key status = %d, want %d", getResp2.Code, http.StatusNotFound)
+	}
+}
+
+func TestAdminVirtualKey_CreateValidation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	env := newHandlerTestEnv(t, handlerTestEnvConfig{})
+	token := seedAdminToken(t, env, repository.RoleTenantAdmin, "admin-vk-val-key", "admin-vk-val-secret").APIKey + ":" + "admin-vk-val-secret"
+
+	resp := performJSONRequest(t, env, http.MethodPost, "/admin/virtual-keys", token, `{}`)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("POST /admin/virtual-keys with empty body status = %d, want %d", resp.Code, http.StatusBadRequest)
+	}
+}
