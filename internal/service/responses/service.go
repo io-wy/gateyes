@@ -221,6 +221,9 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 		}, nil
 	}
 
+	if lastErr == nil {
+		return nil, ErrNoProvider
+	}
 	return nil, lastErr
 }
 
