@@ -22,3 +22,8 @@ test_doc/
 .gomodcache/
 .uv-cache/
 *.env
+*.pid
+*.db
+*.sqlite
+*.db-wal
+*.db-shm
