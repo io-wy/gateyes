@@ -5,6 +5,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/gateyes/gateway/internal/config"
 )
 
@@ -58,6 +60,7 @@ type userBucket struct {
 
 type Limiter struct {
 	cfg            config.LimiterConfig
+	rdb            *redis.Client
 	globalToken    *TokenBucket
 	globalRPM      *TokenBucket
 	userTokens     map[string]*userBucket
@@ -234,13 +237,20 @@ func (r *Request) sendResult(result bool) {
 
 func (l *Limiter) check(key string, userQPS, tokens int) bool {
 	// global check: 按 token 数限流
-	if !l.globalToken.TryConsume(tokens) {
-		return false
-	}
-
-	// global RPM check
-	if l.cfg.GlobalRPM > 0 && !l.globalRPM.TryConsume(1) {
-		return false
+	if l.rdb != nil {
+		if !redisTryConsume(l.rdb, limiterKey("g", "t"), tokens, l.cfg.GlobalTPM/60, l.cfg.GlobalTokenBurst) {
+			return false
+		}
+		if l.cfg.GlobalRPM > 0 && !redisTryConsume(l.rdb, limiterKey("g", "r"), 1, l.cfg.GlobalRPM/60, l.cfg.GlobalRPMBurst) {
+			return false
+		}
+	} else {
+		if !l.globalToken.TryConsume(tokens) {
+			return false
+		}
+		if l.cfg.GlobalRPM > 0 && !l.globalRPM.TryConsume(1) {
+			return false
+		}
 	}
 
 	// user check: 按请求数限流
@@ -342,10 +352,21 @@ func (l *Limiter) Reload(cfg *config.Config) error {
 
 func (l *Limiter) Name() string { return "limiter" }
 
+// SetRedis enables distributed rate limiting via Redis.
+func (l *Limiter) SetRedis(rdb *redis.Client) {
+	l.rdb = rdb
+}
+
 // CheckTenant 检查租户维度限流（token + RPM）
 func (l *Limiter) CheckTenant(tenantID string, tokens int) bool {
 	if tenantID == "" {
 		return true
+	}
+	if l.rdb != nil {
+		if !redisTryConsume(l.rdb, limiterKey("ten", tenantID, "t"), tokens, l.cfg.TenantTPM/60, l.cfg.TenantTPMBurst) {
+			return false
+		}
+		return redisTryConsume(l.rdb, limiterKey("ten", tenantID, "r"), 1, l.cfg.TenantRPM/60, l.cfg.TenantRPMBurst)
 	}
 	if !l.tenantTokens.tryConsume(tenantID, tokens, l.cfg.TenantTPM/60, l.cfg.TenantTPMBurst) {
 		return false
@@ -358,6 +379,12 @@ func (l *Limiter) CheckProvider(provider string, tokens int) bool {
 	if provider == "" {
 		return true
 	}
+	if l.rdb != nil {
+		if !redisTryConsume(l.rdb, limiterKey("prov", provider, "t"), tokens, l.cfg.ProviderTPM/60, l.cfg.ProviderTPMBurst) {
+			return false
+		}
+		return redisTryConsume(l.rdb, limiterKey("prov", provider, "r"), 1, l.cfg.ProviderRPM/60, l.cfg.ProviderRPMBurst)
+	}
 	if !l.providerTokens.tryConsume(provider, tokens, l.cfg.ProviderTPM/60, l.cfg.ProviderTPMBurst) {
 		return false
 	}
@@ -368,6 +395,12 @@ func (l *Limiter) CheckProvider(provider string, tokens int) bool {
 func (l *Limiter) CheckModel(model string, tokens int) bool {
 	if model == "" {
 		return true
+	}
+	if l.rdb != nil {
+		if !redisTryConsume(l.rdb, limiterKey("mod", model, "t"), tokens, l.cfg.ModelTPM/60, l.cfg.ModelTPMBurst) {
+			return false
+		}
+		return redisTryConsume(l.rdb, limiterKey("mod", model, "r"), 1, l.cfg.ModelRPM/60, l.cfg.ModelRPMBurst)
 	}
 	if !l.modelTokens.tryConsume(model, tokens, l.cfg.ModelTPM/60, l.cfg.ModelTPMBurst) {
 		return false
