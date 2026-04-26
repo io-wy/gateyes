@@ -36,20 +36,25 @@ Gateyes 是一个用 Go 编写的 LLM API Gateway，定位是应用和上游模�
 - `POST /v1/chat/completions`
 - `POST /v1/messages`
 - `GET /v1/models`
+- `POST /v1/embeddings`
 - `POST /service/:prefix/responses`
 - `POST /service/:prefix/chat/completions`
 - `POST /service/:prefix/messages`
 - `POST /service/:prefix/invoke`
 - `GET /admin/dashboard`
 - `GET /admin/providers`
+- `POST /admin/providers`
+- `POST /admin/providers/check`
 - `GET /admin/providers/:name`
 - `GET /admin/providers/:name/stats`
 - `PUT /admin/providers/:name`
+- `DELETE /admin/providers/:name`
 - `GET /admin/audit`
 - `GET /admin/services`
 - `POST /admin/services`
 - `GET /admin/services/:id`
 - `PUT /admin/services/:id`
+- `DELETE /admin/services/:id`
 - `GET /admin/services/:id/versions`
 - `POST /admin/services/:id/versions`
 - `POST /admin/services/:id/publish`
@@ -65,6 +70,12 @@ Gateyes 是一个用 Go 编写的 LLM API Gateway，定位是应用和上游模�
 - `PUT /admin/keys/:id`
 - `POST /admin/keys/:id/rotate`
 - `POST /admin/keys/:id/revoke`
+- `DELETE /admin/keys/:id`
+- `GET /admin/virtual-keys`
+- `POST /admin/virtual-keys`
+- `GET /admin/virtual-keys/:id`
+- `PUT /admin/virtual-keys/:id`
+- `DELETE /admin/virtual-keys/:id`
 - `GET /admin/users`
 - `POST /admin/users`
 - `GET /admin/users/:id`
@@ -77,14 +88,19 @@ Gateyes 是一个用 Go 编写的 LLM API Gateway，定位是应用和上游模�
 - `GET /admin/projects/:id`
 - `GET /admin/projects/:id/usage`
 - `PUT /admin/projects/:id`
+- `DELETE /admin/projects/:id`
+- `GET /admin/responses`
 - `GET /admin/responses/:id/trace`
+- `GET /admin/budgets`
 - `GET /admin/usage/summary`
 - `GET /admin/usage/breakdown`
 - `GET /admin/usage/trend`
+- `POST /admin/reload`
 - `GET /admin/tenants`
 - `POST /admin/tenants`
 - `GET /admin/tenants/:id`
 - `PUT /admin/tenants/:id`
+- `DELETE /admin/tenants/:id`
 - `POST /admin/tenants/:id/providers`
 
 ### 功能
@@ -145,18 +161,31 @@ Gateyes 是一个用 Go 编写的 LLM API Gateway，定位是应用和上游模�
 - provider 统计可通过 admin API 查看
 - provider 支持主动健康检查，并会写回 provider registry 的 `health_status`
 - 关键 admin 写操作会写入 `audit_logs`，可通过 `/admin/audit` 查询
+- Virtual Key（LiteLLM 兼容模式）：
+  - VK 映射：虚拟 key + model → 真实 provider + model
+  - 支持预算覆盖（budget overlay）、模型白名单、provider 限制
+  - `DELETE /admin/virtual-keys/:id`
+- 多层预算管控：
+  - tenant / project / key / VK 四级预算
+  - `hard_reject` / `soft_alert` / `grace` 三种策略
+  - `GET /admin/budgets` 查看预算状态
+- Redis 分布式限流：
+  - Lua token bucket 实现
+  - 多维度：global / tenant / provider / model 的 TPM + RPM + QPS
+  - 无 Redis 时自动降级为内存模式
+- Provider 健康检查 + 熔断：
+  - 定时主动探活，失败自动熔断
+  - `POST /admin/providers/check` 手动触发
+- 配置热重载：`POST /admin/reload` 无需重启
+- Provider 动态管理：`POST/PUT/DELETE /admin/providers` 运行时增删改
 - Token 管理：
   - 用户使用量趋势查询
   - Tenant 使用量趋势查询
   - 配额告警 webhook（HMAC 签名 + 24h 去重）
   - provider 状态变化、预算耗尽、请求完成、错误事件 webhook
-- 已增加 project 和 scoped key budget 基础数据面：
-  - `project_id`
-  - `key_budget_usd`
-  - `key_spent_usd`
-  - `project budget/spent`
-- TDD 测试覆盖：
-  - alert、router、limiter
+- OTLP 链路追踪：支持 HTTP exporter
+- Graceful shutdown：SIGTERM 信号处理 + 连接排空
+- TDD 测试覆盖：alert、router、limiter
 
 ## 当前架构
 
@@ -207,9 +236,85 @@ Gateyes 是一个用 Go 编写的 LLM API Gateway，定位是应用和上游模�
 
 ## 快速开始
 
-### 运行要求
+### Docker Compose 一键部署（推荐）
+
+```bash
+# 1. 克隆仓库
+git clone https://github.com/io-wy/gateyes.git && cd gateyes
+
+# 2. 复制环境变量文件，填入你的 provider API key
+cp .env.example .env
+# 编辑 .env，至少填写 OPENAI_API_KEY 或 ANTHROPIC_API_KEY
+
+# 3. 启动所有服务（网关 + PostgreSQL + Redis + Prometheus + Grafana）
+docker compose up --build -d
+
+# 4. 确认服务就绪
+curl http://127.0.0.1:8083/health
+```
+
+服务端口：
+
+| 服务 | 地址 |
+|------|------|
+| Gateway | http://127.0.0.1:8083 |
+| Prometheus | http://127.0.0.1:9090 |
+| Grafana | http://127.0.0.1:3000 |
+| Redis | localhost:6379 |
+
+### 手动部署
+
+```bash
+# 1. 构建
+go build -o ./bin/gateway ./cmd/gateway
+
+# 2. 准备配置
+cp configs/config.example.yaml configs/config.yaml
+# 编辑 config.yaml，修改 server、database、providers 等配置
+
+# 3. 准备环境变量
+cp .env.example .env
+# 编辑 .env，填写 provider API key
+
+# 4. 启动
+./bin/gateway -config configs/config.yaml
+```
+
+### 首次使用流程
+
+```bash
+# 1. 健康检查
+curl http://127.0.0.1:8083/health
+
+# 2. 用 bootstrap admin 凭据创建一个租户
+curl -X POST http://127.0.0.1:8083/admin/tenants \
+  -H "Authorization: Bearer admin-key-001:admin-secret-001" \
+  -H "Content-Type: application/json" \
+  -d '{"slug": "my-team", "name": "My Team"}'
+
+# 3. 创建一个用户（会返回 api_key 和 api_secret）
+curl -X POST http://127.0.0.1:8083/admin/users \
+  -H "Authorization: Bearer admin-key-001:admin-secret-001" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "alice", "role": "tenant_user"}'
+
+# 4. 用返回的 api_key:api_secret 发送请求
+curl -X POST http://127.0.0.1:8083/v1/chat/completions \
+  -H "Authorization: Bearer <api_key>:<api_secret>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [{"role": "user", "content": "hello"}]
+  }'
+```
+
+详细部署文档见 [`docs/deployment.md`](./docs/deployment.md)。
+
+## 运行要求
 
 - Go 1.25+
+- PostgreSQL（推荐生产环境）或 SQLite（开发环境）
+- Redis（推荐，用于分布式限流；不部署时自动降级为内存模式）
 
 ### 构建
 
@@ -240,6 +345,22 @@ database:
   driver: sqlite
   dsn: gateyes.db
   autoMigrate: true
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+
+limiter:
+  globalQPS: 1000
+  globalTPM: 1000000
+  tenantTPM: 500000
+  providerTPM: 300000
+
+healthCheck:
+  enabled: true
+  intervalSeconds: 60
+  timeoutSeconds: 15
 
 router:
   strategy: least_load
@@ -457,16 +578,14 @@ curl -X POST http://localhost:8080/admin/tenants/demo/providers \
 
 - `Responses API` 仍是”收敛后的统一实现”，不是完整覆盖 OpenAI 全量 Responses 协议字段
 - `POST /v1/chat/completions` 保留为兼容接口，不再作为内部主链路
-- provider 目前仍从配置加载，不是数据库动态管理
 - retry、fallback、circuit breaker 已接上基础实现，但 live upstream provider 兼容性仍建议按 provider 定期回归
-- billing、预算和主动健康检查还不是完整生产方案
 - cache 缓存已移除（provider 上游的 prefix caching / detailed token info 才是真正的缓存节省，gateway 层无法控制；保留 provider 返回的 cache_hit 字段监控即可）
 - 流式 usage 在依赖上游事件完整度时可以精确回填；上游不给完整信息时会回退到近似估算
 - metrics 已统一到 `surface/provider/result` 口径，且已补上 request-id / `traceparent` correlation、Prometheus rules 基线与 Grafana dashboard 基线；阈值仍需按部署环境调优
+- 没有内置 TLS，生产环境需前置 Nginx / Caddy 反向代理
 - 仓库目标回归口径仍是 `go test ./...`
-- 当前 worktree 可能包含在途改动，是否全绿应以本轮实际测试结果为准
 
-## 当前验证入口（2026-04-12）
+## 当前验证入口
 
 ### 自动化测试
 
@@ -489,8 +608,9 @@ curl -X POST http://localhost:8080/admin/tenants/demo/providers \
 ## 接下来适合做的事
 
 - 更完整的 OpenAI Responses 协议兼容层
-- provider 动态管理与热更新
+- 内置 TLS 支持
 - 更细粒度 RBAC / 审计日志
-- 预算、账单、告警
 - 更多 provider adapter（除 OpenAI / Anthropic 外继续扩展）
 - 上游 provider 返回的 cache_hit / cached_tokens 字段监控（真正的缓存节省来自 provider 侧）
+- 数据备份 / 恢复工具
+- 分布式追踪 span 完善

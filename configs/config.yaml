@@ -2,21 +2,28 @@ server:
   listenAddr: ":8083"
   readTimeout: 30
   writeTimeout: 300
+  idleTimeout: 120
+  shutdownTimeout: 10
 
 database:
-  driver: sqlite
-  dsn: gateyes.db
+  driver: postgres
+  dsn: "host=postgres port=5432 user=gateyes password=gateyes_pw dbname=gateyes sslmode=disable"
   autoMigrate: true
   maxOpenConns: 10
   maxIdleConns: 5
   connMaxLifetimeSeconds: 300
+
+redis:
+  addr: "redis:6379"
+  password: ""
+  db: 0
 
 metrics:
   namespace: gateway
   enabled: true
 
 router:
-  strategy: round_robin
+  strategy: least_load
 
 limiter:
   globalQPS: 1000
@@ -53,9 +60,6 @@ circuitBreaker:
   halfOpenMaxRequests: 1
 
 providers:
-  # 敏感字段（apiKey / baseURL / model 等）可外置到 .env 文件
-  # 方式 1：不指定 envFile，自动按顺序读取 .env1, .env2...
-  # 方式 2：显式指定 envFile: .env.openai
   - name: openai-primary
     type: openai
     endpoint: responses

@@ -8,17 +8,55 @@ services:
     image: gateyes:local
     env_file:
       - .env
-    command: ["-config", "/app/configs/config.example.yaml"]
+    environment:
+      - GATEYES_CONFIG_PATH=/app/configs/config.yaml
+    command: ["-config", "/app/configs/config.yaml"]
     ports:
       - "8083:8083"
     volumes:
-      - gateyes-data:/app/data
+      - ./configs/config.yaml:/app/configs/config.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8083/ready >/dev/null 2>&1"]
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 20s
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gateyes
+      POSTGRES_PASSWORD: gateyes_pw
+      POSTGRES_DB: gateyes
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateyes"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     restart: unless-stopped
 
   prometheus:
@@ -50,6 +88,7 @@ services:
     restart: unless-stopped
 
 volumes:
-  gateyes-data:
+  postgres-data:
+  redis-data:
   prometheus-data:
   grafana-data:

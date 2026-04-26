@@ -56,6 +56,10 @@ func Open(cfg config.DatabaseConfig) (*DB, error) {
 			conn.Close()
 			return nil, fmt.Errorf("enable sqlite wal mode: %w", err)
 		}
+		if _, err := conn.Exec("PRAGMA busy_timeout=5000;"); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("set sqlite busy timeout: %w", err)
+		}
 	}
 
 	return &DB{Conn: conn, driver: cfg.Driver}, nil

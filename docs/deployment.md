@@ -1,5 +1,46 @@
 # Deployment
 
+## 0. Quickstart (Docker Compose)
+
+最简单的方式，适合开发和试玩：
+
+```bash
+# 1. 克隆
+git clone https://github.com/io-wy/gateyes.git && cd gateyes
+
+# 2. 配置环境变量
+cp .env.example .env
+# 编辑 .env，至少填写一个 provider 的 API key（如 OPENAI_API_KEY）
+
+# 3. 启动（网关 + PostgreSQL + Redis + Prometheus + Grafana）
+docker compose up --build -d
+
+# 4. 验证
+curl http://127.0.0.1:8083/health
+```
+
+### 首次使用
+
+```bash
+# 1. 创建租户
+curl -X POST http://127.0.0.1:8083/admin/tenants \
+  -H "Authorization: Bearer admin-key-001:admin-secret-001" \
+  -H "Content-Type: application/json" \
+  -d '{"slug":"my-team","name":"My Team"}'
+
+# 2. 创建用户（返回 api_key 和 api_secret）
+curl -X POST http://127.0.0.1:8083/admin/users \
+  -H "Authorization: Bearer admin-key-001:admin-secret-001" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"alice","role":"tenant_user"}'
+
+# 3. 用返回的凭据请求
+curl -X POST http://127.0.0.1:8083/v1/chat/completions \
+  -H "Authorization: Bearer <api_key>:<api_secret>" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}'
+```
+
 ## 1. Local
 
 ### Prerequisites
