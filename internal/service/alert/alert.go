@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/gateyes/gateway/internal/config"
 	"github.com/gateyes/gateway/internal/repository"
 )
@@ -130,6 +132,7 @@ func (w *WebhookChannel) computeSignature(body []byte) string {
 
 type AlertAggregator struct {
 	window time.Duration
+	rdb    *redis.Client
 	mu     sync.RWMutex
 	states map[string]time.Time
 }
@@ -144,7 +147,27 @@ func NewAlertAggregator(window time.Duration) *AlertAggregator {
 	}
 }
 
+func (a *AlertAggregator) SetRedis(rdb *redis.Client) {
+	a.rdb = rdb
+}
+
 func (a *AlertAggregator) ShouldSend(key string) bool {
+	if a.rdb != nil {
+		return a.shouldSendRedis(key)
+	}
+	return a.shouldSendLocal(key)
+}
+
+func (a *AlertAggregator) shouldSendRedis(key string) bool {
+	redisKey := "gateyes:alert:dedup:" + key
+	ok, err := a.rdb.SetNX(context.Background(), redisKey, "1", a.window).Result()
+	if err != nil {
+		return a.shouldSendLocal(key)
+	}
+	return ok
+}
+
+func (a *AlertAggregator) shouldSendLocal(key string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if last, ok := a.states[key]; ok && time.Since(last) < a.window {
@@ -155,6 +178,9 @@ func (a *AlertAggregator) ShouldSend(key string) bool {
 }
 
 func (a *AlertAggregator) Cleanup() {
+	if a.rdb != nil {
+		return
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	cutoff := time.Now().Add(-a.window)
@@ -234,6 +260,11 @@ func (s *AlertService) Reload(cfg *config.Config) error {
 }
 
 func (s *AlertService) Name() string { return "alert" }
+
+// SetRedis enables distributed alert dedup via Redis.
+func (s *AlertService) SetRedis(rdb *redis.Client) {
+	s.aggregator.SetRedis(rdb)
+}
 
 func (s *AlertService) send(ctx context.Context, alert Alert, routeLabels map[string]string) {
 	if !s.cfg.Enabled || len(s.channels) == 0 {
