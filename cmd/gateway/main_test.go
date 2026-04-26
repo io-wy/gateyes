@@ -54,6 +54,12 @@ func (f *fakeIdentityStore) GetBudgetStatus(ctx context.Context, tenantID, proje
 	return nil, nil
 }
 
+func (f *fakeIdentityStore) CheckVirtualKeyBudget(ctx context.Context, virtualKeyID string, estimatedCost float64) (*repository.BudgetCheckResult, error) {
+	return &repository.BudgetCheckResult{Allowed: true}, nil
+}
+func (f *fakeIdentityStore) ConsumeVirtualKeyBudget(ctx context.Context, virtualKeyID string, cost float64) (bool, error) {
+	return true, nil
+}
 func (f *fakeIdentityStore) EnsureBootstrapKey(ctx context.Context, params repository.BootstrapAPIKeyParams) error {
 	if f.err != nil {
 		return f.err

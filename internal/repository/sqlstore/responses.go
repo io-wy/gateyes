@@ -125,9 +125,8 @@ LIMIT 1`
 	return &record, nil
 }
 
-func (s *Store) ListResponses(ctx context.Context, tenantID string, filter repository.ResponseFilter) ([]repository.ResponseRecord, error) {
+func buildResponseFilterQuery(tenantID string, filter repository.ResponseFilter) (string, []any) {
 	query := `
-SELECT id, tenant_id, project_id, user_id, api_key_id, provider_name, model, status, request_body, response_body, route_trace_body, created_at, updated_at
 FROM responses
 WHERE 1 = 1`
 	args := make([]any, 0, 8)
@@ -172,7 +171,24 @@ WHERE 1 = 1`
 		query += ` AND created_at <= ?`
 		args = append(args, filter.EndTime)
 	}
-	query += ` ORDER BY created_at DESC`
+	return query, args
+}
+
+func (s *Store) CountResponses(ctx context.Context, tenantID string, filter repository.ResponseFilter) (int, error) {
+	baseQuery, args := buildResponseFilterQuery(tenantID, filter)
+	query := "SELECT COUNT(*) " + baseQuery
+	var count int
+	if err := s.db.Conn.QueryRowContext(ctx, s.db.Rebind(query), args...).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count responses: %w", err)
+	}
+	return count, nil
+}
+
+func (s *Store) ListResponses(ctx context.Context, tenantID string, filter repository.ResponseFilter) ([]repository.ResponseRecord, error) {
+	baseQuery, args := buildResponseFilterQuery(tenantID, filter)
+	query := `
+SELECT id, tenant_id, project_id, user_id, api_key_id, provider_name, model, status, request_body, response_body, route_trace_body, created_at, updated_at`
+	query += baseQuery + ` ORDER BY created_at DESC`
 	limit := filter.Limit
 	if limit <= 0 {
 		limit = 100
