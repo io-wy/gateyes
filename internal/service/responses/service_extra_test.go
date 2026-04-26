@@ -3,10 +3,12 @@ package responses
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gateyes/gateway/internal/config"
 	"github.com/gateyes/gateway/internal/repository"
@@ -463,4 +465,65 @@ func providerNames(providers []provider.Provider) []string {
 		result = append(result, p.Name())
 	}
 	return result
+}
+
+func TestApplyRecoveredStreamUsage(t *testing.T) {
+	tests := []struct {
+		name      string
+		resp      *provider.Response
+		usage     *provider.Usage
+		wantPT    int
+		wantCT    int
+		wantTT    int
+	}{
+		{"nil resp", nil, &provider.Usage{PromptTokens: 5}, 0, 0, 0},
+		{"nil usage", &provider.Response{}, nil, 0, 0, 0},
+		{"full overwrite", &provider.Response{Usage: provider.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}}, &provider.Usage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30}, 10, 20, 30},
+		{"compute total", &provider.Response{Usage: provider.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 0}}, &provider.Usage{PromptTokens: 5, CompletionTokens: 3, TotalTokens: 0}, 5, 3, 8},
+		{"partial prompt only", &provider.Response{Usage: provider.Usage{CompletionTokens: 2}}, &provider.Usage{PromptTokens: 7}, 7, 2, 9},
+		{"zero values no overwrite", &provider.Response{Usage: provider.Usage{PromptTokens: 5, CompletionTokens: 3, TotalTokens: 8}}, &provider.Usage{}, 5, 3, 8},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			applyRecoveredStreamUsage(tt.resp, tt.usage)
+			if tt.resp == nil {
+				return
+			}
+			if got := tt.resp.Usage.PromptTokens; got != tt.wantPT {
+				t.Errorf("PromptTokens = %d, want %d", got, tt.wantPT)
+			}
+			if got := tt.resp.Usage.CompletionTokens; got != tt.wantCT {
+				t.Errorf("CompletionTokens = %d, want %d", got, tt.wantCT)
+			}
+			if got := tt.resp.Usage.TotalTokens; got != tt.wantTT {
+				t.Errorf("TotalTokens = %d, want %d", got, tt.wantTT)
+			}
+		})
+	}
+}
+
+func TestSendCallback(t *testing.T) {
+	received := make(chan []byte, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		received <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	svc := &Service{}
+	svc.sendCallback(server.URL, map[string]any{"status": "success", "id": "resp-1"})
+
+	select {
+	case body := <-received:
+		if !strings.Contains(string(body), `"status":"success"`) {
+			t.Errorf("callback body = %s, want status=success", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("callback not received")
+	}
+
+	svc.sendCallback("", nil)
+	svc.sendCallback("http://unreachable-host.invalid/callback", nil)
 }
