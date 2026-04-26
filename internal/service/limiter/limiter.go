@@ -304,6 +304,44 @@ func (l *Limiter) QueueSize() int {
 	return len(l.queue)
 }
 
+// Reload updates runtime-safe limiter parameters from a new config.
+func (l *Limiter) Reload(cfg *config.Config) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	newCfg := cfg.Limiter
+	globalBurst := newCfg.GlobalTokenBurst
+	if globalBurst <= 0 {
+		globalBurst = newCfg.GlobalTPM / 60
+		if globalBurst <= 0 {
+			globalBurst = 100
+		}
+	}
+	globalRPMRate := newCfg.GlobalRPM / 60
+	if newCfg.GlobalRPM > 0 && globalRPMRate <= 0 {
+		globalRPMRate = 1
+	}
+	globalRPMBurst := newCfg.GlobalRPMBurst
+	if newCfg.GlobalRPM > 0 && globalRPMBurst <= 0 {
+		globalRPMBurst = newCfg.GlobalRPM / 60
+		if globalRPMBurst <= 0 {
+			globalRPMBurst = 10
+		}
+	}
+	perUserBurst := newCfg.PerUserRequestBurst
+	if perUserBurst <= 0 {
+		perUserBurst = 100
+	}
+	newCfg.PerUserRequestBurst = perUserBurst
+
+	l.cfg = newCfg
+	l.globalToken = NewTokenBucket(newCfg.GlobalTPM/60, globalBurst)
+	l.globalRPM = NewTokenBucket(globalRPMRate, globalRPMBurst)
+	return nil
+}
+
+func (l *Limiter) Name() string { return "limiter" }
+
 // CheckTenant 检查租户维度限流（token + RPM）
 func (l *Limiter) CheckTenant(tenantID string, tokens int) bool {
 	if tenantID == "" {
