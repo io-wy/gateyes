@@ -1,0 +1,87 @@
+server:
+  listenAddr: ":18083"
+  readTimeout: 30
+  writeTimeout: 300
+
+database:
+  driver: sqlite
+  dsn: gateyes_bench2.db
+  autoMigrate: true
+  maxOpenConns: 10
+  maxIdleConns: 5
+  connMaxLifetimeSeconds: 300
+
+metrics:
+  namespace: gateway
+  enabled: true
+
+router:
+  strategy: round_robin
+
+limiter:
+  globalQPS: 1000
+  globalTPM: 1000000
+  globalTokenBurst: 100000
+  perUserRequestBurst: 100
+  queueSize: 1000
+
+alert:
+  enabled: false
+
+healthCheck:
+  enabled: true
+  intervalSeconds: 60
+  timeoutSeconds: 15
+  failureThreshold: 2
+
+retry:
+  maxRetries: 2
+  initialDelayMs: 100
+  maxDelayMs: 5000
+  backoffFactor: 2.0
+
+circuitBreaker:
+  failureThreshold: 5
+  recoveryTimeout: 60
+  halfOpenMaxRequests: 1
+
+providers:
+  - name: openai-primary
+    type: openai
+    endpoint: chat
+    envFile: "1.env"
+    priceInput: 0.000005
+    priceOutput: 0.000015
+    maxTokens: 16384
+    timeout: 60
+    enabled: true
+
+  - name: anthropic-primary
+    type: anthropic
+    envFile: "2.env"
+    priceInput: 0.000003
+    priceOutput: 0.000015
+    maxTokens: 16384
+    timeout: 60
+    enabled: true
+
+  - name: anthropic-secondary
+    type: anthropic
+    envFile: "3.env"
+    priceInput: 0.000003
+    priceOutput: 0.000015
+    maxTokens: 16384
+    timeout: 60
+    enabled: true
+
+apiKeys:
+  - key: bench-key-001
+    secret: bench-secret-001
+    quota: 10000000
+    qps: 10000
+    models: []
+
+admin:
+  defaultTenant: default
+  bootstrapKey: admin-bench-key
+  bootstrapSecret: admin-bench-secret
