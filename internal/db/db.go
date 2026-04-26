@@ -51,6 +51,13 @@ func Open(cfg config.DatabaseConfig) (*DB, error) {
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
 
+	if driverName == "sqlite" {
+		if _, err := conn.Exec("PRAGMA journal_mode=WAL;"); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("enable sqlite wal mode: %w", err)
+		}
+	}
+
 	return &DB{Conn: conn, driver: cfg.Driver}, nil
 }
 
