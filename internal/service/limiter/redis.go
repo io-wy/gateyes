@@ -41,6 +41,9 @@ return ok
 `)
 
 func redisTryConsume(rdb *redis.Client, redisKey string, n, rate, burst int) bool {
+	if rate <= 0 || burst <= 0 {
+		return true
+	}
 	now := time.Now().UnixMilli()
 	result, err := tokenBucketLua.Run(context.Background(), rdb, []string{redisKey}, rate, burst, n, now).Int()
 	if err != nil {
