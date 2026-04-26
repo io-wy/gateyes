@@ -15,6 +15,7 @@ import (
 type Config struct {
 	Server         ServerConfig         `yaml:"server"`
 	Database       DatabaseConfig       `yaml:"database"`
+	Redis          RedisConfig          `yaml:"redis"`
 	Metrics        MetricsConfig        `yaml:"metrics"`
 	Tracing        TracingConfig        `yaml:"tracing"`
 	Router         RouterConfig         `yaml:"router"`
@@ -26,6 +27,17 @@ type Config struct {
 	Providers      []ProviderConfig     `yaml:"providers"`
 	APIKeys        []APIKeyConfig       `yaml:"apiKeys"`
 	Admin          AdminConfig          `yaml:"admin"`
+}
+
+type RedisConfig struct {
+	Addr     string `yaml:"addr"`     // e.g. "localhost:6379"
+	Password string `yaml:"password"`
+	DB       int    `yaml:"db"`
+	PoolSize int    `yaml:"poolSize"` // 0 = default (10 per CPU)
+}
+
+func (r RedisConfig) Enabled() bool {
+	return r.Addr != ""
 }
 
 type ServerConfig struct {
