@@ -220,6 +220,21 @@ func buildChannels(cfg config.AlertConfig) []Channel {
 	return channels
 }
 
+// Reload updates runtime-safe alert configuration.
+func (s *AlertService) Reload(cfg *config.Config) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cfg = cfg.Alert
+	s.channels = buildChannels(cfg.Alert)
+	if !cfg.Alert.Enabled {
+		s.channels = nil
+	}
+	s.aggregator = NewAlertAggregator(time.Duration(cfg.Alert.DedupWindowSeconds) * time.Second)
+	return nil
+}
+
+func (s *AlertService) Name() string { return "alert" }
+
 func (s *AlertService) send(ctx context.Context, alert Alert, routeLabels map[string]string) {
 	if !s.cfg.Enabled || len(s.channels) == 0 {
 		return
