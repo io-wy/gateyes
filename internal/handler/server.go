@@ -64,6 +64,7 @@ func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mw *mi
 	{
 		admin.GET("/dashboard", adminH.Dashboard)
 		admin.GET("/providers", adminH.GetProviders)
+		admin.POST("/providers/check", adminH.CheckProviders)
 		admin.POST("/providers", adminH.CreateProvider)
 		admin.GET("/providers/:name", adminH.GetProvider)
 		admin.GET("/providers/:name/stats", adminH.GetProviderStats)
@@ -106,6 +107,7 @@ func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mw *mi
 		admin.GET("/projects/:id", adminH.GetProject)
 		admin.GET("/projects/:id/usage", adminH.GetProjectUsage)
 		admin.PUT("/projects/:id", adminH.UpdateProject)
+		admin.DELETE("/projects/:id", adminH.DeleteProject)
 		admin.GET("/responses", adminH.ListResponses)
 		admin.GET("/responses/:id/trace", adminH.GetResponseTrace)
 		admin.GET("/budgets", adminH.GetBudgets)
@@ -122,6 +124,7 @@ func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mw *mi
 		tenants.POST("", adminH.CreateTenant)
 		tenants.GET("/:id", adminH.GetTenant)
 		tenants.PUT("/:id", adminH.UpdateTenant)
+		tenants.DELETE("/:id", adminH.DeleteTenant)
 		tenants.POST("/:id/providers", adminH.ReplaceTenantProviders)
 	}
 

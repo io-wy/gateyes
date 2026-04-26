@@ -174,6 +174,7 @@ func main() {
 	})
 
 	adminHandler := handler.NewAdminHandler(store, providerMgr, catalogSvc, reloader)
+	adminHandler.SetHealthChecker(healthChecker)
 	srv := handler.NewServer(cfg.Server, h, adminHandler, httpMiddleware)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

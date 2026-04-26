@@ -129,6 +129,44 @@ WHERE id = ?`, strings.Join(sets, ", "))), args...); err != nil {
 	return s.GetProject(ctx, project.TenantID, project.ID)
 }
 
+func (s *Store) DeleteProject(ctx context.Context, tenantID string, idOrSlug string) error {
+	project, err := s.loadProject(ctx, tenantID, idOrSlug)
+	if err != nil {
+		return err
+	}
+
+	tx, err := s.db.Conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin delete project: %w", err)
+	}
+
+	queries := []struct {
+		query string
+		arg   string
+	}{
+		{s.db.Rebind(`DELETE FROM virtual_keys WHERE project_id = ?`), project.ID},
+		{s.db.Rebind(`DELETE FROM service_subscriptions WHERE project_id = ?`), project.ID},
+		{s.db.Rebind(`DELETE FROM service_versions WHERE service_id IN (SELECT id FROM services WHERE project_id = ?)`), project.ID},
+		{s.db.Rebind(`DELETE FROM services WHERE project_id = ?`), project.ID},
+		{s.db.Rebind(`DELETE FROM responses WHERE project_id = ?`), project.ID},
+		{s.db.Rebind(`DELETE FROM usage_records WHERE project_id = ?`), project.ID},
+		{s.db.Rebind(`DELETE FROM api_keys WHERE project_id = ?`), project.ID},
+		{s.db.Rebind(`DELETE FROM projects WHERE id = ?`), project.ID},
+	}
+
+	for _, q := range queries {
+		if _, err := tx.ExecContext(ctx, q.query, q.arg); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("delete project cascade: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete project: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) loadProject(ctx context.Context, tenantID string, idOrSlug string) (*repository.ProjectRecord, error) {
 	query := `
 SELECT p.id, p.tenant_id, t.slug, p.slug, p.name, p.status, p.budget_usd, p.spent_usd, p.budget_policy, p.policy_body, p.created_at, p.updated_at

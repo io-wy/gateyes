@@ -88,6 +88,7 @@ type TenantStore interface {
 	ListTenants(ctx context.Context) ([]TenantRecord, error)
 	GetTenant(ctx context.Context, idOrSlug string) (*TenantRecord, error)
 	UpdateTenant(ctx context.Context, idOrSlug string, params UpdateTenantParams) (*TenantRecord, error)
+	DeleteTenant(ctx context.Context, idOrSlug string) error
 	ListTenantProviders(ctx context.Context, tenantID string) ([]string, error)
 	ReplaceTenantProviders(ctx context.Context, tenantID string, providerNames []string) error
 }
@@ -150,6 +151,7 @@ type ProjectStore interface {
 	ListProjects(ctx context.Context, tenantID string) ([]ProjectRecord, error)
 	GetProject(ctx context.Context, tenantID string, idOrSlug string) (*ProjectRecord, error)
 	UpdateProject(ctx context.Context, tenantID string, idOrSlug string, params UpdateProjectParams) (*ProjectRecord, error)
+	DeleteProject(ctx context.Context, tenantID string, idOrSlug string) error
 }
 
 type ProviderRegistryStore interface {

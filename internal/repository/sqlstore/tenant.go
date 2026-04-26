@@ -157,6 +157,49 @@ VALUES (?, ?, ?, 1, ?, ?)`), uuid.NewString(), tenantID, providerName, now, now)
 	return nil
 }
 
+func (s *Store) DeleteTenant(ctx context.Context, idOrSlug string) error {
+	tenant, err := s.loadTenant(ctx, idOrSlug)
+	if err != nil {
+		return err
+	}
+
+	tx, err := s.db.Conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin delete tenant: %w", err)
+	}
+
+	queries := []struct {
+		query string
+		arg   string
+	}{
+		{s.db.Rebind(`DELETE FROM virtual_keys WHERE tenant_id = ?`), tenant.ID},
+		{s.db.Rebind(`DELETE FROM user_models WHERE user_id IN (SELECT id FROM users WHERE tenant_id = ?)`), tenant.ID},
+		{s.db.Rebind(`DELETE FROM responses WHERE tenant_id = ?`), tenant.ID},
+		{s.db.Rebind(`DELETE FROM usage_records WHERE tenant_id = ?`), tenant.ID},
+		{s.db.Rebind(`DELETE FROM api_keys WHERE user_id IN (SELECT id FROM users WHERE tenant_id = ?)`), tenant.ID},
+		{s.db.Rebind(`DELETE FROM users WHERE tenant_id = ?`), tenant.ID},
+		{s.db.Rebind(`DELETE FROM service_subscriptions WHERE tenant_id = ?`), tenant.ID},
+		{s.db.Rebind(`DELETE FROM service_versions WHERE tenant_id = ?`), tenant.ID},
+		{s.db.Rebind(`DELETE FROM services WHERE tenant_id = ?`), tenant.ID},
+		{s.db.Rebind(`DELETE FROM tenant_providers WHERE tenant_id = ?`), tenant.ID},
+		{s.db.Rebind(`DELETE FROM projects WHERE tenant_id = ?`), tenant.ID},
+		{s.db.Rebind(`DELETE FROM audit_logs WHERE tenant_id = ?`), tenant.ID},
+		{s.db.Rebind(`DELETE FROM tenants WHERE id = ?`), tenant.ID},
+	}
+
+	for _, q := range queries {
+		if _, err := tx.ExecContext(ctx, q.query, q.arg); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("delete tenant cascade: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete tenant: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) BackfillDefaultTenant(ctx context.Context, tenantID string) error {
 	if _, err := s.db.Conn.ExecContext(ctx, s.db.Rebind(`
 UPDATE users

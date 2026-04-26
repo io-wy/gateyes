@@ -22,6 +22,7 @@ type AdminHandler struct {
 	providerRuntimeSvc *provider.RuntimeRegistryService
 	catalogSvc         *catalog.Service
 	reloader           *config.Reloader
+	healthChecker      *provider.HealthChecker
 	startedAt          time.Time
 }
 
@@ -36,6 +37,10 @@ func NewAdminHandler(store repository.Store, providerMgr *provider.Manager, cata
 	}
 }
 
+func (h *AdminHandler) SetHealthChecker(hc *provider.HealthChecker) {
+	h.healthChecker = hc
+}
+
 func (h *AdminHandler) ReloadConfig(c *gin.Context) {
 	if h.reloader == nil {
 		c.JSON(http.StatusNotImplemented, gin.H{"error": "reloader not configured"})
@@ -47,6 +52,23 @@ func (h *AdminHandler) ReloadConfig(c *gin.Context) {
 	}
 	h.recordAudit(c, "config.reload", "config", "runtime", gin.H{"status": "success"})
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{"reloaded": true}})
+}
+
+func (h *AdminHandler) CheckProviders(c *gin.Context) {
+	if h.healthChecker == nil {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "health checker not configured"})
+		return
+	}
+	if err := h.healthChecker.ForceCheck(c.Request.Context()); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	identity, _ := middleware.Identity(c)
+	tenantID, ok := h.scopeTenantID(c, identity)
+	if !ok {
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": h.providerResponses(c, tenantID)})
 }
 
 func (h *AdminHandler) GetProviders(c *gin.Context) {
@@ -919,6 +941,19 @@ func (h *AdminHandler) ReplaceTenantProviders(c *gin.Context) {
 	}})
 }
 
+func (h *AdminHandler) DeleteTenant(c *gin.Context) {
+	if err := h.store.DeleteTenant(c.Request.Context(), c.Param("id")); err != nil {
+		if err == repository.ErrNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "tenant not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	h.recordAudit(c, "tenant.delete", "tenant", c.Param("id"), gin.H{"tenant_id": c.Param("id")})
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"id": c.Param("id"), "deleted": true}})
+}
+
 func (h *AdminHandler) providerResponses(c *gin.Context, tenantID string) []gin.H {
 	usageByProvider, err := h.store.GetProviderUsageSummary(c.Request.Context(), tenantID)
 	if err != nil {
@@ -1168,6 +1203,24 @@ func (h *AdminHandler) UpdateProject(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": projectToResponse(*project)})
+}
+
+func (h *AdminHandler) DeleteProject(c *gin.Context) {
+	identity, _ := middleware.Identity(c)
+	tenantID, ok := h.scopeTenantID(c, identity)
+	if !ok {
+		return
+	}
+	if err := h.store.DeleteProject(c.Request.Context(), tenantID, c.Param("id")); err != nil {
+		if err == repository.ErrNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	h.recordAudit(c, "project.delete", "project", c.Param("id"), gin.H{"project_id": c.Param("id")})
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"id": c.Param("id"), "deleted": true}})
 }
 
 func (h *AdminHandler) ListResponses(c *gin.Context) {

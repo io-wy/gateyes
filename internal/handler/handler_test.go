@@ -564,6 +564,12 @@ func newHandlerTestEnv(t *testing.T, cfg handlerTestEnvConfig) *handlerTestEnv {
 		CatalogSvc:  catalogSvc,
 	})
 	adminHandler := NewAdminHandler(store, providerMgr, catalogSvc, nil)
+	healthChecker := provider.NewHealthChecker(config.HealthCheckConfig{
+		Enabled:          true,
+		TimeoutSeconds:   3,
+		FailureThreshold: 1,
+	}, store, providerMgr, nil)
+	adminHandler.SetHealthChecker(healthChecker)
 
 	return &handlerTestEnv{
 		server:           NewServer(cfgObj.Server, h, adminHandler, mw),

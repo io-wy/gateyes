@@ -266,6 +266,14 @@ func (f *fakeIdentityStore) UpdateProject(ctx context.Context, tenantID string, 
 	return nil, nil
 }
 
+func (f *fakeIdentityStore) DeleteProject(ctx context.Context, tenantID string, idOrSlug string) error {
+	return nil
+}
+
+func (f *fakeIdentityStore) DeleteTenant(ctx context.Context, idOrSlug string) error {
+	return nil
+}
+
 func (f *fakeIdentityStore) CreateAPIKey(ctx context.Context, params repository.CreateAPIKeyParams) (*repository.APIKeyRecord, error) {
 	return nil, nil
 }

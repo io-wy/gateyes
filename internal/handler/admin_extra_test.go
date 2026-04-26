@@ -831,3 +831,147 @@ func TestAdminVirtualKey_CreateValidation(t *testing.T) {
 		t.Fatalf("POST /admin/virtual-keys with empty body status = %d, want %d", resp.Code, http.StatusBadRequest)
 	}
 }
+
+func TestAdminDeleteTenantCascade(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":      "chatcmpl-del",
+			"object":  "chat.completion",
+			"created": 1,
+			"model":   "provider-model",
+			"choices": []map[string]any{{"index": 0, "message": map[string]any{"role": "assistant", "content": "hi"}, "finish_reason": "stop"}},
+			"usage":   map[string]any{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+		})
+	}))
+	defer upstream.Close()
+
+	env := newHandlerTestEnv(t, handlerTestEnvConfig{upstreamURL: upstream.URL, endpoint: "chat"})
+	superToken := seedAdminToken(t, env, repository.RoleSuperAdmin, "super-del-tenant", "secret").APIKey + ":" + "secret"
+
+	ctx := context.Background()
+
+	rec := performJSONRequest(t, env, http.MethodPost, "/admin/tenants", superToken, `{"id":"tenant-del","slug":"tenant-del","name":"To Delete"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create tenant: %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = performJSONRequest(t, env, http.MethodPost, "/admin/tenants/tenant-del/providers", superToken, `{"providers":["test-openai"]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set providers: %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = performJSONRequest(t, env, http.MethodPost, "/admin/users", superToken, `{"tenant_id":"tenant-del","name":"del-user","email":"del@example.com"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create user: %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = performJSONRequest(t, env, http.MethodPost, "/admin/projects", superToken, `{"slug":"del-proj","name":"del project","tenant_id":"tenant-del"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create project: %d %s", rec.Code, rec.Body.String())
+	}
+
+	if err := env.store.CreateUsageRecord(ctx, repository.UsageRecord{
+		ID: "usage-del-1", TenantID: "tenant-del", UserID: "some-user",
+		ProviderName: "test-openai", Model: "m", PromptTokens: 1, CompletionTokens: 1,
+		TotalTokens: 2, LatencyMs: 10, Status: "success", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("usage record: %v", err)
+	}
+
+	rec = performJSONRequest(t, env, http.MethodDelete, "/admin/tenants/tenant-del", superToken, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete tenant: %d %s", rec.Code, rec.Body.String())
+	}
+	payload := decodeBodyMap(t, rec)["data"].(map[string]any)
+	if payload["deleted"] != true {
+		t.Fatalf("delete response = %#v, want deleted=true", payload)
+	}
+
+	if _, err := env.store.GetTenant(ctx, "tenant-del"); err == nil {
+		t.Fatal("tenant should be gone after delete")
+	}
+
+	rec = performJSONRequest(t, env, http.MethodGet, "/admin/tenants", superToken, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list tenants: %d %s", rec.Code, rec.Body.String())
+	}
+	for _, item := range decodeBodyMap(t, rec)["data"].([]any) {
+		if item.(map[string]any)["id"] == "tenant-del" {
+			t.Fatal("deleted tenant should not appear in list")
+		}
+	}
+
+	rec = performJSONRequest(t, env, http.MethodDelete, "/admin/tenants/missing", superToken, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("delete missing tenant: %d, want 404", rec.Code)
+	}
+}
+
+func TestAdminDeleteProjectCascade(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "chatcmpl-del", "object": "chat.completion", "created": 1, "model": "provider-model",
+			"choices": []map[string]any{{"index": 0, "message": map[string]any{"role": "assistant", "content": "hi"}, "finish_reason": "stop"}},
+			"usage": map[string]any{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+		})
+	}))
+	defer upstream.Close()
+
+	env := newHandlerTestEnv(t, handlerTestEnvConfig{upstreamURL: upstream.URL, endpoint: "chat"})
+	adminToken := seedAdminToken(t, env, repository.RoleTenantAdmin, "admin-del-proj", "secret").APIKey + ":" + "secret"
+	ctx := context.Background()
+
+	rec := performJSONRequest(t, env, http.MethodPost, "/admin/projects", adminToken, `{"slug":"del-proj","name":"To Delete","budget_usd":10}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create project: %d %s", rec.Code, rec.Body.String())
+	}
+	projectID := decodeBodyMap(t, rec)["data"].(map[string]any)["id"].(string)
+
+	if err := env.store.CreateUsageRecord(ctx, repository.UsageRecord{
+		ID: "usage-proj-del", TenantID: "tenant-a", ProjectID: projectID,
+		ProviderName: "test-openai", Model: "m", PromptTokens: 1, CompletionTokens: 1,
+		TotalTokens: 2, LatencyMs: 10, Status: "success", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("usage record: %v", err)
+	}
+
+	rec = performJSONRequest(t, env, http.MethodDelete, "/admin/projects/"+projectID, adminToken, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete project: %d %s", rec.Code, rec.Body.String())
+	}
+	payload := decodeBodyMap(t, rec)["data"].(map[string]any)
+	if payload["deleted"] != true {
+		t.Fatalf("delete response = %#v, want deleted=true", payload)
+	}
+
+	if _, err := env.store.GetProject(ctx, "tenant-a", projectID); err == nil {
+		t.Fatal("project should be gone after delete")
+	}
+
+	rec = performJSONRequest(t, env, http.MethodDelete, "/admin/projects/missing", adminToken, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("delete missing project: %d, want 404", rec.Code)
+	}
+}
+
+func TestAdminCheckProvidersEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+	}))
+	defer upstream.Close()
+
+	env := newHandlerTestEnv(t, handlerTestEnvConfig{upstreamURL: upstream.URL, endpoint: "chat"})
+	adminToken := seedAdminToken(t, env, repository.RoleTenantAdmin, "admin-check", "secret").APIKey + ":" + "secret"
+
+	rec := performJSONRequest(t, env, http.MethodPost, "/admin/providers/check", adminToken, "")
+	if rec.Code == http.StatusNotImplemented {
+		t.Log("health checker not wired in test env, skipping")
+		return
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /admin/providers/check: %d %s", rec.Code, rec.Body.String())
+	}
+}
