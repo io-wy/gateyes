@@ -48,7 +48,7 @@ func main() {
 		apiSecret = flag.String("secret", os.Getenv("GATEYES_API_SECRET"), "API secret")
 		duration  = flag.Duration("d", 30*time.Second, "duration per level")
 		warmup    = flag.Duration("warmup", 3*time.Second, "warmup before each level")
-		payload   = flag.String("body", `{"model":"gpt-4o","messages":[{"role":"user","content":"Say hello in 10 words"}],"max_tokens":50}`, "request body")
+		payload   = flag.String("body", `{"model":"glm-5.1","messages":[{"role":"user","content":"Say hello in 10 words"}],"max_tokens":50}`, "request body")
 	)
 	flag.Parse()
 
@@ -146,8 +146,7 @@ func request(client *http.Client, url, key, secret, payload string) result {
 		return result{err: err, latency: time.Since(start)}
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+key)
-	req.Header.Set("X-API-Secret", secret)
+	req.Header.Set("Authorization", "Bearer "+key+":"+secret)
 
 	resp, err := client.Do(req)
 	latency := time.Since(start)
