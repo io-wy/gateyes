@@ -14,6 +14,8 @@ import (
 	"github.com/gateyes/gateway/internal/db"
 	"github.com/gateyes/gateway/internal/handler"
 	"github.com/gateyes/gateway/internal/middleware"
+	redispkg "github.com/gateyes/gateway/internal/redis"
+	"github.com/redis/go-redis/v9"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/repository/sqlstore"
 	"github.com/gateyes/gateway/internal/service/alert"
@@ -116,10 +118,27 @@ func main() {
 
 	limiterSvc := limiter.NewLimiter(cfg.Limiter)
 	routerSvc := router.NewRouter(cfg.Router, providerMgr.Stats)
+
+	// Redis for distributed rate limiting and alert dedup
+	var redisClient *redis.Client
+	if cfg.Redis.Enabled() {
+		var err error
+		redisClient, err = redispkg.NewClient(cfg.Redis)
+		if err != nil {
+			slog.Error("failed to connect to Redis", "error", err)
+			os.Exit(1)
+		}
+		defer redispkg.Close(redisClient)
+		limiterSvc.SetRedis(redisClient)
+		slog.Info("Redis connected", "addr", cfg.Redis.Addr)
+	}
 	routerSvc.SetProviders(providerMgr.List())
 
 	// 初始化配额预警服务
 	alertSvc := alert.NewAlertService(cfg.Alert, store)
+	if redisClient != nil {
+		alertSvc.SetRedis(redisClient)
+	}
 	healthChecker := provider.NewHealthChecker(cfg.HealthCheck, store, providerMgr, alertSvc)
 	budgetSvc := budget.New(store)
 
