@@ -164,3 +164,55 @@ func TestLimiter_DisabledDimensionWithRedis(t *testing.T) {
 		}
 	}
 }
+
+func TestLimiter_RealRedis(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping real Redis integration test in short mode")
+	}
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "127.0.0.1:6379",
+		Password: "dev_redis_pw_2026",
+	})
+	defer rdb.Close()
+
+	if err := rdb.Ping(context.Background()).Err(); err != nil {
+		t.Skipf("Redis not available: %v", err)
+	}
+
+	cfg := config.LimiterConfig{
+		GlobalQPS:           10000,
+		GlobalTPM:           1000000,
+		GlobalTokenBurst:    1000,
+		TenantTPM:           100,
+		TenantTPMBurst:      5,
+		ProviderTPM:         100,
+		ProviderTPMBurst:    5,
+		PerUserRequestBurst: 100,
+		QueueSize:           100,
+	}
+	l := NewLimiter(cfg)
+	l.SetRedis(rdb)
+	defer l.Stop()
+
+	// Clean up keys from previous test runs
+	rdb.Del(context.Background(), "gateyes:rl:ten:real-tenant:t", "gateyes:rl:ten:real-tenant:r",
+		"gateyes:rl:prov:real-prov:t", "gateyes:rl:prov:real-prov:r")
+
+	if !l.CheckTenant("real-tenant", 3) {
+		t.Error("first tenant consume should succeed")
+	}
+	for i := 0; i < 5; i++ {
+		l.CheckTenant("real-tenant", 1)
+	}
+	if l.CheckTenant("real-tenant", 1) {
+		t.Error("tenant should be rate limited after burst")
+	}
+
+	if !l.CheckProvider("real-prov", 3) {
+		t.Error("first provider consume should succeed")
+	}
+
+	if !l.Allow(context.Background(), "user1", 0, 1) {
+		t.Error("global allow should succeed")
+	}
+}
