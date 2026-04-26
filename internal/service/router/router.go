@@ -288,3 +288,13 @@ func (r *Router) weightedRoundRobin(candidates []provider.Provider) []provider.P
 func (r *Router) Strategy() string {
 	return r.cfg.Strategy
 }
+
+// Reload updates runtime-safe router parameters.
+func (r *Router) Reload(cfg *config.Config) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cfg = cfg.Router
+	return nil
+}
+
+func (r *Router) Name() string { return "router" }
