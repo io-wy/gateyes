@@ -123,6 +123,9 @@ func main() {
 	healthChecker := provider.NewHealthChecker(cfg.HealthCheck, store, providerMgr, alertSvc)
 	budgetSvc := budget.New(store)
 
+	reloader := config.NewReloader(*configPath)
+	reloader.Register(limiterSvc, routerSvc, alertSvc)
+
 	httpMiddleware := middleware.New(store, limiterSvc, budgetSvc, alertSvc, metrics)
 	responsesService := responseSvc.New(&responseSvc.Dependencies{
 		Config:      cfg,
@@ -151,7 +154,7 @@ func main() {
 		CatalogSvc:  catalogSvc,
 	})
 
-	adminHandler := handler.NewAdminHandler(store, providerMgr, catalogSvc)
+	adminHandler := handler.NewAdminHandler(store, providerMgr, catalogSvc, reloader)
 	srv := handler.NewServer(cfg.Server, h, adminHandler, httpMiddleware)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

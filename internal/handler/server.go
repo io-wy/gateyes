@@ -107,6 +107,7 @@ func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mw *mi
 		admin.GET("/usage/summary", adminH.GetUsageSummary)
 		admin.GET("/usage/breakdown", adminH.GetUsageBreakdown)
 		admin.GET("/usage/trend", adminH.GetUsageTrend)
+		admin.POST("/reload", adminH.ReloadConfig)
 	}
 
 	tenants := admin.Group("/tenants")

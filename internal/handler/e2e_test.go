@@ -511,7 +511,7 @@ func newGatewayE2EEnv(t *testing.T) *gatewayE2EEnv {
 		ResponseSvc: responseService,
 		CatalogSvc:  catalogSvc,
 	})
-	adminHandler := NewAdminHandler(store, providerMgr, catalogSvc)
+	adminHandler := NewAdminHandler(store, providerMgr, catalogSvc, nil)
 	handlerEnv := &handlerTestEnv{
 		server:      NewServer(cfgObj.Server, h, adminHandler, mw),
 		store:       store,

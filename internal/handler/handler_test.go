@@ -563,7 +563,7 @@ func newHandlerTestEnv(t *testing.T, cfg handlerTestEnvConfig) *handlerTestEnv {
 		ResponseSvc: responseService,
 		CatalogSvc:  catalogSvc,
 	})
-	adminHandler := NewAdminHandler(store, providerMgr, catalogSvc)
+	adminHandler := NewAdminHandler(store, providerMgr, catalogSvc, nil)
 
 	return &handlerTestEnv{
 		server:           NewServer(cfgObj.Server, h, adminHandler, mw),

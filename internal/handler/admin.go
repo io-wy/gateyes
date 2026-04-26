@@ -21,17 +21,32 @@ type AdminHandler struct {
 	providerMgr        *provider.Manager
 	providerRuntimeSvc *provider.RuntimeRegistryService
 	catalogSvc         *catalog.Service
+	reloader           *config.Reloader
 	startedAt          time.Time
 }
 
-func NewAdminHandler(store repository.Store, providerMgr *provider.Manager, catalogSvc *catalog.Service) *AdminHandler {
+func NewAdminHandler(store repository.Store, providerMgr *provider.Manager, catalogSvc *catalog.Service, reloader *config.Reloader) *AdminHandler {
 	return &AdminHandler{
 		store:              store,
 		providerMgr:        providerMgr,
 		providerRuntimeSvc: provider.NewRuntimeRegistryService(store, providerMgr),
 		catalogSvc:         catalogSvc,
+		reloader:           reloader,
 		startedAt:          time.Now(),
 	}
+}
+
+func (h *AdminHandler) ReloadConfig(c *gin.Context) {
+	if h.reloader == nil {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "reloader not configured"})
+		return
+	}
+	if err := h.reloader.Reload(c.Request.Context()); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	h.recordAudit(c, "config.reload", "config", "runtime", gin.H{"status": "success"})
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"reloaded": true}})
 }
 
 func (h *AdminHandler) GetProviders(c *gin.Context) {
