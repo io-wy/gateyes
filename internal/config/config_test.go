@@ -132,3 +132,48 @@ func TestValidateRejectsUnsupportedValues(t *testing.T) {
 		t.Fatalf("Validate(api key duplicate) error = %v, want duplicate api key", err)
 	}
 }
+
+func TestRedisConfig_Enabled(t *testing.T) {
+	if (RedisConfig{}).Enabled() {
+		t.Error("empty RedisConfig should not be enabled")
+	}
+	if !(RedisConfig{Addr: "localhost:6379"}).Enabled() {
+		t.Error("RedisConfig with Addr should be enabled")
+	}
+}
+
+func TestLoadRedisConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	data := strings.TrimSpace(`
+server:
+  listenAddr: :8080
+redis:
+  addr: localhost:6379
+  password: secret
+  db: 2
+  poolSize: 20
+`)
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if got, want := cfg.Redis.Addr, "localhost:6379"; got != want {
+		t.Errorf("Redis.Addr = %q, want %q", got, want)
+	}
+	if got, want := cfg.Redis.Password, "secret"; got != want {
+		t.Errorf("Redis.Password = %q, want %q", got, want)
+	}
+	if got, want := cfg.Redis.DB, 2; got != want {
+		t.Errorf("Redis.DB = %d, want %d", got, want)
+	}
+	if got, want := cfg.Redis.PoolSize, 20; got != want {
+		t.Errorf("Redis.PoolSize = %d, want %d", got, want)
+	}
+	if !cfg.Redis.Enabled() {
+		t.Error("Redis should be enabled with addr set")
+	}
+}
