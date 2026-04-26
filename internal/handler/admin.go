@@ -1212,6 +1212,11 @@ func (h *AdminHandler) ListResponses(c *gin.Context) {
 		}
 		filter.EndTime = parsed
 	}
+	total, err := h.store.CountResponses(c.Request.Context(), tenantID, filter)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	items, err := h.store.ListResponses(c.Request.Context(), tenantID, filter)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1221,7 +1226,7 @@ func (h *AdminHandler) ListResponses(c *gin.Context) {
 	for _, item := range items {
 		result = append(result, responseToResponse(item))
 	}
-	c.JSON(http.StatusOK, gin.H{"data": result})
+	c.JSON(http.StatusOK, gin.H{"data": result, "meta": gin.H{"total": total, "limit": filter.Limit, "offset": filter.Offset}})
 }
 
 func (h *AdminHandler) GetResponseTrace(c *gin.Context) {
