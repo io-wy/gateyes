@@ -19,8 +19,15 @@ Exposed endpoints:
 1. Gateway: `http://127.0.0.1:8083`
 2. Prometheus: `http://127.0.0.1:9090`
 3. Grafana: `http://127.0.0.1:3000`
+4. Redis: `localhost:6379`
+
+Redis 用于分布式限流和告警去重，不部署 Redis 时自动降级为内存模式。
 
 ## 2. Kubernetes
+
+Prerequisites:
+
+1. Redis instance reachable from the cluster (required for distributed rate limiting and alert dedup)
 
 Helm chart path:
 

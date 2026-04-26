@@ -52,18 +52,18 @@
 | 5 | 精确 token 计数 | 部分做 | runtime usage 优先取上游，admission 和兜底仍粗糙 |
 | 6 | 官方 SDK / Client Library | 未做 | 只有 REST API |
 | 7 | Admin Dashboard / Web UI | 未做 | 只有 admin API |
-| 8 | 主动健康检查 | 未做 | 只有被动 circuit breaker |
-| 9 | 审计日志 | 未做 | 没有资源操作审计流 |
-| 10 | Provider 动态管理 | 部分做 | metadata 可热改，provider 实例生命周期还不完整 |
-| 11 | Webhook / Callback 体系 | 部分做 | 只有 quota/budget 告警 webhook 基础能力 |
-| 12 | 更细粒度限流 | 部分做 | 有全局 TPM 与 key QPS，没有 tenant/provider/model/RPM |
-| 13 | 配置热更新 | 未做 | 仍以启动装配为主 |
+| 8 | 主动健康检查 | ✅ 已实现 | provider health checker with auto-failover, configurable interval/threshold |
+| 9 | 审计日志 | ✅ 已实现 | admin audit log CRUD with filters |
+| 10 | Provider 动态管理 | ✅ 已实现 | runtime registry with admin CRUD, no restart needed |
+| 11 | Webhook / Callback 体系 | ✅ 已实现 | per-VK callback_url, budget/quota alert webhooks |
+| 12 | 更细粒度限流 | ✅ 已实现 | Redis distributed TPM/QPS/RPM per tenant/provider/model |
+| 13 | 配置热更新 | ✅ 已实现 | POST /admin/reload with Reloader coordinator |
 | 14 | 请求/响应日志检索 | 部分做 | 有持久化和聚合，没有 operator 级搜索面 |
 | 15 | Provider 适配广度 | 未做 | 仍以 `openai/anthropic/grpc-vllm` 为主 |
 | 16 | Guardrails / 内容安全 | 部分做 | 已有 service-level policy，不是完整插件化 guardrails |
 | 17 | 语义缓存 | 未做 | 没有 semantic cache |
-| 18 | OpenTelemetry tracing | 未做 | 只有 `traceparent` / request correlation |
-| 19 | 多实例部署支持 | 未做 | 没有分布式状态同步 |
+| 18 | OpenTelemetry tracing | ✅ 已实现 | OTLP exporter with trace middleware |
+| 19 | 多实例部署支持 | 部分实现 | Redis shared state for limiter and alert, but no session replication |
 | 20 | API key 使用者自助服务 | 部分做 | 有 subscription review + scoped key，没有 self-service portal |
 
 ### 3.2 值得做程度
@@ -261,115 +261,61 @@
 
 **当前状态**
 
-- 未做
-
-**为什么值得做**
-
-1. 生产网关硬需求
-2. 能避免第一个真实业务请求承担 provider 探活成本
-
-**产品要求**
-
-1. 周期性主动 probe
-2. health 状态写回 provider registry
-3. 与 route filtering 联动
-4. 支持管理面强制 quarantine/drain
+- ✅ 已实现 — provider health checker with auto-failover, configurable interval/threshold
 
 **优先级**
 
-`P0`
+`P0` — 已完成
 
 ### 9. 审计日志
 
 **当前状态**
 
-- 未做
-
-**为什么值得做**
-
-1. 企业合规要求
-2. 能回答“谁改了预算/谁发了 key/谁上线了 provider”
+- ✅ 已实现 — admin audit log CRUD with filters
 
 **优先级**
 
-`P0`
+`P0` — 已完成
 
 ### 10. Provider 动态管理
 
 **当前状态**
 
-- 部分做了
-- metadata 已经 DB-backed
-- 但 provider instance lifecycle 还没有完整 runtime 管理面
-
-**产品要求**
-
-需要做到不重启即可：
-
-1. 注册 provider
-2. 修改 endpoint / API key / timeout / headers
-3. 上下线 provider
-4. 调整 weight / health policy
+- ✅ 已实现 — runtime registry with admin CRUD, no restart needed
 
 **优先级**
 
-`P0`
+`P0` — 已完成
 
 ### 11. Webhook / Callback 体系
 
 **当前状态**
 
-- 部分做了
-- 当前只有 quota/budget 告警方向的 webhook 基础能力
-
-**建议补充**
-
-1. request completed callback
-2. provider state changed callback
-3. budget exhausted callback
-4. error-rate spike callback
+- ✅ 已实现 — per-VK callback_url, budget/quota alert webhooks
 
 **优先级**
 
-`P1`
+`P1` — 已完成
 
 ### 12. 更细粒度限流
 
 **当前状态**
 
-- 部分做了
-- 已有全局 TPM + per-key QPS
-
-**还缺**
-
-1. tenant limit
-2. provider limit
-3. model limit
-4. RPM
+- ✅ 已实现 — Redis distributed TPM/QPS/RPM per tenant/provider/model
 
 **优先级**
 
-`P0`
+`P0` — 已完成
 
 ### 13. 配置热更新
 
 **当前状态**
 
-- 未做
-
-**判断**
-
-重要，但优先级低于：
-
-1. 主动健康检查
-2. 审计日志
-3. provider 动态管理
-
-因为只要把主要治理项放入 DB-backed control plane，热更新压力会先下降一截。
+- ✅ 已实现 — POST /admin/reload with Reloader coordinator
 
 **优先级**
 
-`P1`
+`P1` — 已完成
 
 ### 14. 请求/响应日志检索
 
@@ -468,28 +414,22 @@
 
 **当前状态**
 
-- 未做
-- 当前只有 `traceparent` 和 request correlation
-
-**为什么值得做**
-
-1. 微服务环境下的 SRE 需要完整链路视图
-2. 对排障和性能分析很关键
+- ✅ 已实现 — OTLP exporter with trace middleware
 
 **优先级**
 
-`P0`
+`P0` — 已完成
 
 ### 19. 多实例部署支持
 
 **当前状态**
 
-- 未做
+- 部分实现 — Redis shared state for limiter and alert, but no session replication
 
-**为什么值得做**
+**还缺**
 
-1. 走生产高可用必须补
-2. 限流、熔断、sticky 等现在都偏单实例内存口径
+1. session replication
+2. sticky session or distributed state for circuit breaker
 
 **优先级**
 
@@ -526,11 +466,11 @@
 
 1. `15` Provider 广度，先补 `Azure OpenAI + Bedrock`
 2. `1` 先补 `embeddings`
-3. `8` 主动健康检查
-4. `9` 审计日志
-5. `10` 完整 provider 动态管理
-6. `12` tenant/provider/model/RPM 限流
-7. `18` OpenTelemetry tracing
+3. ~~`8` 主动健康检查~~ ✅ 已完成
+4. ~~`9` 审计日志~~ ✅ 已完成
+5. ~~`10` 完整 provider 动态管理~~ ✅ 已完成
+6. ~~`12` tenant/provider/model/RPM 限流~~ ✅ 已完成
+7. ~~`18` OpenTelemetry tracing~~ ✅ 已完成
 8. `16` guardrails 从 service-level 向 project/tenant 多层继承推进
 
 ### Wave 2：产品化增强
@@ -538,14 +478,14 @@
 1. `7` operator dashboard
 2. `14` 请求/响应检索
 3. `20` developer self-service
-4. `11` webhook / callback 体系
+4. ~~`11` webhook / callback 体系~~ ✅ 已完成
 
 ### Wave 3：能力增强但不抢前
 
 1. `2` function calling 多轮编排
 2. `6` SDK
-3. `13` 配置热更新
-4. `19` 多实例一致性
+3. ~~`13` 配置热更新~~ ✅ 已完成
+4. `19` 多实例一致性（部分完成：Redis shared state）
 
 ### Wave 4：明确后置
 

@@ -215,6 +215,7 @@ sum by (provider, token_type) (
 
 ## 6. 当前边界
 
-- 没有 OpenTelemetry span backend；当前是 `X-Request-ID` + `traceparent` 透传/生成 + slog 字段关联
+- 已实现 OTLP tracing (`config.tracing`)：通过 OTLP exporter 输出 span，与 `X-Request-ID` + `traceparent` 关联
+- 审计日志事件（admin audit log）尚无 dedicated metrics，需通过日志或 admin API 查询
 - `provider_circuit_state` 依赖显式同步，不是后台周期采集
 - Prometheus rules / Grafana dashboard 已提供基线，但阈值与面板布局仍需按部署环境调优

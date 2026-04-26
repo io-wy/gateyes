@@ -5,7 +5,8 @@
 1. Check pod/container logs
 2. Check DB connectivity
 3. Check config mount and secret env presence
-4. Verify `/health` and `/ready`
+4. Check Redis connectivity (see "Redis 连接故障")
+5. Verify `/health` and `/ready`
 
 ## 2. Error rate spike
 
@@ -49,3 +50,24 @@ Use it to notify SRE channels when providers move between:
 1. `healthy`
 2. `degraded`
 3. `unhealthy`
+
+## 8. Redis 连接故障
+
+### 症状
+
+1. 限流计数器在实例重启后重置（限流窗口丢失）
+2. 告警去重失败，同一事件重复发送 webhook
+3. `/health` 端点返回 Redis 连接异常信息
+
+### 诊断
+
+1. 检查 `/health` 响应中的 `redis` 字段状态
+2. 手动测试 Redis 连通性：`redis-cli -h <host> -p 6379 ping`
+3. 检查 `REDIS_ADDR`、`REDIS_PASSWORD` 环境变量是否正确
+4. 检查 Redis 服务端日志：`docker logs <redis-container>` 或 `kubectl logs <redis-pod>`
+
+### 缓解
+
+1. 重启 Redis 实例：`docker restart <redis-container>` 或 `kubectl rollout restart deployment/redis`
+2. 如果 Redis 不可用，limiter 自动降级为内存模式（限流状态不跨实例共享）
+3. 恢复 Redis 后无需重启网关，下一轮健康检查自动恢复连接

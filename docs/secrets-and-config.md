@@ -22,6 +22,10 @@ Expected environment variables:
 9. `GATEYES_BOOTSTRAP_TEST_SECRET`
 10. `GATEYES_ADMIN_BOOTSTRAP_KEY`
 11. `GATEYES_ADMIN_BOOTSTRAP_SECRET`
+12. `REDIS_ADDR` — Redis 地址 (e.g. localhost:6379)
+13. `REDIS_PASSWORD` — Redis 密码
+14. `REDIS_DB` — Redis 数据库编号
+15. `OTLP_ENDPOINT` — OTLP exporter endpoint (e.g. http://localhost:4318)
 
 See `.env.example`.
 
@@ -53,3 +57,5 @@ Production choices:
 4. provider type / endpoint whitelist
 5. duplicate provider names
 6. duplicate bootstrap API keys
+7. `RedisConfig.Enabled()` — when `REDIS_ADDR` is set, validates connectivity params
+8. `TracingConfig` — when `OTLP_ENDPOINT` is set, validates endpoint format
