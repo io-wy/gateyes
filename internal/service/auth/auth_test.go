@@ -10,22 +10,26 @@ import (
 )
 
 type fakeIdentityStore struct {
-	identity                *repository.AuthIdentity
-	authenticateErr         error
-	touchErr                error
-	consumeOK               bool
-	consumeErr              error
-	consumeKeyBudgetOK      bool
-	consumeKeyBudgetErr     error
-	consumeProjectBudgetOK  bool
-	consumeProjectBudgetErr error
-	consumeTenantBudgetOK   bool
-	consumeTenantBudgetErr  error
-	usageErr                error
-	touchedAPIKeyID         string
-	consumedUserID          string
-	consumedTokens          int
-	usageRecords            []repository.UsageRecord
+	identity                    *repository.AuthIdentity
+	authenticateErr             error
+	touchErr                    error
+	consumeOK                   bool
+	consumeErr                  error
+	consumeKeyBudgetOK          bool
+	consumeKeyBudgetErr         error
+	consumeProjectBudgetOK      bool
+	consumeProjectBudgetErr     error
+	consumeTenantBudgetOK       bool
+	consumeTenantBudgetErr      error
+	consumeVirtualKeyBudgetOK   bool
+	consumeVirtualKeyBudgetErr  error
+	usageErr                    error
+	touchedAPIKeyID             string
+	consumedUserID              string
+	consumedTokens              int
+	usageRecords                []repository.UsageRecord
+	virtualKey                  *repository.VirtualKeyRecord
+	virtualKeyErr               error
 }
 
 func (f *fakeIdentityStore) CreateUser(ctx context.Context, params repository.CreateUserParams) (*repository.UserRecord, error) {
@@ -60,7 +64,10 @@ func (f *fakeIdentityStore) Authenticate(ctx context.Context, key string) (*repo
 	if f.authenticateErr != nil {
 		return nil, f.authenticateErr
 	}
-	return f.identity, nil
+	if f.identity != nil && (key == f.identity.APIKey || key == f.identity.APIKeyID) {
+		return f.identity, nil
+	}
+	return nil, repository.ErrNotFound
 }
 
 func (f *fakeIdentityStore) TouchAPIKey(ctx context.Context, apiKeyID string, at time.Time) error {
@@ -362,13 +369,22 @@ func (f *fakeIdentityStore) DeleteVirtualKey(ctx context.Context, tenantID strin
 	return nil
 }
 func (f *fakeIdentityStore) AuthenticateVirtualKey(ctx context.Context, key string) (*repository.VirtualKeyRecord, error) {
+	if f.virtualKeyErr != nil {
+		return nil, f.virtualKeyErr
+	}
+	if f.virtualKey != nil {
+		return f.virtualKey, nil
+	}
 	return nil, repository.ErrNotFound
 }
 func (f *fakeIdentityStore) CheckVirtualKeyBudget(ctx context.Context, virtualKeyID string, estimatedCost float64) (*repository.BudgetCheckResult, error) {
 	return &repository.BudgetCheckResult{Allowed: true}, nil
 }
 func (f *fakeIdentityStore) ConsumeVirtualKeyBudget(ctx context.Context, virtualKeyID string, cost float64) (bool, error) {
-	return true, nil
+	if f.consumeVirtualKeyBudgetErr != nil {
+		return false, f.consumeVirtualKeyBudgetErr
+	}
+	return f.consumeVirtualKeyBudgetOK, nil
 }
 
 func baseIdentity() *repository.AuthIdentity {
@@ -536,5 +552,124 @@ func TestRecordUsageSuccessAndQuotaExceeded(t *testing.T) {
 	tenantBudgetService := NewAuth(tenantBudgetStore)
 	if err := tenantBudgetService.RecordUsage(context.Background(), projectIdentity, "openai", "gpt-1", 1, 1, 2, 0.5, 10, "success", ""); !errors.Is(err, ErrBudgetExceeded) {
 		t.Fatalf("RecordUsage(tenant budget exceeded) error = %v, want %v", err, ErrBudgetExceeded)
+	}
+}
+
+func TestAuthenticateVirtualKey_Overlay(t *testing.T) {
+	vkSecret := "vk-secret"
+	parent := baseIdentity()
+
+	vk := &repository.VirtualKeyRecord{
+		ID:               "vk-1",
+		TenantID:         "tenant-1",
+		UserID:           "user-1",
+		APIKeyID:         "api-1",
+		Key:              "vk-test",
+		SecretHash:       repository.HashSecret(vkSecret),
+		Status:           repository.StatusActive,
+		BudgetUSD:        50.0,
+		SpentUSD:         10.0,
+		BudgetPolicy:     repository.BudgetPolicyHardReject,
+		RateLimitQPS:     30,
+		AllowedModels:    []string{"gpt-4", "claude-3"},
+		AllowedProviders: []string{"openai"},
+		CallbackURL:      "https://example.com/callback",
+	}
+
+	store := &fakeIdentityStore{
+		identity:  parent,
+		virtualKey: vk,
+	}
+	service := NewAuth(store)
+
+	got, err := service.Authenticate(context.Background(), "vk-test", vkSecret)
+	if err != nil {
+		t.Fatalf("Authenticate(vk) error: %v", err)
+	}
+
+	if got.VirtualKeyID != "vk-1" {
+		t.Errorf("VirtualKeyID = %q, want %q", got.VirtualKeyID, "vk-1")
+	}
+	if got.VirtualKeyBudgetUSD != 50.0 {
+		t.Errorf("VirtualKeyBudgetUSD = %f, want 50.0", got.VirtualKeyBudgetUSD)
+	}
+	if got.VirtualKeySpentUSD != 10.0 {
+		t.Errorf("VirtualKeySpentUSD = %f, want 10.0", got.VirtualKeySpentUSD)
+	}
+	if got.APIKeyRateLimitQPS != 30 {
+		t.Errorf("APIKeyRateLimitQPS = %d, want 30", got.APIKeyRateLimitQPS)
+	}
+	if got.CallbackURL != "https://example.com/callback" {
+		t.Errorf("CallbackURL = %q, want callback url", got.CallbackURL)
+	}
+	if len(got.APIKeyModels) != 2 || got.APIKeyModels[0] != "gpt-4" {
+		t.Errorf("APIKeyModels = %v, want [gpt-4, claude-3]", got.APIKeyModels)
+	}
+	if len(got.APIKeyProviders) != 1 || got.APIKeyProviders[0] != "openai" {
+		t.Errorf("APIKeyProviders = %v, want [openai]", got.APIKeyProviders)
+	}
+}
+
+func TestAuthenticateVirtualKey_WrongSecret(t *testing.T) {
+	vk := &repository.VirtualKeyRecord{
+		ID:         "vk-1",
+		APIKeyID:   "api-1",
+		Key:        "vk-test",
+		SecretHash: repository.HashSecret("correct-secret"),
+		Status:     repository.StatusActive,
+	}
+	store := &fakeIdentityStore{
+		identity:   baseIdentity(),
+		virtualKey: vk,
+	}
+	service := NewAuth(store)
+
+	_, err := service.Authenticate(context.Background(), "vk-test", "wrong-secret")
+	if !errors.Is(err, ErrInvalidAPIKey) {
+		t.Fatalf("Authenticate(vk wrong secret) error = %v, want %v", err, ErrInvalidAPIKey)
+	}
+}
+
+func TestAuthenticateVirtualKey_InactiveParent(t *testing.T) {
+	inactiveParent := baseIdentity()
+	inactiveParent.APIStatus = repository.StatusInactive
+
+	vk := &repository.VirtualKeyRecord{
+		ID:         "vk-1",
+		APIKeyID:   "api-1",
+		Key:        "vk-test",
+		SecretHash: repository.HashSecret("secret"),
+		Status:     repository.StatusActive,
+	}
+	store := &fakeIdentityStore{
+		identity:   inactiveParent,
+		virtualKey: vk,
+	}
+	service := NewAuth(store)
+
+	_, err := service.Authenticate(context.Background(), "vk-test", "secret")
+	if !errors.Is(err, ErrInactiveAPIKey) {
+		t.Fatalf("Authenticate(vk inactive parent) error = %v, want %v", err, ErrInactiveAPIKey)
+	}
+}
+
+func TestRecordUsage_VirtualKeyBudgetExceeded(t *testing.T) {
+	identity := baseIdentity()
+	identity.VirtualKeyID = "vk-1"
+	identity.VirtualKeyBudgetUSD = 100.0
+	identity.VirtualKeySpentUSD = 90.0
+
+	store := &fakeIdentityStore{
+		identity:                     identity,
+		consumeOK:                    true,
+		consumeKeyBudgetOK:           true,
+		consumeTenantBudgetOK:        true,
+		consumeVirtualKeyBudgetOK:    false,
+	}
+	service := NewAuth(store)
+
+	err := service.RecordUsage(context.Background(), identity, "openai", "gpt-1", 1, 1, 2, 5.0, 10, "success", "")
+	if !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("RecordUsage(vk budget exceeded) error = %v, want %v", err, ErrBudgetExceeded)
 	}
 }
