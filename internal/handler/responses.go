@@ -109,7 +109,7 @@ func (h *Handler) streamResponses(c *gin.Context, stream *responseSvc.Stream, re
 
 			normalizedEvents := normalizeResponsesStreamEvent(event)
 			for _, normalized := range normalizedEvents {
-				if !firstTokenRecorded && normalizedEventType(normalized) == "response.output_text.delta" {
+				if !firstTokenRecorded && normalizedEventType(normalized) == provider.EventContentDelta {
 					h.metrics.ObserveTTFT(metricsSurfaceResponses, stream.ProviderName, time.Since(start))
 					firstTokenRecorded = true
 				}

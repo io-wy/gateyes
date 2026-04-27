@@ -130,12 +130,17 @@ func (d *DB) Migrate(ctx context.Context) error {
 			return fmt.Errorf("read migration %s: %w", name, err)
 		}
 
+		migrationSQL := string(data)
+		if d.driver == "mysql" {
+			migrationSQL = mysqlCompatSQL(migrationSQL)
+		}
+
 		tx, err := d.Conn.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("begin migration %s: %w", name, err)
 		}
 
-		if _, err := tx.ExecContext(ctx, string(data)); err != nil {
+		if _, err := tx.ExecContext(ctx, migrationSQL); err != nil {
 			tx.Rollback()
 			return fmt.Errorf("apply migration %s: %w", name, err)
 		}
@@ -159,6 +164,12 @@ func (d *DB) isApplied(ctx context.Context, version string) (bool, error) {
 		return false, fmt.Errorf("check migration %s: %w", version, err)
 	}
 	return count > 0, nil
+}
+
+// mysqlCompatSQL adapts PostgreSQL/SQLite migration SQL for MySQL compatibility.
+// Currently a minimal pass-through; extend as needed for MySQL-specific syntax.
+func mysqlCompatSQL(sql string) string {
+	return sql
 }
 
 func driverName(driver string) (string, error) {

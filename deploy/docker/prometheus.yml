@@ -9,4 +9,4 @@ scrape_configs:
   - job_name: gateyes
     static_configs:
       - targets:
-          - gateway:8083
+          - host.docker.internal:8083

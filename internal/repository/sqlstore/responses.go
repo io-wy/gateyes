@@ -54,26 +54,44 @@ func (s *Store) UpdateResponse(ctx context.Context, record repository.ResponseRe
 	if record.UpdatedAt.IsZero() {
 		record.UpdatedAt = time.Now().UTC()
 	}
-	var routeTraceValue any
+
+	var query string
+	var args []any
+
 	if record.RouteTraceBody != nil {
-		routeTraceValue = string(record.RouteTraceBody)
+		query = `
+UPDATE responses
+SET provider_name = ?, model = ?, status = ?, response_body = ?, route_trace_body = ?, updated_at = ?
+WHERE id = ?
+  AND tenant_id = ?`
+		args = []any{
+			record.ProviderName,
+			record.Model,
+			record.Status,
+			string(record.ResponseBody),
+			string(record.RouteTraceBody),
+			record.UpdatedAt,
+			record.ID,
+			record.TenantID,
+		}
+	} else {
+		query = `
+UPDATE responses
+SET provider_name = ?, model = ?, status = ?, response_body = ?, updated_at = ?
+WHERE id = ?
+  AND tenant_id = ?`
+		args = []any{
+			record.ProviderName,
+			record.Model,
+			record.Status,
+			string(record.ResponseBody),
+			record.UpdatedAt,
+			record.ID,
+			record.TenantID,
+		}
 	}
 
-	if _, err := s.db.Conn.ExecContext(ctx, s.db.Rebind(`
-UPDATE responses
-SET provider_name = ?, model = ?, status = ?, response_body = ?, route_trace_body = CASE WHEN ? IS NULL THEN route_trace_body ELSE ? END, updated_at = ?
-WHERE id = ?
-  AND tenant_id = ?`),
-		record.ProviderName,
-		record.Model,
-		record.Status,
-		string(record.ResponseBody),
-		routeTraceValue,
-		routeTraceValue,
-		record.UpdatedAt,
-		record.ID,
-		record.TenantID,
-	); err != nil {
+	if _, err := s.db.Conn.ExecContext(ctx, s.db.Rebind(query), args...); err != nil {
 		return fmt.Errorf("update response: %w", err)
 	}
 

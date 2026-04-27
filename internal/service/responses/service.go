@@ -314,9 +314,13 @@ func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIde
 
 	go s.runStreamWithFallback(ctx, identity, req, sessionID, candidates, responseID, trace, events, errCh)
 
+	firstProviderName := ""
+	if len(candidates) > 0 {
+		firstProviderName = candidates[0].Name()
+	}
 	return &Stream{
 		ResponseID:   responseID,
-		ProviderName: "", // 异步确定
+		ProviderName: firstProviderName,
 		StartedAt:    time.Now(),
 		Events:       events,
 		Errors:       errCh,
