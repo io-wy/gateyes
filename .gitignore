@@ -21,9 +21,21 @@ tmp/
 test_doc/
 .gomodcache/
 .uv-cache/
+# 环境变量文件（根目录保留 .env.example，其他忽略）
 *.env
+.env
+!.env.example
+
+# 运行时文件
 *.pid
 *.db
 *.sqlite
 *.db-wal
 *.db-shm
+
+# 压测运行时目录生成的文件
+benchmark/runtime/*.exe
+benchmark/runtime/*.exe~
+benchmark/runtime/*.log
+benchmark/runtime/*.pid
+benchmark/runtime/*.db

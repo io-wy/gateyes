@@ -1,0 +1,114 @@
+server:
+  listenAddr: ":8083"
+  readTimeout: 30
+  writeTimeout: 300
+
+database:
+  driver: postgres
+  dsn: "host=127.0.0.1 port=5432 user=dev_user password=dev_pw_2026 dbname=dev_db sslmode=disable"
+  autoMigrate: true
+  maxOpenConns: 20
+  maxIdleConns: 10
+  connMaxLifetimeSeconds: 300
+
+metrics:
+  namespace: gateway
+  enabled: true
+
+router:
+  strategy: round_robin
+
+limiter:
+  globalQPS: 10000
+  globalTPM: 10000000
+  globalTokenBurst: 1000000
+  perUserRequestBurst: 1000
+  queueSize: 10000
+
+alert:
+  enabled: false
+
+healthCheck:
+  enabled: false
+
+retry:
+  maxRetries: 0
+  initialDelayMs: 100
+  maxDelayMs: 5000
+  backoffFactor: 2.0
+
+circuitBreaker:
+  failureThreshold: 999
+  recoveryTimeout: 1
+  halfOpenMaxRequests: 999
+
+providers:
+  - name: mock-openai-1
+    type: openai
+    endpoint: chat
+    baseURL: "http://localhost:19999"
+    apiKey: "mock-key"
+    model: "mock-model"
+    priceInput: 0
+    priceOutput: 0
+    maxTokens: 16384
+    timeout: 60
+    enabled: true
+
+  - name: mock-openai-2
+    type: openai
+    endpoint: chat
+    baseURL: "http://localhost:19999"
+    apiKey: "mock-key"
+    model: "mock-model"
+    priceInput: 0
+    priceOutput: 0
+    maxTokens: 16384
+    timeout: 60
+    enabled: true
+
+  - name: mock-anthropic-1
+    type: anthropic
+    baseURL: "http://localhost:19999"
+    apiKey: "mock-key"
+    model: "mock-model"
+    priceInput: 0
+    priceOutput: 0
+    maxTokens: 16384
+    timeout: 60
+    enabled: true
+
+  - name: mock-anthropic-2
+    type: anthropic
+    baseURL: "http://localhost:19999"
+    apiKey: "mock-key"
+    model: "mock-model"
+    priceInput: 0
+    priceOutput: 0
+    maxTokens: 16384
+    timeout: 60
+    enabled: true
+
+  - name: mock-deepseek
+    type: openai
+    endpoint: chat
+    baseURL: "http://localhost:19999"
+    apiKey: "mock-key"
+    model: "mock-model"
+    priceInput: 0
+    priceOutput: 0
+    maxTokens: 16384
+    timeout: 60
+    enabled: true
+
+apiKeys:
+  - key: bench-key-001
+    secret: bench-secret-001
+    quota: 100000000
+    qps: 100000
+    models: []
+
+admin:
+  defaultTenant: default
+  bootstrapKey: admin-bench-key
+  bootstrapSecret: admin-bench-secret

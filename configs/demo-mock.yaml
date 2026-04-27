@@ -1,0 +1,174 @@
+# Gateyes 完整体验配置 —— 基于 mock upstream，零 API 成本
+# 使用方式：
+#   1. docker compose up postgres redis prometheus grafana -d
+#   2. go run ./benchmark/mockupstream/main.go -port 19999
+#   3. go run ./cmd/gateway/main.go -config ./configs/demo-mock.yaml
+
+server:
+  listenAddr: ":8083"
+  readTimeout: 30
+  writeTimeout: 300
+  idleTimeout: 120
+  shutdownTimeout: 10
+
+database:
+  driver: postgres
+  dsn: "host=localhost port=5432 user=gateyes password=gateyes_pw dbname=gateyes sslmode=disable"
+  autoMigrate: true
+  maxOpenConns: 10
+  maxIdleConns: 5
+  connMaxLifetimeSeconds: 300
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+
+metrics:
+  namespace: gateway
+  enabled: true
+
+router:
+  strategy: least_load
+  ranker:
+    enabled: false
+    method: none
+  ruleEngine:
+    enabled: true
+    rules:
+      - name: long-context-to-secondary
+        match:
+          minPromptTokens: 8000
+        action:
+          providers: [mock-secondary]
+
+limiter:
+  globalQPS: 1000
+  globalTPM: 1000000
+  globalTokenBurst: 100000
+  perUserRequestBurst: 100
+  tenantTPM: 500000
+  tenantTPMBurst: 50000
+  tenantRPM: 1000
+  tenantRPMBurst: 100
+  providerTPM: 300000
+  providerTPMBurst: 30000
+  providerRPM: 600
+  providerRPMBurst: 60
+  modelTPM: 200000
+  modelTPMBurst: 20000
+  modelRPM: 400
+  modelRPMBurst: 40
+  queueSize: 1000
+
+alert:
+  enabled: true
+  quotaThreshold: 0.8
+  webhookURL: ""
+  webhookSecret: ""
+  providerStateURL: ""
+  budgetExhaustedURL: ""
+  requestEventURL: ""
+  errorEventURL: ""
+
+healthCheck:
+  enabled: true
+  intervalSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 2
+
+retry:
+  maxRetries: 2
+  initialDelayMs: 100
+  maxDelayMs: 5000
+  backoffFactor: 2.0
+
+circuitBreaker:
+  failureThreshold: 5
+  recoveryTimeout: 60
+  halfOpenMaxRequests: 1
+
+providers:
+  # mock-primary: 正常工作的 mock provider
+  - name: mock-primary
+    type: openai
+    vendor: openai
+    endpoint: responses
+    baseURL: "http://localhost:19999/v1"
+    apiKey: "mock-key"
+    model: "mock-model"
+    weight: 10
+    priceInput: 0.000005
+    priceOutput: 0.000015
+    maxTokens: 16384
+    timeout: 60
+    enabled: true
+    capabilities:
+      chat: true
+      responses: true
+      stream: true
+      embeddings: true
+      tools: true
+      images: true
+      structuredOutput: true
+      longContext: true
+
+  # mock-secondary: 用于路由规则测试和 fallback
+  - name: mock-secondary
+    type: openai
+    vendor: openai
+    endpoint: responses
+    baseURL: "http://localhost:19999/v1"
+    apiKey: "mock-key"
+    model: "mock-model"
+    weight: 5
+    priceInput: 0.000003
+    priceOutput: 0.000010
+    maxTokens: 32000
+    timeout: 60
+    enabled: true
+    capabilities:
+      chat: true
+      responses: true
+      stream: true
+      embeddings: true
+      tools: true
+      images: true
+      structuredOutput: true
+      longContext: true
+
+  # mock-failing: 用于测试熔断和 fallback（初始启用，后续会人为关闭）
+  - name: mock-failing
+    type: openai
+    vendor: openai
+    endpoint: responses
+    baseURL: "http://localhost:19999/v1"
+    apiKey: "mock-key"
+    model: "mock-model"
+    weight: 3
+    priceInput: 0.000001
+    priceOutput: 0.000005
+    maxTokens: 8192
+    timeout: 60
+    enabled: false
+    capabilities:
+      chat: true
+      responses: true
+      stream: true
+      embeddings: false
+      tools: false
+      images: false
+      structuredOutput: false
+      longContext: false
+
+apiKeys:
+  - key: demo-key-001
+    secret: demo-secret-001
+    quota: 1000000
+    qps: 1000
+    models: []
+
+admin:
+  defaultTenant: default
+  bootstrapKey: admin-key-001
+  bootstrapSecret: admin-secret-001
