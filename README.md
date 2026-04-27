@@ -204,15 +204,18 @@ HTTP Request
 
 ## 文档导航
 
-| 文档 | 内容 |
+完整文档索引见 [`docs/README.md`](./docs/README.md)。
+
+快速定位：
+
+| 我想... | 看这里 |
 |---|---|
-| [`docs/deployment.md`](./docs/deployment.md) | 部署指南 |
-| [`docs/runtime-mechanisms.md`](./docs/runtime-mechanisms.md) | 鉴权、限流、路由、预算治理实现说明 |
-| [`docs/provider-protocol.md`](./docs/provider-protocol.md) | Provider 协议抽象、新增 adapter 指南 |
-| [`docs/monitoring.md`](./docs/monitoring.md) | Prometheus 指标、告警规则、Grafana dashboard |
-| [`docs/limiter.md`](./docs/limiter.md) | 令牌桶限流算法详解 |
-| [`docs/tech-highlights-report.md`](./docs/tech-highlights-report.md) | 技术亮点与 benchmark 实测数据 |
-| [`TESTING.md`](./TESTING.md) | Live provider 回归测试说明 |
+| 部署 Gateway | [`docs/deployment.md`](./docs/deployment.md) |
+| 理解鉴权/限流/路由/预算实现 | [`docs/runtime-mechanisms.md`](./docs/runtime-mechanisms.md) |
+| 接入新 Provider | [`docs/provider-protocol.md`](./docs/provider-protocol.md) |
+| 配置监控与告警 | [`docs/monitoring.md`](./docs/monitoring.md) |
+| 排查线上故障 | [`docs/runbook.md`](./docs/runbook.md) |
+| 了解 benchmark 数据 | [`docs/tech-highlights-report.md`](./docs/tech-highlights-report.md) |
 
 ---
 
