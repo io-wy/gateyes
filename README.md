@@ -120,6 +120,7 @@ Gateyes 是一个用 Go 编写的 LLM API Gateway，定位是应用和上游模�
   - usage
   - responses
   - tenant 可见 provider 列表
+  - user / api_key / virtual_key 三级模型白名单
 - 固定角色 RBAC：
   - `super_admin`
   - `tenant_admin`

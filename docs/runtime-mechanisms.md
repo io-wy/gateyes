@@ -180,14 +180,57 @@ VK 记录包含：`budget_usd`、`spent_usd`、`budget_policy`、`rate_limit_qps
 
 ### 模型白名单
 
-模型白名单逻辑在 `auth.CheckModel()`：
+模型白名单逻辑在 `auth.CheckModel()`，当前实现是**两层 AND 关系**：
 
-- 如果 `identity.Models` 和 `identity.APIKeyModels` 都为空，视为允许所有模型
-- 如果 `identity.Models` 不为空，检查请求里的 `model` 是否匹配
-- 如果 `identity.APIKeyModels` 不为空，检查请求里的 `model` 是否匹配
-- 两层白名单是 AND 关系：必须同时满足（如果都非空）
+| 层级 | 字段 | 数据来源 | 配置方式 |
+|---|---|---|---|
+| User 级别 | `identity.Models` | `user_models` 表 | 创建/更新 user 时传入 `models` |
+| API Key 级别 | `identity.APIKeyModels` | `api_keys.allowed_models` | 创建/更新 api_key 时传入 `allowed_models` |
+
+判定规则：
+
+- 如果两层都为空，视为允许所有模型
+- 如果 `identity.Models` 不为空，请求 `model` 必须在其列出的模型名中
+- 如果 `identity.APIKeyModels` 不为空，请求 `model` 必须在其列出的模型名中
+- 两层是 **AND** 关系：如果都非空，必须同时满足
 
 这是"请求模型名"层面的校验，不是"最终选中的 provider/model"层面的校验。
+
+#### Virtual Key 的模型白名单
+
+VK 认证时，`virtual_keys.allowed_models` 会**覆盖**到 `identity.APIKeyModels` 上（overlay）。这意味着 VK 可以进一步收紧父 API Key 允许的模型范围，但不能放宽。
+
+#### 多租户模型隔离的推荐做法
+
+当前没有直接的 `tenants.allowed_models` 字段，tenant 级别的模型隔离通过**组合机制**实现：
+
+1. **Provider 绑定隔离**（粗粒度）：
+   - `POST /admin/tenants/:id/providers` 绑定 tenant 可用 provider
+   - 路由时 `ListTenantProviders()` 只返回绑定的 provider
+   - 未绑定的 provider 下的模型自然不可选
+
+2. **User / API Key 白名单**（细粒度）：
+   - 创建 user 时指定 `models: ["glm-5.1", "gpt-4o-mini"]`
+   - 创建 api_key 时指定 `allowed_models: ["glm-5.1"]`
+   - 两层 AND 关系实现精确控制
+
+3. **Virtual Key 子集**（第三方授权场景）：
+   - 创建 VK 时指定 `allowed_models`，在父 key 范围内进一步收紧
+
+典型场景配置示例：
+
+```
+tenant-alpha 绑定 provider: [mock-primary]          -> 只能用 mock-primary 下的模型
+  └─ user-alice  models: ["glm-5.1"]                -> alice 只能请求 glm-5.1
+      └─ key-001  allowed_models: ["glm-5.1"]       -> key 层面再确认
+      └─ vk-001   allowed_models: ["glm-5.1"]       -> 第三方授权也只能用 glm-5.1
+
+tenant-beta 绑定 provider: [mock-secondary]         -> 只能用 mock-secondary 下的模型
+  └─ user-bob    models: ["gpt-4o-mini"]            -> bob 只能请求 gpt-4o-mini
+```
+
+如果 tenant-alpha 的 user 请求 `gpt-4o-mini`：
+- 模型白名单检查：`identity.Models` 中不包含 `gpt-4o-mini` → 403 `model_not_allowed`
 
 ### Provider 白名单
 
