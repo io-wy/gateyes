@@ -784,6 +784,850 @@
           "400": { "description": "Provider 不存在" }
         }
       }
+    },
+    "/v1/embeddings": {
+      "post": {
+        "tags": ["Embeddings API"],
+        "summary": "OpenAI Embeddings API",
+        "security": [{ "ApiKey": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["model", "input"],
+                "properties": {
+                  "model": { "type": "string", "example": "text-embedding-3-small" },
+                  "input": {
+                    "oneOf": [
+                      { "type": "string", "example": "hello world" },
+                      { "type": "array", "items": { "type": "string" }, "example": ["hello", "world"] }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Embedding 结果" }
+        }
+      }
+    },
+    "/service/{prefix}/responses": {
+      "post": {
+        "tags": ["Service Catalog"],
+        "summary": "通过 Service Catalog 调用 Responses",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "prefix", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Responses API 格式结果" }
+        }
+      }
+    },
+    "/service/{prefix}/chat/completions": {
+      "post": {
+        "tags": ["Service Catalog"],
+        "summary": "通过 Service Catalog 调用 Chat Completions",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "prefix", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Chat Completions 格式结果" }
+        }
+      }
+    },
+    "/service/{prefix}/messages": {
+      "post": {
+        "tags": ["Service Catalog"],
+        "summary": "通过 Service Catalog 调用 Anthropic Messages",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "prefix", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Anthropic Messages 格式结果" }
+        }
+      }
+    },
+    "/service/{prefix}/invoke": {
+      "post": {
+        "tags": ["Service Catalog"],
+        "summary": "通过 Service Catalog 泛化调用",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "prefix", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "调用结果" }
+        }
+      }
+    },
+    "/admin/providers": {
+      "post": {
+        "tags": ["管理"],
+        "summary": "创建 Provider",
+        "security": [{ "ApiKey": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "type": { "type": "string", "enum": ["openai", "anthropic", "grpc"] },
+                  "baseURL": { "type": "string" },
+                  "apiKey": { "type": "string" },
+                  "model": { "type": "string" },
+                  "enabled": { "type": "boolean" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Provider 已创建" },
+          "400": { "description": "参数错误" }
+        }
+      }
+    },
+    "/admin/providers/check": {
+      "post": {
+        "tags": ["管理"],
+        "summary": "手动触发 Provider 健康检查",
+        "security": [{ "ApiKey": [] }],
+        "responses": {
+          "200": { "description": "检查完成" }
+        }
+      }
+    },
+    "/admin/providers/{name}": {
+      "put": {
+        "tags": ["管理"],
+        "summary": "更新 Provider",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "name", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "baseURL": { "type": "string" },
+                  "apiKey": { "type": "string" },
+                  "model": { "type": "string" },
+                  "enabled": { "type": "boolean" },
+                  "weight": { "type": "integer" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "已更新" },
+          "404": { "description": "Provider 不存在" }
+        }
+      },
+      "delete": {
+        "tags": ["管理"],
+        "summary": "删除 Provider",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "name", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "已删除" },
+          "404": { "description": "Provider 不存在" }
+        }
+      }
+    },
+    "/admin/audit": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "审计日志",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "action", "in": "query", "schema": { "type": "string" } },
+          { "name": "resource_type", "in": "query", "schema": { "type": "string" } },
+          { "name": "start_time", "in": "query", "schema": { "type": "string" } },
+          { "name": "end_time", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "审计日志列表" }
+        }
+      }
+    },
+    "/admin/services": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "列出所有 Service",
+        "security": [{ "ApiKey": [] }],
+        "responses": {
+          "200": { "description": "Service 列表" }
+        }
+      },
+      "post": {
+        "tags": ["管理"],
+        "summary": "创建 Service",
+        "security": [{ "ApiKey": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "description": { "type": "string" },
+                  "status": { "type": "string", "enum": ["draft", "published", "deprecated"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Service 已创建" },
+          "400": { "description": "参数错误" }
+        }
+      }
+    },
+    "/admin/services/{id}": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "获取 Service 详情",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Service 详情" },
+          "404": { "description": "Service 不存在" }
+        }
+      },
+      "put": {
+        "tags": ["管理"],
+        "summary": "更新 Service",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "description": { "type": "string" },
+                  "status": { "type": "string", "enum": ["draft", "published", "deprecated"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "已更新" },
+          "404": { "description": "Service 不存在" }
+        }
+      },
+      "delete": {
+        "tags": ["管理"],
+        "summary": "删除 Service",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "已删除" },
+          "404": { "description": "Service 不存在" }
+        }
+      }
+    },
+    "/admin/services/{id}/versions": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "获取 Service 版本历史",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "版本列表" }
+        }
+      },
+      "post": {
+        "tags": ["管理"],
+        "summary": "创建 Service 新版本",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "schema": { "type": "object" },
+                  "metadata": { "type": "object" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "版本已创建" }
+        }
+      }
+    },
+    "/admin/services/{id}/publish": {
+      "post": {
+        "tags": ["管理"],
+        "summary": "发布 Service",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "已发布" },
+          "404": { "description": "Service 不存在" }
+        }
+      }
+    },
+    "/admin/services/{id}/promote": {
+      "post": {
+        "tags": ["管理"],
+        "summary": "提升 Service 版本",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "已提升" },
+          "404": { "description": "Service 不存在" }
+        }
+      }
+    },
+    "/admin/services/{id}/rollback": {
+      "post": {
+        "tags": ["管理"],
+        "summary": "回滚 Service",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "已回滚" },
+          "404": { "description": "Service 不存在" }
+        }
+      }
+    },
+    "/admin/services/{id}/subscriptions": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "获取 Service 订阅列表",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "订阅列表" }
+        }
+      },
+      "post": {
+        "tags": ["管理"],
+        "summary": "创建 Service 订阅",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "subscriber_id": { "type": "string" },
+                  "tier": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "订阅已创建" }
+        }
+      }
+    },
+    "/admin/subscriptions/{id}": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "获取订阅详情",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "订阅详情" },
+          "404": { "description": "订阅不存在" }
+        }
+      }
+    },
+    "/admin/subscriptions/{id}/review": {
+      "post": {
+        "tags": ["管理"],
+        "summary": "审核订阅",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "status": { "type": "string", "enum": ["approved", "rejected"] },
+                  "comment": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "已审核" },
+          "404": { "description": "订阅不存在" }
+        }
+      }
+    },
+    "/admin/keys": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "列出所有 API Key",
+        "security": [{ "ApiKey": [] }],
+        "responses": {
+          "200": { "description": "API Key 列表" }
+        }
+      },
+      "post": {
+        "tags": ["管理"],
+        "summary": "创建 API Key",
+        "security": [{ "ApiKey": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "tenant_id": { "type": "string" },
+                  "quota": { "type": "integer" },
+                  "qps": { "type": "integer" },
+                  "models": { "type": "array", "items": { "type": "string" } },
+                  "budget_usd": { "type": "number" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "API Key 已创建" },
+          "400": { "description": "参数错误" }
+        }
+      }
+    },
+    "/admin/keys/{id}": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "获取 API Key 详情",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "API Key 详情" },
+          "404": { "description": "API Key 不存在" }
+        }
+      },
+      "put": {
+        "tags": ["管理"],
+        "summary": "更新 API Key",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "quota": { "type": "integer" },
+                  "qps": { "type": "integer" },
+                  "models": { "type": "array", "items": { "type": "string" } },
+                  "budget_usd": { "type": "number" },
+                  "status": { "type": "string", "enum": ["active", "inactive"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "已更新" },
+          "404": { "description": "API Key 不存在" }
+        }
+      },
+      "delete": {
+        "tags": ["管理"],
+        "summary": "删除 API Key",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "已删除" },
+          "404": { "description": "API Key 不存在" }
+        }
+      }
+    },
+    "/admin/keys/{id}/rotate": {
+      "post": {
+        "tags": ["管理"],
+        "summary": "轮换 API Key Secret",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "已轮换，返回新的 api_secret" },
+          "404": { "description": "API Key 不存在" }
+        }
+      }
+    },
+    "/admin/keys/{id}/revoke": {
+      "post": {
+        "tags": ["管理"],
+        "summary": "撤销 API Key",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "已撤销" },
+          "404": { "description": "API Key 不存在" }
+        }
+      }
+    },
+    "/admin/virtual-keys": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "列出所有 Virtual Key",
+        "security": [{ "ApiKey": [] }],
+        "responses": {
+          "200": { "description": "Virtual Key 列表" }
+        }
+      },
+      "post": {
+        "tags": ["管理"],
+        "summary": "创建 Virtual Key",
+        "security": [{ "ApiKey": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "api_key_id": { "type": "string" },
+                  "allowed_models": { "type": "array", "items": { "type": "string" } },
+                  "allowed_providers": { "type": "array", "items": { "type": "string" } },
+                  "budget_usd": { "type": "number" },
+                  "budget_policy": { "type": "string", "enum": ["hard_reject", "soft_alert", "grace"] },
+                  "rate_limit_qps": { "type": "integer" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Virtual Key 已创建" },
+          "400": { "description": "参数错误" }
+        }
+      }
+    },
+    "/admin/virtual-keys/{id}": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "获取 Virtual Key 详情",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Virtual Key 详情" },
+          "404": { "description": "Virtual Key 不存在" }
+        }
+      },
+      "put": {
+        "tags": ["管理"],
+        "summary": "更新 Virtual Key",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "allowed_models": { "type": "array", "items": { "type": "string" } },
+                  "allowed_providers": { "type": "array", "items": { "type": "string" } },
+                  "budget_usd": { "type": "number" },
+                  "budget_policy": { "type": "string" },
+                  "rate_limit_qps": { "type": "integer" },
+                  "status": { "type": "string", "enum": ["active", "inactive"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "已更新" },
+          "404": { "description": "Virtual Key 不存在" }
+        }
+      },
+      "delete": {
+        "tags": ["管理"],
+        "summary": "删除 Virtual Key",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "已删除" },
+          "404": { "description": "Virtual Key 不存在" }
+        }
+      }
+    },
+    "/admin/projects": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "列出所有 Project",
+        "security": [{ "ApiKey": [] }],
+        "responses": {
+          "200": { "description": "Project 列表" }
+        }
+      },
+      "post": {
+        "tags": ["管理"],
+        "summary": "创建 Project",
+        "security": [{ "ApiKey": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "slug": { "type": "string" },
+                  "tenant_id": { "type": "string" },
+                  "budget_usd": { "type": "number" },
+                  "budget_policy": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Project 已创建" },
+          "400": { "description": "参数错误" }
+        }
+      }
+    },
+    "/admin/projects/{id}": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "获取 Project 详情",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Project 详情" },
+          "404": { "description": "Project 不存在" }
+        }
+      },
+      "put": {
+        "tags": ["管理"],
+        "summary": "更新 Project",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "budget_usd": { "type": "number" },
+                  "budget_policy": { "type": "string" },
+                  "status": { "type": "string", "enum": ["active", "inactive"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "已更新" },
+          "404": { "description": "Project 不存在" }
+        }
+      },
+      "delete": {
+        "tags": ["管理"],
+        "summary": "删除 Project",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "已删除" },
+          "404": { "description": "Project 不存在" }
+        }
+      }
+    },
+    "/admin/projects/{id}/usage": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "获取 Project 用量",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "用量数据" },
+          "404": { "description": "Project 不存在" }
+        }
+      }
+    },
+    "/admin/responses": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "列出 Responses",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "tenant_id", "in": "query", "schema": { "type": "string" } },
+          { "name": "model", "in": "query", "schema": { "type": "string" } },
+          { "name": "status", "in": "query", "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 100 } },
+          { "name": "offset", "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "Response 列表" }
+        }
+      }
+    },
+    "/admin/responses/{id}/trace": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "获取 Response 路由追踪",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "路由追踪详情" },
+          "404": { "description": "Response 不存在" }
+        }
+      }
+    },
+    "/admin/budgets": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "查看预算状态",
+        "security": [{ "ApiKey": [] }],
+        "responses": {
+          "200": { "description": "多级预算状态" }
+        }
+      }
+    },
+    "/admin/usage/summary": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "用量汇总",
+        "security": [{ "ApiKey": [] }],
+        "responses": {
+          "200": { "description": "用量汇总数据" }
+        }
+      }
+    },
+    "/admin/usage/breakdown": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "用量分解",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "by", "in": "query", "schema": { "type": "string", "enum": ["provider", "model", "user"] } }
+        ],
+        "responses": {
+          "200": { "description": "用量分解数据" }
+        }
+      }
+    },
+    "/admin/usage/trend": {
+      "get": {
+        "tags": ["管理"],
+        "summary": "用量趋势",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "start", "in": "query", "schema": { "type": "string" } },
+          { "name": "end", "in": "query", "schema": { "type": "string" } },
+          { "name": "granularity", "in": "query", "schema": { "type": "string", "enum": ["hour", "day", "week"] } }
+        ],
+        "responses": {
+          "200": { "description": "用量趋势数据" }
+        }
+      }
+    },
+    "/admin/reload": {
+      "post": {
+        "tags": ["系统"],
+        "summary": "热重载配置",
+        "security": [{ "ApiKey": [] }],
+        "responses": {
+          "200": { "description": "配置已重载" }
+        }
+      }
+    },
+    "/admin/tenants/{id}": {
+      "delete": {
+        "tags": ["租户"],
+        "summary": "删除租户（仅 super_admin）",
+        "security": [{ "ApiKey": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "已删除" },
+          "404": { "description": "租户不存在" }
+        }
+      }
     }
   },
   "components": {

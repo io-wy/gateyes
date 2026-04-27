@@ -2,616 +2,244 @@
 
 # Gateyes
 
-Gateyes 是一个用 Go 编写的 LLM API Gateway，定位是应用和上游模型提供商之间的统一接入层。
+> 为 LLM 应用而生的生产级 API Gateway
 
-当前版本以中文 README 为准，重点已经从内存原型推进到可持久化、可管理的早期可运行版本，核心方向是：
+Gateyes 是一个用 Go 编写的高性能 LLM API Gateway，在应用与上游模型提供商之间提供统一接入层。核心设计哲学是 **provider-native adapter** ——不做协议抹平，而是做精确转接，让 OpenAI、Anthropic、vLLM 等每种平台的原生能力都能被完整暴露。
 
-- `Responses API` 作为主入口
-- `Chat Completions` 作为兼容层保留
-- 多租户隔离
-- 固定角色 RBAC
-- 运行时数据库鉴权
-- provider-native adapter（当前内置 OpenAI / Anthropic，并支持 vendor profile 扩展）
-- provider-native adapter（当前内置 OpenAI / Anthropic / grpc-vllm）
+```
+应用层  ->  Gateyes Gateway  ->  OpenAI / Anthropic / vLLM / ...
+              |
+              +-> 多租户隔离 + RBAC
+              +-> 限流 + 熔断 + 智能路由
+              +-> 预算管控 + 审计日志
+              +-> Prometheus + Grafana + OTLP 追踪
+```
 
-## 交付与运维文档
+---
 
-- [`docs/deployment.md`](./docs/deployment.md)
-- [`docs/ci-cd.md`](./docs/ci-cd.md)
-- [`docs/secrets-and-config.md`](./docs/secrets-and-config.md)
-- [`docs/upgrade.md`](./docs/upgrade.md)
-- [`docs/rollback.md`](./docs/rollback.md)
-- [`docs/backup-and-restore.md`](./docs/backup-and-restore.md)
-- [`docs/runbook.md`](./docs/runbook.md)
+## 核心亮点
 
-## 当前已实现
+### 1. 四路 API 统一接入，零摩擦迁移
 
-### API
+| 接口 | 协议来源 | 一句话说明 |
+|---|---|---|
+| `POST /v1/responses` | OpenAI Responses API | 内部主链路，所有能力从这里发散 |
+| `POST /v1/chat/completions` | OpenAI Chat Completions | 存量业务零改动接入 |
+| `POST /v1/messages` | Anthropic Messages API | Anthropic 生态直接对接 |
+| `POST /v1/embeddings` | OpenAI Embeddings API | 文本向量化统一出口 |
 
-- `GET /health`
-- `GET /ready`
-- `GET /metrics`
-- `POST /v1/responses`
-- `GET /v1/responses/:id`
-- `POST /v1/chat/completions`
-- `POST /v1/messages`
-- `GET /v1/models`
-- `POST /v1/embeddings`
-- `POST /service/:prefix/responses`
-- `POST /service/:prefix/chat/completions`
-- `POST /service/:prefix/messages`
-- `POST /service/:prefix/invoke`
-- `GET /admin/dashboard`
-- `GET /admin/providers`
-- `POST /admin/providers`
-- `POST /admin/providers/check`
-- `GET /admin/providers/:name`
-- `GET /admin/providers/:name/stats`
-- `PUT /admin/providers/:name`
-- `DELETE /admin/providers/:name`
-- `GET /admin/audit`
-- `GET /admin/services`
-- `POST /admin/services`
-- `GET /admin/services/:id`
-- `PUT /admin/services/:id`
-- `DELETE /admin/services/:id`
-- `GET /admin/services/:id/versions`
-- `POST /admin/services/:id/versions`
-- `POST /admin/services/:id/publish`
-- `POST /admin/services/:id/promote`
-- `POST /admin/services/:id/rollback`
-- `GET /admin/services/:id/subscriptions`
-- `POST /admin/services/:id/subscriptions`
-- `GET /admin/subscriptions/:id`
-- `POST /admin/subscriptions/:id/review`
-- `GET /admin/keys`
-- `POST /admin/keys`
-- `GET /admin/keys/:id`
-- `PUT /admin/keys/:id`
-- `POST /admin/keys/:id/rotate`
-- `POST /admin/keys/:id/revoke`
-- `DELETE /admin/keys/:id`
-- `GET /admin/virtual-keys`
-- `POST /admin/virtual-keys`
-- `GET /admin/virtual-keys/:id`
-- `PUT /admin/virtual-keys/:id`
-- `DELETE /admin/virtual-keys/:id`
-- `GET /admin/users`
-- `POST /admin/users`
-- `GET /admin/users/:id`
-- `PUT /admin/users/:id`
-- `DELETE /admin/users/:id`
-- `POST /admin/users/:id/reset`
-- `GET /admin/users/:id/usage`
-- `GET /admin/projects`
-- `POST /admin/projects`
-- `GET /admin/projects/:id`
-- `GET /admin/projects/:id/usage`
-- `PUT /admin/projects/:id`
-- `DELETE /admin/projects/:id`
-- `GET /admin/responses`
-- `GET /admin/responses/:id/trace`
-- `GET /admin/budgets`
-- `GET /admin/usage/summary`
-- `GET /admin/usage/breakdown`
-- `GET /admin/usage/trend`
-- `POST /admin/reload`
-- `GET /admin/tenants`
-- `POST /admin/tenants`
-- `GET /admin/tenants/:id`
-- `PUT /admin/tenants/:id`
-- `DELETE /admin/tenants/:id`
-- `POST /admin/tenants/:id/providers`
+三路文本生成接口共享同一套业务编排：provider 选择、重试、熔断、流式处理、usage 记录。换 provider 不改代码，换模型只改请求体。
 
-### 功能
+### 2. Provider-Native Adapter，不削足适履
 
-- 运行时鉴权从数据库读取 `api_key -> user -> tenant`
-- 支持 SQLite / PostgreSQL / MySQL 三种 `database/sql` 驱动
-- 启动时自动执行 migration
-- 配置中的 `apiKeys` 会作为 bootstrap 数据写入数据库
-- 启动时自动确保默认 tenant，并回填历史无 tenant 数据
-- 启动时可自动创建 bootstrap `super_admin`
-- admin 创建用户时会生成 `api_key` 和 `api_secret`
-- `/admin/*` 和 `/v1/*` 统一使用 Bearer 鉴权，不再区分 `X-Admin-Key`
-- 多租户隔离已经覆盖：
-  - user
-  - api key
-  - project
-  - usage
-  - responses
-  - tenant 可见 provider 列表
-  - user / api_key / virtual_key 三级模型白名单
-- 固定角色 RBAC：
-  - `super_admin`
-  - `tenant_admin`
-  - `tenant_user`
-- middleware 已接管横切能力：
-  - 鉴权
-  - 角色校验
-  - 模型白名单校验
-  - 配额预检查
-  - 基础限流
-- `POST /v1/responses` 是内部主链路
-- `POST /v1/chat/completions` 仅做 compatibility shim，内部会转换到 responses service
-- `POST /v1/messages` 提供 Anthropic-compatible 入口，内部同样会转换到 responses service
-- OpenAI / Anthropic compatibility DTO、请求转换、响应转换与 SSE 编码已收敛到 `internal/service/provider`
-- `GET /v1/responses/:id` 可读取已持久化 response
-- provider 抽象已改为 response-first
-- 已增加 DB-backed provider registry，支持 capability metadata、health/drain、routing weight
-- 当前内置 provider adapter：
-  - `openai`（支持 `chat` 和 `responses` 两种端点）
-  - `anthropic`
-  - `grpc` + `vendor=vllm`
-- 基础路由策略：
-  - `round_robin`
-  - `random`
-  - `least_load`
-  - `cost_based`
-  - `sticky`
-- 路由辅助能力：
-  - `ruleEngine`：基于输入特征的分流规则
-  - `ranker.method=ml_rank`：已预留独立入口，当前仅 `TODO`
-- 支持 SSE 流式输出
-- 提供 `GET /metrics` Prometheus 指标出口，覆盖：
-  - `surface/provider/result` 请求计数
-  - 请求时延 / 上游时延 / TTFT / stream duration
-  - `prompt/completion/cached/total` token 计数
-  - retry / fallback / provider request
-- request-id / `traceparent` 响应头与应用日志关联
-- 请求 usage 会写入数据库
-- provider 统计可通过 admin API 查看
-- provider 支持主动健康检查，并会写回 provider registry 的 `health_status`
-- 关键 admin 写操作会写入 `audit_logs`，可通过 `/admin/audit` 查询
-- Virtual Key（LiteLLM 兼容模式）：
-  - VK 映射：虚拟 key + model → 真实 provider + model
-  - 支持预算覆盖（budget overlay）、模型白名单、provider 限制
-  - `DELETE /admin/virtual-keys/:id`
-- 多层预算管控：
-  - tenant / project / key / VK 四级预算
-  - `hard_reject` / `soft_alert` / `grace` 三种策略
-  - `GET /admin/budgets` 查看预算状态
-- Redis 分布式限流：
-  - Lua token bucket 实现
-  - 多维度：global / tenant / provider / model 的 TPM + RPM + QPS
-  - 无 Redis 时自动降级为内存模式
-- Provider 健康检查 + 熔断：
-  - 定时主动探活，失败自动熔断
-  - `POST /admin/providers/check` 手动触发
-- 配置热重载：`POST /admin/reload` 无需重启
-- Provider 动态管理：`POST/PUT/DELETE /admin/providers` 运行时增删改
-- Token 管理：
-  - 用户使用量趋势查询
-  - Tenant 使用量趋势查询
-  - 配额告警 webhook（HMAC 签名 + 24h 去重）
-  - provider 状态变化、预算耗尽、请求完成、错误事件 webhook
-- OTLP 链路追踪：支持 HTTP exporter
+不做"最小公分母"协议抹平：
+
+- **OpenAI adapter**：保留 tool_call、function_call、json_schema、responses 端点
+- **Anthropic adapter**：完整保留 thinking、tool_use、citations 等特有字段
+- **grpc-vllm adapter**：gRPC 直连 vLLM，支持 tokenizer 本地 decode，支持流式输出
+
+新增 adapter 只需实现 `Provider` 接口，通过 `vendor` profile + `headers`/`extraBody` 覆盖即可扩展。
+
+### 3. 企业级多租户隔离
+
+运行时鉴权链路：`api_key:api_secret -> user -> tenant -> role`
+
+| 隔离维度 | 说明 |
+|---|---|
+| 数据隔离 | user / api key / project / usage / responses 全隔离 |
+| Provider 可见性 | 按 tenant 绑定可用 provider，未绑定即不可见 |
+| 模型白名单 | user + api_key + virtual_key 三级 AND 关系精确控制 |
+| 角色体系 | `super_admin` / `tenant_admin` / `tenant_user` 固定角色 |
+
+### 4. 四层预算治理 + 多维度限流
+
+**预算治理**（virtual_key -> api_key -> project -> tenant）：
+- `hard_reject`：预算耗尽直接拒绝
+- `soft_alert`：告警但不阻断，触发 webhook
+- `grace`：宽限期模式，超支部分后续记账
+
+**限流**（Redis Lua token bucket / 内存降级）：
+- 全局 QPS/TPM、租户 TPM/RPM、Provider TPM/RPM、模型 QPS 多维度独立判定
+- 无 Redis 时自动降级为内存模式，fail-open 容错
+
+### 5. 智能路由 + 熔断自愈
+
+| 路由策略 | 场景 |
+|---|---|
+| `round_robin` | 简单轮询 |
+| `least_load` | 基于实时并发数的最小负载 |
+| `cost_based` | 按配置价格优先低成本 provider |
+| `sticky` | 同 session 命中同一 provider |
+| `ruleEngine` | 按 prompt 长度、工具调用等特征分流 |
+
+**熔断机制**：三态模型（healthy / degraded / unhealthy），定时探活 + 手动触发，状态变更自动持久化并告警。
+
+### 6. 完整的可观测性体系
+
+- **14 个 Prometheus 指标**：请求/延迟/上游延迟/TTFT/流式时长/token/错误/重试/熔断
+- **OTLP 链路追踪**：HTTP exporter，W3C traceparent 传播
+- **审计日志**：admin 关键写操作全记录
+- **Grafana 基线 dashboard**：开箱即用
+
+### 7. 生产级可靠性
+
 - Graceful shutdown：SIGTERM 信号处理 + 连接排空
-- TDD 测试覆盖：alert、router、limiter
+- 配置热重载：`POST /admin/reload` 无需重启
+- Provider 动态管理：运行时增删改
+- 三库兼容：SQLite（开发）/ PostgreSQL（生产）/ MySQL
+- TDD 测试覆盖：`go test ./...` 全量回归
 
-## 当前架构
+### 8. 性能实测
 
-补充机制文档：
+| 指标 | 数值 |
+|---|---|
+| Gateway 自身开销（P50） | ~28 ms |
+| 端到端 P95 | ~170 ms |
+| 单并发 RPS | ~8 req/s |
+| 流式首 token 延迟（TTFT） | ~130 ms |
+| 并发 CC=1 成功率 | 100% |
 
-- [`docs/runtime-mechanisms.md`](./docs/runtime-mechanisms.md)：鉴权、限流、路由、权限模型的当前实现说明
-- [`docs/provider-protocol.md`](./docs/provider-protocol.md)：Provider 协议抽象、流式事件、工具调用、新增 adapter 指南
-- [`docs/limiter.md`](./docs/limiter.md)：限流模块令牌桶算法的详细实现
-- [`docs/monitoring.md`](./docs/monitoring.md)：Prometheus 指标口径、样例告警规则与 Grafana dashboard
+完整 benchmark 报告见 [`docs/tech-highlights-report.md`](./docs/tech-highlights-report.md)。
 
-当前链路已经调整为：
-
-1. HTTP 请求进入 Gin router
-2. `internal/middleware` 处理鉴权、角色校验、模型/配额预检查、限流
-3. `internal/handler` 只负责：
-   - 请求绑定
-   - 调用 `internal/service/provider` 中的 compatibility helper 做 OpenAI / Anthropic 转换
-   - HTTP / SSE 编码
-4. `internal/service/responses` 负责主业务编排：
-   - 选择 tenant 可用 provider
-   - 创建 / 更新 response 持久化记录
-   - 调用 provider
-   - 写入 usage
-   - 处理流式收尾
-5. `internal/service/provider` 负责：
-   - 内部统一 request/response/event 协议
-   - OpenAI / Anthropic 兼容请求转内部协议
-   - 内部协议转兼容响应 / SSE 事件
-   - provider-native 上游请求映射与解析
-   - provider registry capability / health / drain metadata
-6. `internal/repository` / `internal/repository/sqlstore` 负责数据库访问
-7. `projects` / `api_keys` / `usage_records` / `responses` 已开始 project-aware 归属建模
-
-### 目录分层
-
-- `cmd/gateway`：程序入口与装配
-- `internal/config`：配置结构
-- `internal/db`：数据库连接与 migration
-- `internal/middleware`：鉴权（Auth）、角色（RBAC）、请求守卫（模型白名单 + 配额 + 限流）
-- `internal/handler`：HTTP handler 和 admin API
-- `internal/service/responses`：responses 主业务编排
-- `internal/service/provider`：统一内部协议 + OpenAI / Anthropic 兼容转换 + provider adapter + provider registry metadata
-- `internal/service/router`：路由策略
-- `internal/service/limiter`：基础限流器
-- `internal/service/alert`：配额告警 webhook
-- `internal/repository`：领域接口
-- `internal/repository/sqlstore`：`database/sql` 实现
+---
 
 ## 快速开始
 
 ### Docker Compose 一键部署（推荐）
 
 ```bash
-# 1. 克隆仓库
 git clone https://github.com/io-wy/gateyes.git && cd gateyes
-
-# 2. 复制环境变量文件，填入你的 provider API key
 cp .env.example .env
-# 编辑 .env，至少填写 OPENAI_API_KEY 或 ANTHROPIC_API_KEY
-
-# 3. 启动所有服务（网关 + PostgreSQL + Redis + Prometheus + Grafana）
+# 编辑 .env，填写 OPENAI_API_KEY 或 ANTHROPIC_API_KEY
 docker compose up --build -d
-
-# 4. 确认服务就绪
 curl http://127.0.0.1:8083/health
 ```
 
-服务端口：
-
 | 服务 | 地址 |
-|------|------|
+|---|---|
 | Gateway | http://127.0.0.1:8083 |
 | Prometheus | http://127.0.0.1:9090 |
 | Grafana | http://127.0.0.1:3000 |
-| Redis | localhost:6379 |
 
 ### 手动部署
 
 ```bash
-# 1. 构建
 go build -o ./bin/gateway ./cmd/gateway
-
-# 2. 准备配置
 cp configs/config.example.yaml configs/config.yaml
-# 编辑 config.yaml，修改 server、database、providers 等配置
-
-# 3. 准备环境变量
-cp .env.example .env
-# 编辑 .env，填写 provider API key
-
-# 4. 启动
+# 编辑 configs/config.yaml
 ./bin/gateway -config configs/config.yaml
 ```
 
-### 首次使用流程
+### 发送第一个请求
 
 ```bash
-# 1. 健康检查
-curl http://127.0.0.1:8083/health
-
-# 2. 用 bootstrap admin 凭据创建一个租户
-curl -X POST http://127.0.0.1:8083/admin/tenants \
-  -H "Authorization: Bearer admin-key-001:admin-secret-001" \
+curl -X POST http://localhost:8083/v1/chat/completions \
+  -H "Authorization: Bearer test-key-001:test-secret" \
   -H "Content-Type: application/json" \
-  -d '{"slug": "my-team", "name": "My Team"}'
-
-# 3. 创建一个用户（会返回 api_key 和 api_secret）
-curl -X POST http://127.0.0.1:8083/admin/users \
-  -H "Authorization: Bearer admin-key-001:admin-secret-001" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "alice", "role": "tenant_user"}'
-
-# 4. 用返回的 api_key:api_secret 发送请求
-curl -X POST http://127.0.0.1:8083/v1/chat/completions \
-  -H "Authorization: Bearer <api_key>:<api_secret>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4o-mini",
-    "messages": [{"role": "user", "content": "hello"}]
-  }'
+  -d '{"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hello"}]}'
 ```
 
-详细部署文档见 [`docs/deployment.md`](./docs/deployment.md)。
+### 零成本体验全部功能
+
+使用内置 mock upstream，无需真实 API key：
+
+```bash
+# 1. 启动 mock 上游
+go run ./benchmark/cmd/mockupstream/main.go -port 19999
+
+# 2. 启动 gateway（使用 mock 配置）
+./bin/gateway -config configs/demo-mock.yaml
+
+# 3. 体验 Responses / Chat / Messages / Embeddings 全部接口
+curl -X POST http://localhost:8083/v1/responses \
+  -H "Authorization: Bearer demo-key-001:demo-secret-001" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "mock-model", "input": "hello"}'
+```
+
+---
+
+## 架构概览
+
+```
+HTTP Request
+    |
+    v
+[Gin Router]
+    |
+    +-- Auth Middleware  --------->  api_key -> user -> tenant -> role
+    +-- Guard Middleware  -------->  模型白名单 + 配额 + 预算 + 限流
+    |
+    v
+[Handler]
+    |
+    +-- OpenAI / Anthropic 兼容转换
+    |
+    v
+[Responses Service]
+    |
+    +-- 查询 tenant 可用 provider
+    +-- 健康/能力/权重过滤
+    +-- ruleEngine -> ranker -> strategy 排序
+    +-- 重试 / fallback
+    +-- response 持久化
+    +-- usage 记录 + 多级预算扣减
+    |
+    v
+[Provider Adapter]  ->  OpenAI / Anthropic / grpc-vllm
+```
+
+详细架构见 [`docs/runtime-mechanisms.md`](./docs/runtime-mechanisms.md)。
+
+---
+
+## API 文档
+
+完整 API 规范（含所有 endpoint、请求/响应 schema、认证方式）：
+
+- [`docs/openapi.json`](./docs/openapi.json) — OpenAPI 3.0 规范
+- 导入 Postman / Swagger UI / Stoplight 即可使用
+
+---
+
+## 文档导航
+
+| 文档 | 内容 |
+|---|---|
+| [`docs/deployment.md`](./docs/deployment.md) | 部署指南 |
+| [`docs/runtime-mechanisms.md`](./docs/runtime-mechanisms.md) | 鉴权、限流、路由、预算治理实现说明 |
+| [`docs/provider-protocol.md`](./docs/provider-protocol.md) | Provider 协议抽象、新增 adapter 指南 |
+| [`docs/monitoring.md`](./docs/monitoring.md) | Prometheus 指标、告警规则、Grafana dashboard |
+| [`docs/limiter.md`](./docs/limiter.md) | 令牌桶限流算法详解 |
+| [`docs/tech-highlights-report.md`](./docs/tech-highlights-report.md) | 技术亮点与 benchmark 实测数据 |
+| [`TESTING.md`](./TESTING.md) | Live provider 回归测试说明 |
+
+---
 
 ## 运行要求
 
 - Go 1.25+
-- PostgreSQL（推荐生产环境）或 SQLite（开发环境）
-- Redis（推荐，用于分布式限流；不部署时自动降级为内存模式）
+- PostgreSQL（推荐生产）或 SQLite（开发）
+- Redis（推荐，用于分布式限流；不部署时自动降级内存模式）
 
-### 构建
+---
 
-```bash
-go build -o ./bin/gateway ./cmd/gateway
-```
+## 与同类项目对比
 
-### 配置
+| 维度 | Gateyes | 典型网关 |
+|---|---|---|
+| 协议策略 | Provider-native（保留各平台特性） | 最小公分母（抹平差异） |
+| 内部主链路 | Responses API | Chat Completions |
+| 多租户 | 完整隔离 + RBAC | 通常无或弱隔离 |
+| 预算管控 | 四级预算 + 三种策略 | 通常仅 API Key 级别 |
+| 限流 | Redis Lua 多维度 token bucket | 通常简单 QPS 限流 |
+| 路由 | 5 种策略 + ruleEngine | 通常仅轮询/随机 |
+| 熔断 | 内置健康检查 + 三态熔断 | 通常无或简单超时 |
+| gRPC 上游 | 原生支持 vLLM gRPC | 通常仅 HTTP |
+| 可观测性 | 14 指标 + OTLP + 审计日志 | 通常基础指标 |
 
-编辑 [`configs/config.yaml`](./configs/config.yaml)。
+---
 
-如果你要直接接 self-hosted vLLM gRPC server，可参考：
+## License
 
-- [`configs/config_grpc.yaml`](./configs/config_grpc.yaml)
-- [`TESTING.md`](./TESTING.md) 里的 gRPC live probe 说明
-
-最小示例：
-
-```yaml
-server:
-  listenAddr: ":8080"
-
-metrics:
-  namespace: gateway
-  enabled: true
-
-database:
-  driver: sqlite
-  dsn: gateyes.db
-  autoMigrate: true
-
-redis:
-  addr: "localhost:6379"
-  password: ""
-  db: 0
-
-limiter:
-  globalQPS: 1000
-  globalTPM: 1000000
-  tenantTPM: 500000
-  providerTPM: 300000
-
-healthCheck:
-  enabled: true
-  intervalSeconds: 60
-  timeoutSeconds: 15
-
-router:
-  strategy: least_load
-  ranker:
-    enabled: false
-    method: ""
-  ruleEngine:
-    enabled: true
-    rules:
-      - name: long-context-to-vllm
-        match:
-          minPromptTokens: 8000
-        action:
-          providers:
-            - vllm-qwen72b
-
-providers:
-  - name: openai-primary
-    type: openai
-    baseURL: https://api.openai.com/v1
-    endpoint: chat
-    apiKey: ${OPENAI_API_KEY}
-    model: gpt-4o-mini
-    maxTokens: 4096
-    timeout: 60
-    enabled: true
-
-  - name: anthropic-primary
-    type: anthropic
-    baseURL: https://api.anthropic.com
-    apiKey: ${ANTHROPIC_API_KEY}
-    model: claude-3-5-sonnet-latest
-    maxTokens: 4096
-    timeout: 60
-    enabled: true
-
-  - name: longcat-primary
-    type: openai
-    baseURL: https://api.longcat.chat/openai
-    endpoint: chat
-    apiKey: ${LONGCAT_API_KEY}
-    model: LongCat-Flash-Chat
-    weight: 10
-    enabled: true
-
-apiKeys:
-  - key: test-key-001
-    secret: test-secret
-    quota: 1000000
-    qps: 100
-    models: []
-
-admin:
-  defaultTenant: default
-  bootstrapKey: admin-key-001
-  bootstrapSecret: admin-secret-001
-```
-
-**Provider `endpoint` 配置说明：**
-- `chat`：使用 `/v1/chat/completions` 端点（OpenAI 兼容）
-- `responses`：使用 `/responses` 端点（OpenAI 新版 Responses API）
-- 默认：`chat`
-
-**Provider profile 扩展字段：**
-- `vendor`：兼容厂商标识，例如 `minimax`、`vllm`
-- `headers`：追加或覆盖上游请求头
-- `extraBody`：合并到上游请求体，用于厂商特有字段
-
-**gRPC provider 扩展字段：**
-- `type: grpc`
-- `grpcTarget`：例如 `127.0.0.1:50051`
-- `grpcUseTLS`：是否启用 TLS
-- `grpcAuthority`：可选的 TLS authority / server name
-
-当前 `grpc-vllm` adapter 的能力边界：
-
-- 走 `/v1/responses` 主链路
-- 支持非流式文本输出
-- 支持流式文本输出
-- 支持 tokenizer archive 拉取与本地 decode
-- 当前不支持 request-level tools
-- 当前不支持 image input
-
-**Router 配置说明：**
-- `strategy`：最终候选排序/选择策略，当前支持 `round_robin` / `random` / `least_load` / `cost_based` / `sticky`
-- `ruleEngine.rules`：先按输入特征过滤候选 provider，first match wins
-- `ranker.method=ml_rank`：独立排序入口，当前仅预留 `TODO`
-
-数据库支持：
-
-- `sqlite`
-- `postgres`
-- `mysql`
-
-### 启动
-
-```bash
-./bin/gateway -config configs/config.yaml
-```
-
-### 监控
-
-默认会暴露 Prometheus 指标：
-
-```bash
-curl http://127.0.0.1:8080/metrics
-```
-
-当前主指标口径已经统一为：
-
-- `gateway_llm_requests_total{surface,result,provider}`
-- `gateway_llm_request_duration_seconds{surface,provider,result}`
-- `gateway_llm_upstream_duration_seconds{surface,provider,result}`
-- `gateway_llm_time_to_first_token_seconds{surface,provider}`
-- `gateway_llm_stream_duration_seconds{surface,provider,result}`
-- `gateway_llm_tokens_total{provider,token_type}`
-- `gateway_llm_errors_total{surface,provider,error_class}`
-- `gateway_llm_retries_total{provider}`
-- `gateway_llm_fallbacks_total{provider}`
-- `gateway_provider_requests_total{provider,result}`
-
-更完整的指标说明与基线资产见 [`docs/monitoring.md`](./docs/monitoring.md)。
-
-## 鉴权与角色
-
-运行时和管理端统一使用：
-
-```text
-Authorization: Bearer <api_key>:<api_secret>
-```
-
-固定角色：
-
-- `super_admin`：跨 tenant 管理，拥有 tenant 管理能力
-- `tenant_admin`：管理本 tenant 的用户、provider 绑定和统计
-- `tenant_user`：访问 `/v1/*`
-
-## API 示例
-
-### Responses 主接口
-
-```bash
-curl -X POST http://localhost:8080/v1/responses \
-  -H "Authorization: Bearer test-key-001:test-secret" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4o-mini",
-    "input": [
-      {"role": "user", "content": "hello"}
-    ]
-  }'
-```
-
-当前也兼容旧写法：
-
-```bash
-curl -X POST http://localhost:8080/v1/responses \
-  -H "Authorization: Bearer test-key-001:test-secret" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4o-mini",
-    "messages": [
-      {"role": "user", "content": "hello"}
-    ]
-  }'
-```
-
-### Chat Completions 兼容接口
-
-```bash
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer test-key-001:test-secret" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4o-mini",
-    "messages": [
-      {"role": "user", "content": "hello"}
-    ]
-  }'
-```
-
-### 读取已创建 response
-
-```bash
-curl http://localhost:8080/v1/responses/<response_id> \
-  -H "Authorization: Bearer test-key-001:test-secret"
-```
-
-### 创建 tenant
-
-```bash
-curl -X POST http://localhost:8080/admin/tenants \
-  -H "Authorization: Bearer admin-key-001:admin-secret-001" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "slug": "demo",
-    "name": "Demo Tenant"
-  }'
-```
-
-### 为 tenant 绑定 provider
-
-```bash
-curl -X POST http://localhost:8080/admin/tenants/demo/providers \
-  -H "Authorization: Bearer admin-key-001:admin-secret-001" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "providers": ["openai-primary", "anthropic-primary"]
-  }'
-```
-
-## 当前边界
-
-这版已经是可运行网关，但还不是完整平台。当前已知边界：
-
-- `Responses API` 仍是”收敛后的统一实现”，不是完整覆盖 OpenAI 全量 Responses 协议字段
-- `POST /v1/chat/completions` 保留为兼容接口，不再作为内部主链路
-- retry、fallback、circuit breaker 已接上基础实现，但 live upstream provider 兼容性仍建议按 provider 定期回归
-- cache 缓存已移除（provider 上游的 prefix caching / detailed token info 才是真正的缓存节省，gateway 层无法控制；保留 provider 返回的 cache_hit 字段监控即可）
-- 流式 usage 在依赖上游事件完整度时可以精确回填；上游不给完整信息时会回退到近似估算
-- metrics 已统一到 `surface/provider/result` 口径，且已补上 request-id / `traceparent` correlation、Prometheus rules 基线与 Grafana dashboard 基线；阈值仍需按部署环境调优
-- 没有内置 TLS，生产环境需前置 Nginx / Caddy 反向代理
-- 仓库目标回归口径仍是 `go test ./...`
-
-## 当前验证入口
-
-### 自动化测试
-
-- 目标回归口径：`go test ./...`
-- 在 dirty worktree 中不要默认沿用旧的“已全绿”判断
-
-### Live provider 回归入口
-
-仓库内已提供默认关闭的 live provider 回归入口，用于真实验证：
-
-- `/v1/responses` 非流 / 流式
-- 长 history
-- OpenAI-compatible provider 的 chat tool call / stream
-- Anthropic-compatible provider 的 messages tool call / stream
-- grpc-vllm provider 的 gateway `/v1/responses` 主链路
-- grpc-vllm provider 的 direct gRPC `Generate + GetTokenizer + decode + stream` 探针
-
-运行方式和环境变量见 [`TESTING.md`](./TESTING.md)。
-
-## 接下来适合做的事
-
-- 更完整的 OpenAI Responses 协议兼容层
-- 内置 TLS 支持
-- 更细粒度 RBAC / 审计日志
-- 更多 provider adapter（除 OpenAI / Anthropic 外继续扩展）
-- 上游 provider 返回的 cache_hit / cached_tokens 字段监控（真正的缓存节省来自 provider 侧）
-- 数据备份 / 恢复工具
-- 分布式追踪 span 完善
+MIT
