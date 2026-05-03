@@ -69,8 +69,9 @@ Gateyes 是一个用 Go 编写的高性能 LLM API Gateway，在应用与上游�
 | `round_robin` | 简单轮询 |
 | `least_load` | 基于实时并发数的最小负载 |
 | `cost_based` | 按配置价格优先低成本 provider |
-| `sticky` | 同 session 命中同一 provider |
+| `sticky` | 同 session 命中同一 provider（SessionAffinity） |
 | `ruleEngine` | 按 prompt 长度、工具调用等特征分流 |
+| `prefix_affinity` | 同 prompt 前缀命中同一 provider（提升 prefix-cache 命中率） |
 
 **熔断机制**：三态模型（healthy / degraded / unhealthy），定时探活 + 手动触发，状态变更自动持久化并告警。
 
@@ -236,7 +237,8 @@ HTTP Request
 | 多租户 | 完整隔离 + RBAC | 通常无或弱隔离 |
 | 预算管控 | 四级预算 + 三种策略 | 通常仅 API Key 级别 |
 | 限流 | Redis Lua 多维度 token bucket | 通常简单 QPS 限流 |
-| 路由 | 5 种策略 + ruleEngine | 通常仅轮询/随机 |
+| 路由 | 5 种策略 + ruleEngine + Affinity（session/prefix） | 通常仅轮询/随机 |
+| L1 缓存 | Redis + 内存 LRU，精确匹配 | 通常无 |
 | 熔断 | 内置健康检查 + 三态熔断 | 通常无或简单超时 |
 | gRPC 上游 | 原生支持 vLLM gRPC | 通常仅 HTTP |
 | 可观测性 | 14 指标 + OTLP + 审计日志 | 通常基础指标 |

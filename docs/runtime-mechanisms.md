@@ -9,7 +9,7 @@
 - 预算治理
 - 监控
 
-> **注意**：应用层缓存已在 2026-04-01 移除。provider 上游的 prefix caching / `prompt_tokens_details.cached_tokens` 才是真正的缓存节省，gateway 层无法控制。真正的缓存节省来自 provider 侧。
+> **注意**：L1 精确匹配缓存已于 2026-05-03 重新引入（`internal/service/cache`）。provider 上游的 prefix caching / `prompt_tokens_details.cached_tokens` 仍是更大幅度的缓存节省，但 gateway 层现在可以通过 Redis / 内存 LRU 避免重复上游调用。
 
 文档目标是帮助维护者理解"现在的代码实际上在做什么"。本文按当前实现编写，不代表未来目标设计，也不主动修正现有行为。
 
@@ -764,7 +764,7 @@ alertSvc.NotifyBudgetExhausted(BudgetExhausted{
 
 ### 当前选择流程
 
-当前主链路的路由现在是三段式：
+当前主链路的路由现在是四段式：
 
 1. `ListTenantProviders(identity.TenantID)`
 2. `ProviderMgr.FilterRoutableByNames(providerNames, req)` — 含健康/能力/权重过滤
@@ -778,12 +778,14 @@ alertSvc.NotifyBudgetExhausted(BudgetExhausted{
    - `hasImages`
    - `hasStructuredOutput`
 4. `router.OrderCandidates(...)` 依次执行：
-   - `ruleEngine`
-   - `ranker`
-   - `strategy`
+   - `ruleEngine`（分流过滤）
+   - `ranker`（重排序）
+   - `affinity`（软固定）
+   - `strategy`（最终选择）
 5. 主业务层自行按排序后的列表重试 / fallback
+6. 请求成功后调用 `router.PromoteAffinity(...)` 更新 affinity 状态
 
-因此，当前 router 仍然不负责业务重试，但它已经成为"候选集过滤 + 排序"的统一入口。
+因此，当前 router 仍然不负责业务重试，但它已经成为"候选集过滤 + 排序 + 亲和固定"的统一入口。
 
 ### 负载跟踪
 
@@ -796,7 +798,7 @@ alertSvc.NotifyBudgetExhausted(BudgetExhausted{
 
 这让 `least_load` 策略可以基于当前内存中的并发计数工作。
 
-### 路由三层
+### 路由四层
 
 #### 1. ruleEngine
 
@@ -830,7 +832,23 @@ alertSvc.NotifyBudgetExhausted(BudgetExhausted{
 
 也就是说，`ml_rank` 目前只是显式 `TODO`，没有真正引入 `LightGBM` / `BERT` 推断。
 
-#### 3. strategy
+#### 3. affinity
+
+`affinity` 是软固定层，位于 ranker 之后、strategy 之前。它不改变候选集大小，只把"偏好 provider"移到队首。
+
+支持的亲和类型：
+
+- **SessionAffinity**：按 `sessionID` 做加权一致哈希，同一 session 固定到同一 provider。配置 `router.affinity.sessionTTL` 控制记忆时长。
+- **PrefixAffinity**：按请求 prompt 的前 `prefixDepth` 个 rune 做哈希，同一前缀固定到同一 provider。用于提升后端 prefix-cache 命中率（如 vLLM）。配置 `router.affinity.prefixTTL` 和 `router.affinity.prefixDepth`。
+
+ affinity 层与 strategy 是解耦的：
+- affinity 先把偏好 provider pin 到队首
+- strategy 再对剩余候选做最终排序
+- 请求成功后，`PromoteAffinity()` 更新记忆状态
+
+旧版 `sticky` 策略已迁移为 SessionAffinity，保留配置兼容。
+
+#### 4. strategy
 
 `strategy` 是最终排序/选择策略。
 
@@ -892,30 +910,16 @@ ordered = sortBy(UnitCost asc)
 - 完全不看延迟
 - 只看配置中的价格字段
 
-#### 5. `sticky`
+#### 5. `sticky`（已迁移到 affinity 层）
 
-算法：
+`sticky` 策略的行为已迁移到 `SessionAffinity`，保留配置字符串仅用于向后兼容。
 
-1. 如果 `sessionID` 为空，回退到 `round_robin`
-2. 否则按字符做 31 进制累乘哈希
-3. `index = hash % len(candidates)`
-4. 以该位置作为排序起点轮转候选顺序
+当 `router.strategy="sticky"` 时，路由器自动启用 `SessionAffinity`，实际执行流程：
 
-即：
+1. affinity 层按 `sessionID` 做加权一致哈希，把命中 provider pin 到队首
+2. strategy 层直接返回 affinity 已排好的顺序
 
-```text
-hash = 0
-for ch in sessionID:
-    hash = hash*31 + int(ch)
-start = abs(hash % len(candidates))
-ordered = candidates[start:] + candidates[:start]
-```
-
-特点：
-
-- 同一 `sessionID` 在同一候选集下会倾向命中同一 provider
-- 没有一致性哈希环
-- 候选集变化时映射可能整体漂移
+旧算法（31 进制字符哈希 + 轮转）已由 `SessionAffinity.Pin` 中的 FNV-1a 加权一致哈希替代。
 - 如果 `sessionID` 为空，会回退到 round-robin 风格的轮转顺序
 
 ## 监控
