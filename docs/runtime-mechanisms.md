@@ -10,6 +10,8 @@
 - 监控
 
 > **注意**：L1 精确匹配缓存已于 2026-05-03 重新引入（`internal/service/cache`）。provider 上游的 prefix caching / `prompt_tokens_details.cached_tokens` 仍是更大幅度的缓存节省，但 gateway 层现在可以通过 Redis / 内存 LRU 避免重复上游调用。
+> 
+> 详见 [cache.md](./cache.md) 和 [affinity.md](./affinity.md)。
 
 文档目标是帮助维护者理解"现在的代码实际上在做什么"。本文按当前实现编写，不代表未来目标设计，也不主动修正现有行为。
 

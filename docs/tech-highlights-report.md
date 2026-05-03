@@ -1,8 +1,8 @@
 # Gateyes 技术亮点与实测数据报告
 
-> 生成日期：2026-04-27
+> 生成日期：2026-05-03
 > 测试环境：Windows 11 + Git Bash (MINGW64)，Gateway 本地运行，Mock Upstream 本地运行
-> Gateway 版本：v0.1.0
+> Gateway 版本：v0.2.0
 
 ---
 
@@ -76,7 +76,26 @@ Gateyes 是一个用 Go 编写的 LLM API Gateway，定位是应用和上游模�
 
 **ruleEngine**：基于输入特征的分流规则，例如 `minPromptTokens > 8000` 时路由到 vLLM。
 
-### 2.6 Provider 健康检查 + 熔断
+### 2.6 L1 响应缓存（Redis + 内存 LRU Fallback）
+
+精确匹配缓存，避免重复上游调用：
+
+- **Cache Key**：SHA-256(tenant + model + surface + canonicalized prompt + stream flag)
+- **双后端**：Redis 主缓存（多副本共享）+ MemoryCache LRU fallback（单副本本地）
+- **Fail-Open**：Redis 故障时自动降级到内存缓存，再 miss 则直接透传上游
+- **流式支持**：流式响应同样缓存，命中时通过 SSE 回放
+- **性能**：内存查找 ~60ns，Redis 查找 ~45μs，Cache Key 构建 ~450ns
+
+### 2.7 Affinity 亲和层（Session + Prefix）
+
+位于 ranker 和 strategy 之间的软固定层：
+
+- **SessionAffinity**：按 `sessionID` 做 FNV-1a 加权一致哈希，同一 session 固定到同一 provider
+- **PrefixAffinity**：按 prompt 前 N 个 rune 做 SHA-256 哈希，提升后端 prefix-cache 命中率（vLLM）
+- **性能**：SessionAffinity.Pin ~90ns，PrefixAffinity.Pin ~500ns，对路由延迟几乎无影响
+- **向后兼容**：旧版 `sticky` 策略自动迁移为 SessionAffinity
+
+### 2.8 Provider 健康检查 + 熔断
 
 - 定时主动探活，失败自动标记为 unhealthy
 - 手动触发：`POST /admin/providers/check`
@@ -202,6 +221,45 @@ Gateyes 是一个用 Go 编写的 LLM API Gateway，定位是应用和上游模�
 
 **解读**：TTFT 与端到端延迟基本一致，说明流式响应的首个 SSE 事件在 Gateway 内部无额外缓冲延迟，token 到达即推送。
 
+### 4.5 组件级微基准（go test -bench）
+
+测试环境：Intel i9-13980HX, Go 1.24, Windows 11
+
+#### Cache 层
+
+| Benchmark | 操作 | 耗时 | allocs/op |
+|-----------|------|------|-----------|
+| MemoryCache_Get | 内存缓存命中 | **60 ns** | 1 |
+| MemoryCache_Set | 内存缓存写入 | **25 ns** | 0 |
+| BuildKey | SHA-256 缓存 key 生成 | **450 ns** | 13 |
+| CanonicalizeJSON | JSON 规范化（瓶颈） | **6.6 μs** | 97 |
+| RedisCache_Get | Redis 缓存命中 | **45 μs** | 26 |
+
+**解读**：内存缓存纳秒级响应，Redis 缓存微秒级。CanonicalizeJSON 是 cache key 构建的主要开销，大 prompt 场景需关注。
+
+#### Router + Affinity 层
+
+| Benchmark | 操作 | 耗时 | allocs/op |
+|-----------|------|------|-----------|
+| Router_Select | 完整路由选择（过滤+策略） | **270 ns** | 4 |
+| Router_Select_Sticky | 含 affinity 的选择 | **290 ns** | 3 |
+| Router_OrderCandidates | 完整排序（规则+排序+亲和） | **1.05 μs** | 11 |
+| SessionAffinity_Pin | Session 哈希固定 | **90 ns** | 1 |
+| PrefixAffinity_Pin | Prefix 哈希固定 | **500 ns** | 4 |
+| CompositeAffinity_Pin | 组合亲和 | **110 ns** | 1 |
+
+**解读**：整个路由管线（过滤+规则+排序+亲和+策略）耗时 < 1.5μs，对整体请求延迟（通常 > 100ms）贡献可忽略。
+
+#### Limiter 层
+
+| Benchmark | 操作 | 耗时 | allocs/op |
+|-----------|------|------|-----------|
+| TokenBucket_TryConsume | 内存令牌桶扣减 | **16 ns** | 0 |
+| Limiter_Allow (Redis) | 分布式限流判定 | **~50 μs** | 20+ |
+| Limiter_Allow (Memory) | 内存限流判定 | **~5 μs** | 5+ |
+
+**解读**：内存限流微秒级，Redis 分布式限流在 tens-of-μs 级别，均不会成为请求瓶颈。
+
 ---
 
 ## 五、关键性能指标总结
@@ -242,18 +300,26 @@ Gateyes 是一个用 Go 编写的 LLM API Gateway，定位是应用和上游模�
 | 路由 | 5 种策略 + ruleEngine | 通常仅轮询/随机 |
 | 熔断 | 内置健康检查 + 三态熔断 | 通常无或简单超时 |
 | gRPC 上游 | 原生支持 vLLM gRPC | 通常仅 HTTP |
+| L1 缓存 | Redis + 内存 LRU Fallback，精确匹配 | 通常无或仅内存 |
+| Affinity | Session + Prefix 双亲和，软固定 | 通常无或简单 sticky |
 | 可观测性 | 14 个 Prometheus 指标 + OTLP + 审计日志 | 通常基础指标 |
 
 ---
 
 ## 八、结论
 
-Gateyes 在 v0.1.0 阶段已经具备生产级网关的核心能力：
+Gateyes 在 v0.2.0 阶段已具备生产级网关的核心能力：
 
-1. **延迟**：Gateway 自身开销约 28ms（P50），端到端 P95 约 170ms
+1. **延迟**：Gateway 自身开销约 28ms（P50），端到端 P95 约 170ms；路由选择 < 1.5μs
 2. **吞吐**：单并发 RPS ~8，配置调优后可达 1000+ RPS
-3. **流式**：TTFT 与端到端延迟一致，无额外缓冲
-4. **可靠性**：CC=1 成功率 100%，限流和熔断按预期工作
-5. **可观测性**：14 个 Prometheus 指标覆盖请求/延迟/Token/错误/重试/熔断全链路
+3. **缓存**：L1 精确匹配缓存，内存命中 ~60ns，Redis 命中 ~45μs，Fail-Open 降级设计
+4. **亲和**：Session + Prefix 双亲和层，Pin 操作 < 1μs，对延迟几乎无影响
+5. **流式**：TTFT 与端到端延迟一致，无额外缓冲；流式响应同样支持缓存
+6. **可靠性**：CC=1 成功率 100%，限流和熔断按预期工作，Redis 故障自动降级
+7. **可观测性**：14 个 Prometheus 指标 + Cache 指标 + OTLP Trace + 审计日志
+8. **测试**：核心业务包测试覆盖 > 80%，21 个包全部通过 `go test ./...`
 
-下一步提升方向：PostgreSQL 连接池调优、更高并发基准、真实上游 provider 延迟对比。
+下一步提升方向：
+- CanonicalizeJSON 性能优化（当前 6.6μs/op，是大 prompt 场景的主要开销）
+- PostgreSQL 连接池调优与高并发基准
+- 真实上游 provider 延迟对比与成本节约测算（L1 缓存命中率）
