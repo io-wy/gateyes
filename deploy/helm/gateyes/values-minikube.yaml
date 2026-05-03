@@ -1,0 +1,207 @@
+# Minikube 本地部署专用配置
+# 适用场景：本地验证 Helm chart、接口调通、功能测试
+# 特点：单副本、SQLite、低资源、本地镜像、Ingress 启用、5 个真实 Provider Key
+
+replicaCount: 1
+
+image:
+  repository: gateyes
+  tag: dev
+  pullPolicy: Never
+
+serviceAccount:
+  create: true
+  annotations: {}
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "16m"
+  hosts:
+    - host: gateyes.local
+      paths:
+        - path: /
+          pathType: Prefix
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi
+
+persistence:
+  enabled: false
+
+autoscaling:
+  enabled: false
+
+podDisruptionBudget:
+  enabled: false
+
+networkPolicy:
+  enabled: false
+
+probes:
+  startup:
+    enabled: true
+    path: /health
+    failureThreshold: 30
+    periodSeconds: 10
+  readiness:
+    path: /ready
+    initialDelaySeconds: 5
+    periodSeconds: 5
+  liveness:
+    path: /health
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    failureThreshold: 3
+
+# 本地测试直接内联 secrets，无需外部 Secret 管理
+# 生产环境请勿将此模式用于真实密钥
+# Keys 来源：benchmark/runtime/1.env ~ 5.env
+secrets:
+  create: true
+  data:
+    # --- Provider Keys (from benchmark/runtime/*.env) ---
+    LONGCAT_OPENAI_KEY_1: "ak_1so2TW4PC7As4oJ1Qy73C08t1hc2Q"
+    BIGMODEL_API_KEY: "c2bdf4be95b84bf08c4d0b7c0916b7c6.HmIdFQAaHyRAEWqs"
+    LONGCAT_ANTHROPIC_KEY: "ak_1so2TW4PC7As4oJ1Qy73C08t1hc2Q"
+    LONGCAT_OPENAI_KEY_4: "ak_1MN2gJ1Vg41n0G68kg8gt6ne1KE7Y"
+    DEEPSEEK_API_KEY: "sk-1dc5bcc0be5c426f8e12d0fb596a0e8d"
+    # --- Bootstrap Keys ---
+    GATEYES_BOOTSTRAP_TEST_KEY: test-key-001
+    GATEYES_BOOTSTRAP_TEST_SECRET: test-secret
+    GATEYES_ADMIN_BOOTSTRAP_KEY: admin-key-001
+    GATEYES_ADMIN_BOOTSTRAP_SECRET: admin-secret-001
+
+appConfig: |
+  server:
+    listenAddr: ":8083"
+    readTimeout: 30
+    writeTimeout: 300
+    idleTimeout: 120
+    shutdownTimeout: 10
+
+  database:
+    driver: sqlite
+    dsn: /app/data/gateyes.db
+    autoMigrate: true
+    maxOpenConns: 5
+    maxIdleConns: 2
+    connMaxLifetimeSeconds: 300
+
+  metrics:
+    namespace: gateway
+    enabled: true
+
+  tracing:
+    enabled: true
+    exporter: stdout
+
+  router:
+    strategy: round_robin
+
+  limiter:
+    globalQPS: 300
+    globalTPM: 300000
+    globalTokenBurst: 30000
+    perUserRequestBurst: 50
+    queueSize: 300
+
+  alert:
+    enabled: true
+    quotaThreshold: 0.8
+    webhookURL: ""
+    webhookSecret: ""
+    dedupWindowSeconds: 300
+
+  retry:
+    maxRetries: 1
+    initialDelayMs: 100
+    maxDelayMs: 1000
+    backoffFactor: 2
+
+  circuitBreaker:
+    failureThreshold: 3
+    recoveryTimeout: 30
+    halfOpenMaxRequests: 1
+
+  # 5 个 Provider，对应 benchmark/runtime/1.env ~ 5.env
+  providers:
+    - name: longcat-openai-1
+      type: openai
+      baseURL: https://api.longcat.chat/openai
+      endpoint: responses
+      apiKey: ${LONGCAT_OPENAI_KEY_1}
+      model: LongCat-Flash-Chat
+      maxTokens: 8192
+      timeout: 60
+      enabled: true
+
+    - name: bigmodel-anthropic
+      type: anthropic
+      baseURL: https://open.bigmodel.cn/api/anthropic
+      endpoint: chat
+      apiKey: ${BIGMODEL_API_KEY}
+      model: glm-5.1
+      maxTokens: 8192
+      timeout: 60
+      enabled: true
+
+    - name: longcat-anthropic
+      type: anthropic
+      baseURL: https://api.longcat.chat/anthropic
+      endpoint: chat
+      apiKey: ${LONGCAT_ANTHROPIC_KEY}
+      model: LongCat-Flash-Chat
+      maxTokens: 8192
+      timeout: 60
+      enabled: true
+
+    - name: longcat-openai-4
+      type: openai
+      baseURL: https://api.longcat.chat/openai
+      endpoint: responses
+      apiKey: ${LONGCAT_OPENAI_KEY_4}
+      model: LongCat-Flash-Chat
+      maxTokens: 8192
+      timeout: 60
+      enabled: true
+
+    - name: deepseek-anthropic
+      type: anthropic
+      baseURL: https://api.deepseek.com/anthropic
+      endpoint: chat
+      apiKey: ${DEEPSEEK_API_KEY}
+      model: DeepSeek-V4-Flash
+      maxTokens: 8192
+      timeout: 60
+      enabled: true
+
+  apiKeys:
+    - key: ${GATEYES_BOOTSTRAP_TEST_KEY}
+      secret: ${GATEYES_BOOTSTRAP_TEST_SECRET}
+      quota: 200000
+      qps: 200
+      models: []
+
+  admin:
+    defaultTenant: default
+    bootstrapKey: ${GATEYES_ADMIN_BOOTSTRAP_KEY}
+    bootstrapSecret: ${GATEYES_ADMIN_BOOTSTRAP_SECRET}
+
+monitoring:
+  serviceMonitor:
+    enabled: false
+  prometheusRule:
+    enabled: false
+  grafanaDashboard:
+    enabled: false
+  otelCollector:
+    enabled: false
+    endpoint: ""
+    insecure: true

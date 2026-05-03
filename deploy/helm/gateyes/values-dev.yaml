@@ -3,6 +3,10 @@ replicaCount: 1
 image:
   tag: dev
 
+serviceAccount:
+  create: true
+  annotations: {}
+
 ingress:
   enabled: false
 
@@ -17,6 +21,31 @@ resources:
 persistence:
   enabled: true
   size: 2Gi
+
+autoscaling:
+  enabled: false
+
+podDisruptionBudget:
+  enabled: false
+
+networkPolicy:
+  enabled: false
+
+probes:
+  startup:
+    enabled: true
+    path: /health
+    failureThreshold: 30
+    periodSeconds: 10
+  readiness:
+    path: /ready
+    initialDelaySeconds: 5
+    periodSeconds: 5
+  liveness:
+    path: /health
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    failureThreshold: 3
 
 appConfig: |
   server:
@@ -81,3 +110,15 @@ appConfig: |
     defaultTenant: default
     bootstrapKey: ${GATEYES_ADMIN_BOOTSTRAP_KEY}
     bootstrapSecret: ${GATEYES_ADMIN_BOOTSTRAP_SECRET}
+
+monitoring:
+  serviceMonitor:
+    enabled: false
+  prometheusRule:
+    enabled: false
+  grafanaDashboard:
+    enabled: false
+  otelCollector:
+    enabled: false
+    endpoint: ""
+    insecure: true

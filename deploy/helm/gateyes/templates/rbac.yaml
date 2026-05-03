@@ -1,0 +1,26 @@
+{{- if .Values.serviceAccount.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "gateyes.fullname" . }}
+  labels:
+    {{- include "gateyes.labels" . | nindent 4 }}
+rules: []
+  # Gateyes 当前不访问 K8s API，保留空权限列表以通过审计。
+  # 后续 Operator 阶段会根据 CRD 需求扩展此处权限。
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "gateyes.fullname" . }}
+  labels:
+    {{- include "gateyes.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "gateyes.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gateyes.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

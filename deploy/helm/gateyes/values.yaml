@@ -28,7 +28,17 @@ resources:
     cpu: 500m
     memory: 512Mi
 
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
 probes:
+  startup:
+    enabled: true
+    path: /health
+    failureThreshold: 30
+    periodSeconds: 10
   readiness:
     path: /ready
     initialDelaySeconds: 10
@@ -37,6 +47,30 @@ probes:
     path: /health
     initialDelaySeconds: 15
     periodSeconds: 15
+    failureThreshold: 3
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+  behavior: {}
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  # maxUnavailable: 1
+
+networkPolicy:
+  enabled: false
+  ingress:
+    fromNamespaces: []
+    fromPodSelectors: []
+  egress:
+    enabled: true
+    allowDNS: true
+    allowInternet: true
 
 persistence:
   enabled: true
@@ -158,7 +192,28 @@ appConfig: |
     bootstrapSecret: ${GATEYES_ADMIN_BOOTSTRAP_SECRET}
 
 migrationJob:
-  enabled: true
+  enabled: false
 
 rolloutStrategy:
   type: RollingUpdate
+
+monitoring:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    additionalLabels: {}
+  prometheusRule:
+    enabled: false
+    additionalLabels: {}
+    groups: []
+  grafanaDashboard:
+    enabled: false
+    folder: ""
+  otelCollector:
+    # Gateyes 不内嵌 OTel Collector deployment。
+    # 生产环境通过独立 OpenTelemetry Collector Helm chart 部署。
+    # 此处仅配置 gateyes 的 OTLP exporter endpoint。
+    enabled: false
+    endpoint: ""
+    insecure: true

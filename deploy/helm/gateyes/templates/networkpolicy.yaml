@@ -1,0 +1,53 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "gateyes.fullname" . }}
+  labels:
+    {{- include "gateyes.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "gateyes.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # 允许同 namespace 内 Pod 互访
+    - from:
+        - podSelector: {}
+    # 允许来自 ingress-controller 的流量
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+    {{- range .Values.networkPolicy.ingress.fromNamespaces }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: {{ . }}
+    {{- end }}
+    {{- range .Values.networkPolicy.ingress.fromPodSelectors }}
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+    {{- end }}
+  egress:
+    {{- if .Values.networkPolicy.egress.allowDNS }}
+    # 允许 DNS 查询
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    {{- end }}
+    {{- if .Values.networkPolicy.egress.allowInternet }}
+    # 允许访问外部 provider API、Redis、PostgreSQL
+    - to: []
+    {{- end }}
+{{- end }}

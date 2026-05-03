@@ -1,0 +1,17 @@
+{{- if .Values.monitoring.grafanaDashboard.enabled }}
+{{- $dashboardJson := .Files.Get "files/grafana-dashboard.json" -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "gateyes.fullname" . }}-dashboard
+  labels:
+    {{- include "gateyes.labels" . | nindent 4 }}
+    grafana_dashboard: "1"
+  {{- with .Values.monitoring.grafanaDashboard.folder }}
+  annotations:
+    grafana_folder: {{ . | quote }}
+  {{- end }}
+data:
+  gateyes.json: |
+{{- $dashboardJson | nindent 4 }}
+{{- end }}

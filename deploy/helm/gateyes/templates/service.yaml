@@ -2,12 +2,14 @@ apiVersion: v1
 kind: Service
 metadata:
   name: {{ include "gateyes.fullname" . }}
+  labels:
+    {{- include "gateyes.labels" . | nindent 4 }}
 spec:
   type: {{ .Values.service.type }}
   selector:
-    app.kubernetes.io/name: {{ include "gateyes.name" . }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    {{- include "gateyes.selectorLabels" . | nindent 4 }}
   ports:
     - name: http
       port: {{ .Values.service.port }}
       targetPort: http
+      protocol: TCP

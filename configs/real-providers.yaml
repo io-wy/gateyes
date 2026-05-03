@@ -1,0 +1,161 @@
+# Gateyes 真实上游配置
+server:
+  listenAddr: ":8028"
+  readTimeout: 30
+  writeTimeout: 300
+  idleTimeout: 120
+  shutdownTimeout: 10
+
+database:
+  driver: postgres
+  dsn: "host=localhost port=5432 user=gateyes password=gateyes_pw dbname=gateyes sslmode=disable"
+  autoMigrate: true
+  maxOpenConns: 10
+  maxIdleConns: 5
+  connMaxLifetimeSeconds: 300
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+
+metrics:
+  namespace: gateway
+  enabled: true
+
+router:
+  strategy: least_load
+  ranker:
+    enabled: false
+    method: none
+  ruleEngine:
+    enabled: false
+
+limiter:
+  globalQPS: 1000
+  globalTPM: 1000000
+  globalTokenBurst: 100000
+  perUserRequestBurst: 100
+  tenantTPM: 500000
+  tenantTPMBurst: 50000
+  tenantRPM: 1000
+  tenantRPMBurst: 100
+  providerTPM: 300000
+  providerTPMBurst: 30000
+  providerRPM: 600
+  providerRPMBurst: 60
+  modelTPM: 200000
+  modelTPMBurst: 20000
+  modelRPM: 400
+  modelRPMBurst: 40
+  queueSize: 1000
+
+alert:
+  enabled: true
+  quotaThreshold: 0.8
+  webhookURL: ""
+  webhookSecret: ""
+  providerStateURL: ""
+  budgetExhaustedURL: ""
+  requestEventURL: ""
+  errorEventURL: ""
+
+healthCheck:
+  enabled: true
+  intervalSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 2
+
+retry:
+  maxRetries: 2
+  initialDelayMs: 100
+  maxDelayMs: 5000
+  backoffFactor: 2.0
+
+circuitBreaker:
+  failureThreshold: 5
+  recoveryTimeout: 60
+  halfOpenMaxRequests: 1
+
+providers:
+  - name: longcat-openai
+    type: openai
+    vendor: openai
+    endpoint: chat
+    baseURL: https://api.longcat.chat/openai
+    apiKey: ak_1so2TW4PC7As4oJ1Qy73C08t1hc2Q
+    model: LongCat-Flash-Chat
+    weight: 10
+    priceInput: 0.000005
+    priceOutput: 0.000015
+    maxTokens: 16384
+    timeout: 60
+    enabled: true
+
+  - name: longcat-anthropic
+    type: anthropic
+    vendor: anthropic
+    endpoint: chat
+    baseURL: https://api.longcat.chat/anthropic
+    apiKey: ak_1so2TW4PC7As4oJ1Qy73C08t1hc2Q
+    model: LongCat-Flash-Chat
+    weight: 8
+    priceInput: 0.000003
+    priceOutput: 0.000015
+    maxTokens: 200000
+    timeout: 120
+    enabled: true
+
+  - name: bigmodel-anthropic
+    type: anthropic
+    vendor: anthropic
+    endpoint: chat
+    baseURL: https://open.bigmodel.cn/api/anthropic
+    apiKey: c2bdf4be95b84bf08c4d0b7c0916b7c6.HmIdFQAaHyRAEWqs
+    model: glm-5.1
+    weight: 5
+    priceInput: 0.000002
+    priceOutput: 0.000008
+    maxTokens: 128000
+    timeout: 60
+    enabled: true
+
+  - name: longcat-openai-alt
+    type: openai
+    vendor: openai
+    endpoint: chat
+    baseURL: https://api.longcat.chat/openai
+    apiKey: ak_2qi8sY0Wr9JJ2vl0Cq7gL2yk2Sa6T
+    model: LongCat-Flash-Chat
+    weight: 5
+    priceInput: 0.000005
+    priceOutput: 0.000015
+    maxTokens: 16384
+    timeout: 60
+    enabled: true
+
+  - name: deepseek-anthropic
+    type: anthropic
+    vendor: anthropic
+    endpoint: chat
+    baseURL: https://api.deepseek.com/anthropic
+    apiKey: sk-1dc5bcc0be5c426f8e12d0fb596a0e8d
+    model: DeepSeek-V4-Flash
+    weight: 3
+    priceInput: 0.000001
+    priceOutput: 0.000005
+    maxTokens: 8192
+    timeout: 60
+    enabled: true
+
+apiKeys:
+  - key: demo-key-001
+    secret: demo-secret-001
+    quota: 1000000
+    qps: 1000
+    models: []
+
+admin:
+  defaultTenant: default
+  bootstrapKey: admin-key-001
+  bootstrapSecret: admin-secret-001

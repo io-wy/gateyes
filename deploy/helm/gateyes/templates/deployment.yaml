@@ -2,20 +2,46 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "gateyes.fullname" . }}
+  labels:
+    {{- include "gateyes.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ include "gateyes.name" . }}
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      {{- include "gateyes.selectorLabels" . | nindent 6 }}
   strategy:
     type: {{ .Values.rolloutStrategy.type }}
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: {{ include "gateyes.name" . }}
-        app.kubernetes.io/instance: {{ .Release.Name }}
+        {{- include "gateyes.selectorLabels" . | nindent 8 }}
     spec:
+      serviceAccountName: {{ include "gateyes.serviceAccountName" . }}
+      initContainers:
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /app/gateway-migrate
+          args:
+            - -config
+            - /app/configs/config.yaml
+            - -action
+            - up
+          env:
+{{- range $key, $value := .Values.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+{{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ include "gateyes.secretName" . }}
+          volumeMounts:
+            - name: config
+              mountPath: /app/configs/config.yaml
+              subPath: config.yaml
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
       containers:
         - name: gateway
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -40,22 +66,29 @@ spec:
               port: http
             initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+{{- if .Values.probes.startup.enabled }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.probes.startup.path }}
+              port: http
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+{{- end }}
           livenessProbe:
             httpGet:
               path: {{ .Values.probes.liveness.path }}
               port: http
             initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
           resources:
 {{ toYaml .Values.resources | indent 12 }}
           volumeMounts:
             - name: config
               mountPath: /app/configs/config.yaml
               subPath: config.yaml
-{{- if .Values.persistence.enabled }}
             - name: data
               mountPath: {{ .Values.persistence.mountPath }}
-{{- end }}
       volumes:
         - name: config
           configMap:
@@ -64,4 +97,7 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: {{ include "gateyes.fullname" . }}-data
+{{- else }}
+        - name: data
+          emptyDir: {}
 {{- end }}
