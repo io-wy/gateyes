@@ -4,6 +4,7 @@ import (
 	"math/rand"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/gateyes/gateway/internal/config"
 	"github.com/gateyes/gateway/internal/service/provider"
@@ -16,14 +17,43 @@ type Router struct {
 	index     int
 	rrWeights map[string]int
 	mu        sync.Mutex
+	affinity  Affinity
 }
 
 func NewRouter(cfg config.RouterConfig, stats *provider.Stats) *Router {
-	return &Router{
+	r := &Router{
 		cfg:       cfg,
 		stats:     stats,
 		rrWeights: make(map[string]int),
+		affinity:  NoopAffinity,
 	}
+	r.initAffinity()
+	return r
+}
+
+func (r *Router) initAffinity() {
+	if !r.cfg.Affinity.Enabled && r.cfg.Strategy != "sticky" {
+		return
+	}
+	var chain []Affinity
+	if r.cfg.Strategy == "sticky" || r.cfg.Affinity.Enabled {
+		// Backward compat: legacy "sticky" strategy auto-enables session affinity.
+		ttl := time.Duration(r.cfg.Affinity.SessionTTL) * time.Second
+		chain = append(chain, NewSessionAffinity(ttl))
+	}
+	if r.cfg.Affinity.Enabled && r.cfg.Affinity.PrefixDepth >= 0 {
+		ttl := time.Duration(r.cfg.Affinity.PrefixTTL) * time.Second
+		chain = append(chain, NewPrefixAffinity(r.cfg.Affinity.PrefixDepth, ttl))
+	}
+	if len(chain) > 0 {
+		r.affinity = NewCompositeAffinity(chain...)
+	}
+}
+
+func (r *Router) SetAffinity(a Affinity) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.affinity = a
 }
 
 func (r *Router) SetProviders(providers []provider.Provider) {
@@ -87,6 +117,7 @@ func (r *Router) OrderCandidates(candidates []provider.Provider, ctx RouteContex
 
 	ordered = r.applyRuleEngineLocked(ordered, ctx)
 	ordered = r.applyRankerLocked(ordered, ctx)
+	ordered = r.applyAffinityLocked(ordered, ctx)
 	ordered = r.orderByStrategyLocked(ordered, ctx.SessionID)
 	if len(ordered) == 0 {
 		return nil
@@ -101,6 +132,7 @@ func (r *Router) ExplainOrderCandidates(candidates []provider.Provider, ctx Rout
 	trace := OrderTrace{
 		Initial:  providerNameList(candidates),
 		Ranker:   r.cfg.Ranker.Method,
+		Affinity: r.affinityName(),
 		Strategy: r.cfg.Strategy,
 	}
 	if len(candidates) == 0 {
@@ -114,6 +146,8 @@ func (r *Router) ExplainOrderCandidates(candidates []provider.Provider, ctx Rout
 	trace.AfterRule = providerNameList(ordered)
 	ordered = r.applyRankerLocked(ordered, ctx)
 	trace.AfterRanker = providerNameList(ordered)
+	ordered = r.applyAffinityLocked(ordered, ctx)
+	trace.AfterAffinity = providerNameList(ordered)
 	ordered = r.orderByStrategyLocked(ordered, ctx.SessionID)
 	trace.Ordered = providerNameList(ordered)
 	if len(ordered) == 0 {
@@ -168,51 +202,10 @@ func (r *Router) orderByStrategyLocked(candidates []provider.Provider, sessionID
 		})
 		return ordered
 	case "sticky":
-		if sessionID == "" {
-			return r.weightedRoundRobin(ordered)
-		}
-		totalWeight := 0
-		for _, p := range ordered {
-			w := p.Weight()
-			if w <= 0 {
-				w = 1
-			}
-			totalWeight += w
-		}
-		if totalWeight > 0 {
-			hash := 0
-			for _, ch := range sessionID {
-				hash = hash*31 + int(ch)
-			}
-			pick := hash % totalWeight
-			if pick < 0 {
-				pick = -pick
-			}
-			cum := 0
-			for i, p := range ordered {
-				w := p.Weight()
-				if w <= 0 {
-					w = 1
-				}
-				cum += w
-				if pick < cum {
-					result := append([]provider.Provider{p}, ordered[:i]...)
-					result = append(result, ordered[i+1:]...)
-					return result
-				}
-			}
-		}
-		hash := 0
-		for _, ch := range sessionID {
-			hash = hash*31 + int(ch)
-		}
-		start := hash % len(ordered)
-		if start < 0 {
-			start = -start
-		}
-		result := append([]provider.Provider(nil), ordered[start:]...)
-		result = append(result, ordered[:start]...)
-		return result
+		// sticky has been migrated to the Affinity layer (SessionAffinity).
+		// Keeping this case for config backward compatibility; the actual
+		// pinning happens in applyAffinityLocked before strategy runs.
+		return ordered
 	case "random":
 		totalWeight := 0
 		for _, p := range ordered {
@@ -283,6 +276,36 @@ func (r *Router) weightedRoundRobin(candidates []provider.Provider) []provider.P
 	result := append([]provider.Provider{selected}, candidates[:maxIdx]...)
 	result = append(result, candidates[maxIdx+1:]...)
 	return result
+}
+
+func (r *Router) applyAffinityLocked(candidates []provider.Provider, ctx RouteContext) []provider.Provider {
+	if r.affinity == nil || len(candidates) <= 1 {
+		return candidates
+	}
+	return r.affinity.Pin(candidates, ctx)
+}
+
+func (r *Router) affinityName() string {
+	switch r.affinity.(type) {
+	case *CompositeAffinity:
+		return "composite"
+	case *SessionAffinity:
+		return "session"
+	case *PrefixAffinity:
+		return "prefix"
+	case noopAffinity:
+		return "none"
+	default:
+		return "custom"
+	}
+}
+
+func (r *Router) PromoteAffinity(ctx RouteContext, providerName string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.affinity != nil {
+		r.affinity.Promote(ctx, providerName)
+	}
 }
 
 func (r *Router) Strategy() string {
