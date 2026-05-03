@@ -40,6 +40,20 @@ router:
           hasImages: true
         action:
           providers: [openai-primary]
+  affinity:
+    enabled: false
+    sessionHeader: X-Session-ID
+    sessionTTL: 3600
+    prefixTTL: 300
+    prefixDepth: 128
+
+cache:
+  enabled: false
+  backend: auto                 # auto = redis if available, else memory
+  defaultTTL: 0                 # seconds; 0 = no expiry (production should set 300–600)
+  capacity: 0                   # memory cache max entries; <1 = default 1024
+  skipStream: false
+  skipTools: true
 
 limiter:
   globalQPS: 1000
