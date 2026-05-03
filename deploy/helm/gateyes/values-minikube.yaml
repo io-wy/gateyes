@@ -62,16 +62,16 @@ probes:
 
 # 本地测试直接内联 secrets，无需外部 Secret 管理
 # 生产环境请勿将此模式用于真实密钥
-# Keys 来源：benchmark/runtime/1.env ~ 5.env
+# 使用前请将以下占位符替换为实际 key，或改用外部 Secret 引用
 secrets:
   create: true
   data:
-    # --- Provider Keys (from benchmark/runtime/*.env) ---
-    LONGCAT_OPENAI_KEY_1: "ak_1so2TW4PC7As4oJ1Qy73C08t1hc2Q"
-    BIGMODEL_API_KEY: "c2bdf4be95b84bf08c4d0b7c0916b7c6.HmIdFQAaHyRAEWqs"
-    LONGCAT_ANTHROPIC_KEY: "ak_1so2TW4PC7As4oJ1Qy73C08t1hc2Q"
-    LONGCAT_OPENAI_KEY_4: "ak_1MN2gJ1Vg41n0G68kg8gt6ne1KE7Y"
-    DEEPSEEK_API_KEY: "sk-1dc5bcc0be5c426f8e12d0fb596a0e8d"
+    # --- Provider Keys (替换为真实 key 或引用现有 Secret) ---
+    LONGCAT_OPENAI_KEY_1: "<REPLACE_WITH_REAL_KEY>"
+    BIGMODEL_API_KEY: "<REPLACE_WITH_REAL_KEY>"
+    LONGCAT_ANTHROPIC_KEY: "<REPLACE_WITH_REAL_KEY>"
+    LONGCAT_OPENAI_KEY_4: "<REPLACE_WITH_REAL_KEY>"
+    DEEPSEEK_API_KEY: "<REPLACE_WITH_REAL_KEY>"
     # --- Bootstrap Keys ---
     GATEYES_BOOTSTRAP_TEST_KEY: test-key-001
     GATEYES_BOOTSTRAP_TEST_SECRET: test-secret
