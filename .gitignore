@@ -39,3 +39,11 @@ benchmark/runtime/*.exe~
 benchmark/runtime/*.log
 benchmark/runtime/*.pid
 benchmark/runtime/*.db
+
+# 测试覆盖率临时文件
+coverage.out
+handler-coverage.out
+
+# 编译产物（根目录）
+gateyes
+gateyes~
