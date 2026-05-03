@@ -94,3 +94,67 @@ func TestCircuitBreaker_DifferentProviders(t *testing.T) {
 		t.Error("expected provider-2 to be available")
 	}
 }
+
+func TestTryAcquireHalfOpenRequestAllowsWhenNotHalfOpen(t *testing.T) {
+	cb := NewCircuitBreaker(config.CircuitBreakerConfig{})
+	if !cb.TryAcquireHalfOpenRequest("t1", "p1") {
+		t.Fatal("expected true when state not half-open")
+	}
+}
+
+func TestTryAcquireHalfOpenRequestLimitsConcurrency(t *testing.T) {
+	cb := NewCircuitBreaker(config.CircuitBreakerConfig{FailureThreshold: 1, RecoveryTimeout: 1, HalfOpenMaxRequests: 2})
+	cb.RecordFailure("t1", "p1")
+	// Simulate half-open by manipulating state directly through IsAvailable timing
+	// Instead, use RecordFailure + direct state access via IsAvailable transition
+	// Force half-open by checking availability after timeout would have passed
+	// Since we can't wait, we test the limit by creating a state manually
+	cb.mu.Lock()
+	cb.providers["t1:p1"].state = StateHalfOpen
+	cb.providers["t1:p1"].halfOpenRequests = 2
+	cb.mu.Unlock()
+
+	if cb.TryAcquireHalfOpenRequest("t1", "p1") {
+		t.Fatal("expected false when half-open requests at limit")
+	}
+}
+
+func TestReleaseHalfOpenRequestDecrementsCount(t *testing.T) {
+	cb := NewCircuitBreaker(config.CircuitBreakerConfig{HalfOpenMaxRequests: 2})
+	cb.mu.Lock()
+	cb.providers["t1:p1"] = &ProviderState{state: StateHalfOpen, halfOpenRequests: 2}
+	cb.mu.Unlock()
+
+	cb.ReleaseHalfOpenRequest("t1", "p1")
+	cb.mu.Lock()
+	got := cb.providers["t1:p1"].halfOpenRequests
+	cb.mu.Unlock()
+	if got != 1 {
+		t.Fatalf("halfOpenRequests = %d, want 1", got)
+	}
+}
+
+func TestReleaseHalfOpenRequestNoOpForMissing(t *testing.T) {
+	cb := NewCircuitBreaker(config.CircuitBreakerConfig{})
+	cb.ReleaseHalfOpenRequest("t1", "p1") // should not panic
+}
+
+func TestGetAllStatesReturnsNumericValues(t *testing.T) {
+	cb := NewCircuitBreaker(config.CircuitBreakerConfig{FailureThreshold: 1})
+	cb.RecordFailure("t1", "p1")
+	states := cb.GetAllStates()
+	if len(states) != 1 {
+		t.Fatalf("len(states) = %d, want 1", len(states))
+	}
+	if states["t1:p1"] != 1 {
+		t.Fatalf("state value = %d, want 1 (open)", states["t1:p1"])
+	}
+}
+
+func TestGetAllStatesEmptyWhenNoProviders(t *testing.T) {
+	cb := NewCircuitBreaker(config.CircuitBreakerConfig{})
+	states := cb.GetAllStates()
+	if len(states) != 0 {
+		t.Fatalf("len(states) = %d, want 0", len(states))
+	}
+}
