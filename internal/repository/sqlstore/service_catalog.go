@@ -573,15 +573,20 @@ WHERE (sv.id = ? OR sv.request_prefix = ?)`
 }
 
 func (s *Store) loadServiceByPrefix(ctx context.Context, tenantID string, prefix string) (*repository.ServiceRecord, error) {
-	row := s.db.Conn.QueryRowContext(ctx, s.db.Rebind(`
+	query := `
 SELECT sv.id, sv.tenant_id, COALESCE(sv.project_id, ''), COALESCE(p.slug, ''), sv.name, sv.request_prefix,
 	sv.description, sv.default_provider, sv.default_model, sv.publish_status, sv.published_version_id,
 	sv.staged_version_id, sv.enabled, sv.config_body, sv.created_at, sv.updated_at
 FROM services sv
 LEFT JOIN projects p ON p.id = sv.project_id
-WHERE sv.tenant_id = ?
-  AND sv.request_prefix = ?
-LIMIT 1`), tenantID, normalizeRequestPrefix(prefix))
+WHERE sv.request_prefix = ?`
+	args := []any{normalizeRequestPrefix(prefix)}
+	if tenantID != "" {
+		query += ` AND sv.tenant_id = ?`
+		args = append(args, tenantID)
+	}
+	query += ` LIMIT 1`
+	row := s.db.Conn.QueryRowContext(ctx, s.db.Rebind(query), args...)
 	record, err := scanServiceRecord(row)
 	if err == sql.ErrNoRows {
 		return nil, repository.ErrNotFound

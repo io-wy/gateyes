@@ -159,7 +159,7 @@ func (s *Service) ReviewSubscription(ctx context.Context, tenantID, subscription
 	userID := subscription.ConsumerUserID
 	if userID == "" {
 		user, err := s.store.CreateUser(ctx, repository.CreateUserParams{
-			TenantID:   tenantID,
+			TenantID:   firstNonEmpty(tenantID, subscription.TenantID),
 			ProjectID:  firstNonEmpty(subscription.ProjectID, serviceRecord.ProjectID),
 			Name:       subscription.ConsumerName,
 			Email:      subscription.ConsumerEmail,

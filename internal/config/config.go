@@ -24,6 +24,7 @@ type Config struct {
 	HealthCheck    HealthCheckConfig    `yaml:"healthCheck"`
 	Retry          RetryConfig          `yaml:"retry"`
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuitBreaker"`
+	Cache          CacheConfig          `yaml:"cache"`
 	Providers      []ProviderConfig     `yaml:"providers"`
 	APIKeys        []APIKeyConfig       `yaml:"apiKeys"`
 	Admin          AdminConfig          `yaml:"admin"`
@@ -72,6 +73,7 @@ type RouterConfig struct {
 	Strategy   string           `yaml:"strategy"`
 	Ranker     RankerConfig     `yaml:"ranker"`
 	RuleEngine RuleEngineConfig `yaml:"ruleEngine"`
+	Affinity   AffinityConfig   `yaml:"affinity"`
 }
 
 type RankerConfig struct {
@@ -202,6 +204,23 @@ type CircuitBreakerConfig struct {
 	FailureThreshold    int `yaml:"failureThreshold"`    // 连续失败 N 次后熔断
 	RecoveryTimeout     int `yaml:"recoveryTimeout"`     // 熔断后恢复尝试间隔秒
 	HalfOpenMaxRequests int `yaml:"halfOpenMaxRequests"` // half-open 状态下最大并发探测请求数
+}
+
+type CacheConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	Backend    string `yaml:"backend"`    // "auto" | "memory"; auto = redis if available, else memory
+	DefaultTTL int    `yaml:"defaultTTL"` // seconds; 0 = no expiry
+	Capacity   int    `yaml:"capacity"`   // memory cache max entries; <1 = default 1024
+	SkipStream bool   `yaml:"skipStream"` // default false
+	SkipTools  bool   `yaml:"skipTools"`  // default true (tools responses are stateful)
+}
+
+type AffinityConfig struct {
+	Enabled       bool   `yaml:"enabled"`
+	SessionHeader string `yaml:"sessionHeader"` // header used for session affinity, e.g. "X-Session-ID"
+	SessionTTL    int    `yaml:"sessionTTL"`    // seconds; 0 = no expiry
+	PrefixTTL     int    `yaml:"prefixTTL"`     // seconds; 0 = no expiry
+	PrefixDepth   int    `yaml:"prefixDepth"`   // 0 = use full prompt prefix
 }
 
 func replaceEnvVars(data []byte) []byte {
@@ -397,6 +416,15 @@ func (c *Config) Validate() error {
 	if c.HealthCheck.IntervalSeconds < 0 || c.HealthCheck.TimeoutSeconds < 0 || c.HealthCheck.FailureThreshold < 0 {
 		return fmt.Errorf("healthCheck values must be >= 0")
 	}
+	if c.Cache.DefaultTTL < 0 || c.Cache.Capacity < 0 {
+		return fmt.Errorf("cache values must be >= 0")
+	}
+	if !containsString([]string{"auto", "memory", ""}, c.Cache.Backend) {
+		return fmt.Errorf("unsupported cache.backend: %s", c.Cache.Backend)
+	}
+	if c.Router.Affinity.SessionTTL < 0 || c.Router.Affinity.PrefixTTL < 0 || c.Router.Affinity.PrefixDepth < 0 {
+		return fmt.Errorf("router.affinity values must be >= 0")
+	}
 	return nil
 }
 
@@ -467,6 +495,14 @@ func DefaultConfig() *Config {
 			FailureThreshold:    5,
 			RecoveryTimeout:     60,
 			HalfOpenMaxRequests: 1,
+		},
+		Cache: CacheConfig{
+			Enabled:    false,
+			Backend:    "auto",
+			DefaultTTL: 0,
+			Capacity:   0,
+			SkipStream: false,
+			SkipTools:  true,
 		},
 		Admin: AdminConfig{
 			DefaultTenant:   "default",

@@ -20,6 +20,7 @@ import (
 	"github.com/gateyes/gateway/internal/repository/sqlstore"
 	"github.com/gateyes/gateway/internal/service/alert"
 	"github.com/gateyes/gateway/internal/service/budget"
+	"github.com/gateyes/gateway/internal/service/cache"
 	"github.com/gateyes/gateway/internal/service/catalog"
 	"github.com/gateyes/gateway/internal/service/limiter"
 	"github.com/gateyes/gateway/internal/service/provider"
@@ -145,6 +146,23 @@ func main() {
 	reloader := config.NewReloader(*configPath)
 	reloader.Register(limiterSvc, routerSvc, alertSvc)
 
+	// Cache: Redis primary + Memory fallback
+	var cacheSvc cache.Cache
+	if cfg.Cache.Enabled {
+		memCache := cache.NewMemoryCache(cache.MemoryConfig{
+			Capacity:   cfg.Cache.Capacity,
+			DefaultTTL: time.Duration(cfg.Cache.DefaultTTL) * time.Second,
+		})
+		if cfg.Redis.Enabled() && cfg.Cache.Backend != "memory" {
+			redisCache := cache.NewRedisCache(redisClient, cache.RedisConfig{
+				DefaultTTL: time.Duration(cfg.Cache.DefaultTTL) * time.Second,
+			})
+			cacheSvc = cache.NewFallbackCache(redisCache, memCache)
+		} else {
+			cacheSvc = memCache
+		}
+	}
+
 	httpMiddleware := middleware.New(store, limiterSvc, budgetSvc, alertSvc, metrics)
 	responsesService := responseSvc.New(&responseSvc.Dependencies{
 		Config:      cfg,
@@ -154,6 +172,8 @@ func main() {
 		Router:      routerSvc,
 		Alert:       alertSvc,
 		Limiter:     limiterSvc,
+		Cache:       cacheSvc,
+		Metrics:     metrics,
 	})
 	catalogSvc := catalog.New(&catalog.Dependencies{
 		Store:     store,

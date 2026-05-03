@@ -38,6 +38,11 @@ type Metrics struct {
 	providerCurrentLoad  *prometheus.GaugeVec
 	providerTPM          *prometheus.GaugeVec
 	providerHealthStatus *prometheus.GaugeVec
+
+	cacheLookups      *prometheus.CounterVec
+	cacheWrites       *prometheus.CounterVec
+	cacheValueSize    *prometheus.HistogramVec
+	cacheGetDuration  *prometheus.HistogramVec
 }
 
 var registerGoCollectorOnce sync.Once
@@ -118,6 +123,18 @@ func NewMetricsFromConfig(cfg config.MetricsConfig) *Metrics {
 	metrics.providerCurrentLoad = promauto.NewGaugeVec(prometheus.GaugeOpts{Namespace: namespace, Name: "provider_current_load"}, []string{"provider"})
 	metrics.providerTPM = promauto.NewGaugeVec(prometheus.GaugeOpts{Namespace: namespace, Name: "provider_tpm"}, []string{"provider"})
 	metrics.providerHealthStatus = promauto.NewGaugeVec(prometheus.GaugeOpts{Namespace: namespace, Name: "provider_health_status"}, []string{"provider"})
+	metrics.cacheLookups = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "cache_lookups_total"}, []string{"layer", "result"})
+	metrics.cacheWrites = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "cache_writes_total"}, []string{"layer", "result"})
+	metrics.cacheValueSize = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: namespace,
+		Name:      "cache_value_size_bytes",
+		Buckets:   []float64{128, 512, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304},
+	}, []string{"layer"})
+	metrics.cacheGetDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: namespace,
+		Name:      "cache_get_duration_seconds",
+		Buckets:   []float64{0.0001, 0.001, 0.01, 0.1, 1},
+	}, []string{"layer"})
 	return metrics
 }
 
@@ -217,6 +234,34 @@ func normalizeMetricsProvider(providerName string) string {
 
 func NormalizeMetricsProvider(providerName string) string {
 	return normalizeMetricsProvider(providerName)
+}
+
+func (m *Metrics) RecordCacheLookup(layer, result string) {
+	if m == nil || !m.enabled {
+		return
+	}
+	m.cacheLookups.WithLabelValues(layer, result).Inc()
+}
+
+func (m *Metrics) RecordCacheWrite(layer, result string) {
+	if m == nil || !m.enabled {
+		return
+	}
+	m.cacheWrites.WithLabelValues(layer, result).Inc()
+}
+
+func (m *Metrics) ObserveCacheValueSize(layer string, size int) {
+	if m == nil || !m.enabled {
+		return
+	}
+	m.cacheValueSize.WithLabelValues(layer).Observe(float64(size))
+}
+
+func (m *Metrics) ObserveCacheGetDuration(layer string, d time.Duration) {
+	if m == nil || !m.enabled {
+		return
+	}
+	m.cacheGetDuration.WithLabelValues(layer).Observe(d.Seconds())
 }
 
 func (m *Metrics) StartProviderStatsExporter(ctx context.Context, stats *provider.Stats, interval time.Duration) {
