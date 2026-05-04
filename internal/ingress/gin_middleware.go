@@ -11,23 +11,37 @@ import (
 
 // Middleware is a Gin middleware that intercepts ingress routes.
 type Middleware struct {
-	routeTable  *RouteTable
-	proxy       *proxy.Proxy
-	logger      *slog.Logger
-	enabled     bool
+	routeTable *RouteTable
+	proxy      *proxy.Proxy
+	selector   *BackendSelector
+	limiter    *IngressLimiter
+	logger     *slog.Logger
+	enabled    bool
 }
 
 // MiddlewareOpts holds construction options.
 type MiddlewareOpts struct {
 	RouteTable *RouteTable
 	Proxy      *proxy.Proxy
+	Selector   *BackendSelector
+	Limiter    *IngressLimiter
 	Enabled    bool
 }
 
 func NewMiddleware(opts MiddlewareOpts) *Middleware {
+	selector := opts.Selector
+	if selector == nil {
+		selector = NewBackendSelector()
+	}
+	limiter := opts.Limiter
+	if limiter == nil {
+		limiter = NewIngressLimiter()
+	}
 	return &Middleware{
 		routeTable: opts.RouteTable,
 		proxy:      opts.Proxy,
+		selector:   selector,
+		limiter:    limiter,
 		logger:     slog.With("component", "ingress"),
 		enabled:    opts.Enabled,
 	}
@@ -64,6 +78,17 @@ func (m *Middleware) Handler() gin.HandlerFunc {
 			return
 		}
 
+		// Rate limiting.
+		if rule.Annotations != nil && (rule.Annotations.RateLimitRPS > 0 || rule.Annotations.RateLimitConnections > 0) {
+			clientIP := c.ClientIP()
+			if !m.limiter.Acquire(rule.ID, clientIP, rule.Annotations) {
+				c.JSON(http.StatusTooManyRequests, gin.H{"error": "rate limit exceeded"})
+				c.Abort()
+				return
+			}
+			defer m.limiter.Release(rule.ID, clientIP)
+		}
+
 		// Select healthy backend.
 		backends := rule.BackendPool.Healthy()
 		if len(backends) == 0 {
@@ -72,8 +97,33 @@ func (m *Middleware) Handler() gin.HandlerFunc {
 			return
 		}
 
-		// For MVP use first healthy backend; later integrate Router strategy.
-		backend := backends[0]
+		// Read affinity cookie before selection.
+		var cookieVal string
+		if rule.Annotations != nil && rule.Annotations.AffinityCookieName != "" {
+			if cookie, err := c.Request.Cookie(rule.Annotations.AffinityCookieName); err == nil {
+				cookieVal = cookie.Value
+			}
+		}
+
+		// Select backend using selector.
+		result, err := m.selector.Select(SelectionContext{
+			Request:   c.Request,
+			Rule:      rule,
+			CookieVal: cookieVal,
+		})
+		if err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+			c.Abort()
+			return
+		}
+		backend := result.Backend
+		if result.CookieName != "" {
+			http.SetCookie(c.Writer, &http.Cookie{
+				Name:  result.CookieName,
+				Value: result.CookieVal,
+				Path:  "/",
+			})
+		}
 
 		// Body size limit.
 		if rule.Annotations != nil && rule.Annotations.ProxyBodySize > 0 {

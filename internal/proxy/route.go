@@ -45,12 +45,13 @@ type Annotations struct {
 
 // RouteRule is a single ingress routing rule.
 type RouteRule struct {
-	ID          string
-	Host        string            // empty = wildcard
-	Path        string
-	PathType    PathType
-	BackendPool *BackendPool
-	Annotations *Annotations
+	ID                string
+	Host              string // empty = wildcard
+	Path              string
+	PathType          PathType
+	BackendPool       *BackendPool
+	CanaryBackendPool *BackendPool // backends for canary traffic
+	Annotations       *Annotations
 }
 
 // Match checks whether an HTTP request matches this route.

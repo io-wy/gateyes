@@ -142,3 +142,172 @@ func TestIsWebSocketUpgrade(t *testing.T) {
 		t.Error("expected no WebSocket upgrade for plain request")
 	}
 }
+
+// --- Retry logic tests ---
+
+func TestProxy_ServeHTTPWithRetry_FirstFailsSecondSucceeds(t *testing.T) {
+	badUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer badUpstream.Close()
+
+	goodUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("success"))
+	}))
+	defer goodUpstream.Close()
+
+	p := NewProxy(DefaultProxyConfig())
+	badBackend := NewBackend("bad", badUpstream.Listener.Addr().String(), "http", 1)
+	goodBackend := NewBackend("good", goodUpstream.Listener.Addr().String(), "http", 1)
+
+	rule := RouteRule{
+		Path:     "/",
+		PathType: PathTypePrefix,
+		Annotations: &Annotations{
+			ProxyNextUpstream:      true,
+			ProxyNextUpstreamTries: 2,
+		},
+		BackendPool: NewBackendPool([]Backend{badBackend, goodBackend}),
+	}
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	if err := p.ServeHTTPWithRetry(rec, req, &rule, []Backend{badBackend, goodBackend}); err != nil {
+		t.Fatalf("ServeHTTPWithRetry error: %v", err)
+	}
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+	if body := rec.Body.String(); body != "success" {
+		t.Errorf("body = %q, want success", body)
+	}
+}
+
+func TestProxy_ServeHTTPWithRetry_AllBackendsFail(t *testing.T) {
+	badUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer badUpstream.Close()
+
+	p := NewProxy(DefaultProxyConfig())
+	b1 := NewBackend("b1", badUpstream.Listener.Addr().String(), "http", 1)
+	b2 := NewBackend("b2", badUpstream.Listener.Addr().String(), "http", 1)
+
+	rule := RouteRule{
+		Path:     "/",
+		PathType: PathTypePrefix,
+		Annotations: &Annotations{
+			ProxyNextUpstream:      true,
+			ProxyNextUpstreamTries: 2,
+		},
+		BackendPool: NewBackendPool([]Backend{b1, b2}),
+	}
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	// When all backends fail with 5xx, the last attempt serves directly.
+	// serveOnce uses ReverseProxy which returns nil error even for 5xx responses.
+	err := p.ServeHTTPWithRetry(rec, req, &rule, []Backend{b1, b2})
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	// The last backend returns 503, written directly to response.
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", rec.Code)
+	}
+}
+
+func TestProxy_ServeHTTPWithRetry_Disabled(t *testing.T) {
+	badUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer badUpstream.Close()
+
+	goodUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer goodUpstream.Close()
+
+	p := NewProxy(DefaultProxyConfig())
+	badBackend := NewBackend("bad", badUpstream.Listener.Addr().String(), "http", 1)
+	goodBackend := NewBackend("good", goodUpstream.Listener.Addr().String(), "http", 1)
+
+	// ProxyNextUpstream is false (disabled).
+	rule := RouteRule{
+		Path:     "/",
+		PathType: PathTypePrefix,
+		Annotations: &Annotations{
+			ProxyNextUpstream:      false,
+			ProxyNextUpstreamTries: 2,
+		},
+		BackendPool: NewBackendPool([]Backend{badBackend, goodBackend}),
+	}
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	// When retry is disabled, only the first backend should be tried.
+	// The response should be the 503 from the first backend.
+	if err := p.ServeHTTPWithRetry(rec, req, &rule, []Backend{badBackend, goodBackend}); err != nil {
+		t.Fatalf("ServeHTTPWithRetry error: %v", err)
+	}
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", rec.Code)
+	}
+}
+
+func TestProxy_ServeHTTPWithRetry_NoBackends(t *testing.T) {
+	p := NewProxy(DefaultProxyConfig())
+	rule := RouteRule{Path: "/", PathType: PathTypePrefix}
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	if err := p.ServeHTTPWithRetry(rec, req, &rule, nil); err == nil {
+		t.Error("expected error for nil backends")
+	}
+}
+
+func TestProxy_ServeHTTPWithRetry_DefaultTries(t *testing.T) {
+	badUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer badUpstream.Close()
+
+	goodUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	}))
+	defer goodUpstream.Close()
+
+	p := NewProxy(DefaultProxyConfig())
+	badBackend := NewBackend("bad", badUpstream.Listener.Addr().String(), "http", 1)
+	goodBackend := NewBackend("good", goodUpstream.Listener.Addr().String(), "http", 1)
+
+	// ProxyNextUpstream enabled but tries not set (defaults to all backends).
+	rule := RouteRule{
+		Path:     "/",
+		PathType: PathTypePrefix,
+		Annotations: &Annotations{
+			ProxyNextUpstream:      true,
+			ProxyNextUpstreamTries: 0, // 0 means use all backends
+		},
+		BackendPool: NewBackendPool([]Backend{badBackend, goodBackend}),
+	}
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	if err := p.ServeHTTPWithRetry(rec, req, &rule, []Backend{badBackend, goodBackend}); err != nil {
+		t.Fatalf("ServeHTTPWithRetry error: %v", err)
+	}
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+}

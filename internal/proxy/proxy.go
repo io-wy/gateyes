@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
 	"strings"
@@ -61,11 +62,88 @@ func NewProxy(cfg ProxyConfig) *Proxy {
 }
 
 // ServeHTTP proxies the request to the selected backend.
+// For backward compatibility, delegates to ServeHTTPWithRetry with a single backend.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request, rule *RouteRule, backend Backend) error {
-	if backend == nil {
+	return p.ServeHTTPWithRetry(w, req, rule, []Backend{backend})
+}
+
+// ServeHTTPWithRetry proxies the request with retry support across multiple backends.
+// If ProxyNextUpstream is enabled and a backend returns a 5xx or connection error,
+// it tries the next backend up to ProxyNextUpstreamTries times.
+func (p *Proxy) ServeHTTPWithRetry(w http.ResponseWriter, req *http.Request, rule *RouteRule, backends []Backend) error {
+	if len(backends) == 0 {
 		return fmt.Errorf("no backend available")
 	}
 
+	// Determine retry configuration.
+	maxTries := 1
+	retryEnabled := false
+	if rule.Annotations != nil && rule.Annotations.ProxyNextUpstream {
+		retryEnabled = true
+		maxTries = rule.Annotations.ProxyNextUpstreamTries
+		if maxTries <= 0 {
+			maxTries = len(backends)
+		}
+		if maxTries > len(backends) {
+			maxTries = len(backends)
+		}
+	}
+
+	var lastErr error
+	var lastStatusCode int
+
+	for i := 0; i < maxTries && i < len(backends); i++ {
+		backend := backends[i]
+		if backend == nil {
+			lastErr = fmt.Errorf("backend at index %d is nil", i)
+			continue
+		}
+
+		// Use a response recorder to capture the result without writing to w directly.
+		// On the last attempt or success, write through.
+		// For non-last attempts with retry enabled, check if we should retry.
+		shouldRetry := retryEnabled && i < maxTries-1 && i < len(backends)-1
+
+		if shouldRetry {
+			rec := httptest.NewRecorder()
+			err := p.serveOnce(rec, req, rule, backend)
+			if err == nil && rec.Code < 500 {
+				// Success — copy response to w and return.
+				copyResponse(w, rec)
+				return nil
+			}
+			// Failure — log and retry.
+			lastErr = err
+			if lastErr == nil {
+				lastStatusCode = rec.Code
+				lastErr = fmt.Errorf("backend %s returned status %d", backend.Name(), rec.Code)
+			}
+			p.logger.Warn("proxy retry",
+				"backend", backend.Name(),
+				"attempt", i+1,
+				"error", lastErr,
+			)
+			continue
+		}
+
+		// Last attempt — serve directly to w.
+		return p.serveOnce(w, req, rule, backend)
+	}
+
+	// All retries exhausted.
+	if lastErr != nil {
+		if lastStatusCode >= 500 {
+			http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		}
+		return lastErr
+	}
+
+	http.Error(w, "Bad Gateway", http.StatusBadGateway)
+	return fmt.Errorf("all backends failed")
+}
+
+// serveOnce performs a single proxy attempt to one backend.
+func (p *Proxy) serveOnce(w http.ResponseWriter, req *http.Request, rule *RouteRule, backend Backend) error {
 	targetURL, err := url.Parse(rule.UpstreamURL(backend, req.URL.Path))
 	if err != nil {
 		return fmt.Errorf("parse upstream URL: %w", err)
@@ -152,6 +230,15 @@ func (p *Proxy) injectCORS(hdr http.Header, annot *Annotations, req *http.Reques
 	} else {
 		hdr.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
 	}
+}
+
+// copyResponse copies headers, status code, and body from a recorder to a ResponseWriter.
+func copyResponse(w http.ResponseWriter, rec *httptest.ResponseRecorder) {
+	for k, v := range rec.Header() {
+		w.Header()[k] = v
+	}
+	w.WriteHeader(rec.Code)
+	w.Write(rec.Body.Bytes())
 }
 
 // HandlePreflight responds to OPTIONS requests for CORS preflight.
