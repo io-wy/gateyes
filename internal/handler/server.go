@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/gateyes/gateway/internal/config"
+	"github.com/gateyes/gateway/internal/ingress"
 	"github.com/gateyes/gateway/internal/middleware"
 	"github.com/gateyes/gateway/internal/repository"
 )
@@ -21,13 +22,16 @@ type Server struct {
 	srv    *http.Server
 }
 
-func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mw *middleware.Middleware) *Server {
+func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mw *middleware.Middleware, ingressMW *ingress.Middleware) *Server {
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
 	engine.Use(gin.Recovery())
 	engine.Use(middleware.Correlation())
 	engine.Use(middleware.OtelTrace())
 	engine.Use(gin.Logger())
+	if ingressMW != nil {
+		engine.Use(ingressMW.Handler())
+	}
 
 	engine.GET("/health", h.Health)
 	engine.GET("/ready", h.Ready)

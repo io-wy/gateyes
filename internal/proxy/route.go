@@ -69,7 +69,7 @@ func (r *RouteRule) Match(req *http.Request) bool {
 	}
 }
 
-func hostMatches(pattern, host string) {
+func hostMatches(pattern, host string) bool {
 	// Strip port if present.
 	if idx := strings.Index(host, ":"); idx != -1 {
 		host = host[:idx]

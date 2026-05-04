@@ -45,11 +45,13 @@ func (d *K8sEndpointsDiscovery) Watch(ctx context.Context, serviceName string) (
 
 	// Try EndpointSlice first (modern API).
 	var slices discoveryv1.EndpointSliceList
-	selector := client.MatchingLabels{"kubernetes.io/service-name": serviceName}
-	if ns != "" {
-		selector = client.InNamespace(ns)
+	listOpts := []client.ListOption{
+		client.MatchingLabels{"kubernetes.io/service-name": serviceName},
 	}
-	if err := d.client.List(ctx, &slices, selector); err == nil && len(slices.Items) > 0 {
+	if ns != "" {
+		listOpts = append(listOpts, client.InNamespace(ns))
+	}
+	if err := d.client.List(ctx, &slices, listOpts...); err == nil && len(slices.Items) > 0 {
 		return d.fromEndpointSlices(slices.Items), nil
 	}
 
@@ -70,7 +72,7 @@ func (d *K8sEndpointsDiscovery) fromEndpointSlices(slices []discoveryv1.Endpoint
 			if ep.Conditions.Ready != nil && !*ep.Conditions.Ready {
 				continue
 			}
-			addr := *ep.Addresses[0]
+			addr := ep.Addresses[0]
 			if port != 0 {
 				addr = net.JoinHostPort(addr, strconv.Itoa(int(port)))
 			}

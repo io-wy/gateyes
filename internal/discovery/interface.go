@@ -53,6 +53,8 @@ func (r *Registry) Discover(ctx context.Context, discoveryType, serviceName stri
 	return sd.Watch(ctx, serviceName)
 }
 
+func (r *Registry) DefaultType() string { return r.defaultType }
+
 func (r *Registry) Close() error {
 	var errs []error
 	for _, sd := range r.discoveries {
