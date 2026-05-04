@@ -1,7 +1,10 @@
 package ingress
 
 import (
+	"bufio"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -14,6 +17,19 @@ import (
 // underlying writer does not support it (e.g. httptest.ResponseRecorder).
 type responseWriterWrapper struct {
 	http.ResponseWriter
+}
+
+func (w *responseWriterWrapper) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if hj, ok := w.ResponseWriter.(http.Hijacker); ok {
+		return hj.Hijack()
+	}
+	return nil, nil, fmt.Errorf("response writer does not support hijacking")
+}
+
+func (w *responseWriterWrapper) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // Middleware is a Gin middleware that intercepts ingress routes.

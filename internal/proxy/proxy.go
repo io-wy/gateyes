@@ -153,6 +153,15 @@ func (p *Proxy) serveOnce(w http.ResponseWriter, req *http.Request, rule *RouteR
 		targetURL.Scheme = "https"
 	}
 
+	// Convert HTTP(S) to WS(S) for WebSocket upgrades so ReverseProxy handles it correctly.
+	if IsWebSocketUpgrade(req) {
+		if targetURL.Scheme == "https" {
+			targetURL.Scheme = "wss"
+		} else {
+			targetURL.Scheme = "ws"
+		}
+	}
+
 	// Apply proxy timeouts from annotations if present.
 	transport := p.transport
 	if rule.Annotations != nil {
