@@ -21,10 +21,11 @@ import (
 // Controller reconciles Ingress resources into the RouteTable.
 type Controller struct {
 	client.Client
-	Scheme     *runtime.Scheme
-	RouteTable *RouteTable
-	Discovery  *discovery.Registry
-	Config     config.IngressConfig
+	Scheme      *runtime.Scheme
+	RouteTable  *RouteTable
+	Discovery   *discovery.Registry
+	TLSManager  *TLSManager
+	Config      config.IngressConfig
 }
 
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch
@@ -71,6 +72,14 @@ func (r *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	r.RouteTable.Replace(merged)
 	logger.Info("route table updated", "routes", len(merged))
+
+	// Sync TLS certificates for this ingress.
+	if r.TLSManager != nil {
+		if err := r.syncTLS(ctx, ing); err != nil {
+			logger.Error(err, "failed to sync TLS")
+		}
+	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -176,6 +185,28 @@ func (r *Controller) rebuildAll(ctx context.Context) error {
 		all = append(all, r.ingressToRoutes(ctx, ing)...)
 	}
 	r.RouteTable.Replace(all)
+
+	if r.TLSManager != nil {
+		for _, ing := range ingressList.Items {
+			if !r.matchesClass(ing) {
+				continue
+			}
+			if err := r.syncTLS(ctx, ing); err != nil {
+				slog.Warn("failed to sync TLS during rebuild", "ingress", ing.Name, "error", err)
+			}
+		}
+	}
+	return nil
+}
+
+func (r *Controller) syncTLS(ctx context.Context, ing networkingv1.Ingress) error {
+	for _, tls := range ing.Spec.TLS {
+		for _, host := range tls.Hosts {
+			if err := r.TLSManager.Load(ctx, host, tls.SecretName, ing.Namespace); err != nil {
+				return fmt.Errorf("load TLS for host %s from secret %s/%s: %w", host, ing.Namespace, tls.SecretName, err)
+			}
+		}
+	}
 	return nil
 }
 

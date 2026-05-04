@@ -202,12 +202,13 @@ func main() {
 		CatalogSvc:  catalogSvc,
 	})
 
-	// Ingress + Discovery + Proxy setup.
+	// Ingress + Discovery + Proxy + TLS setup.
 	var (
-		discoveryReg   *discovery.Registry
-		routeTable     *ingress.RouteTable
-		ingressProxy   *proxy.Proxy
+		discoveryReg      *discovery.Registry
+		routeTable        *ingress.RouteTable
+		ingressProxy      *proxy.Proxy
 		ingressMiddleware *ingress.Middleware
+		tlsManager        *ingress.TLSManager
 	)
 	if cfg.Ingress.Enabled {
 		discoveryReg = discovery.NewRegistry(cfg.Discovery.Type)
@@ -235,16 +236,19 @@ func main() {
 
 	adminHandler := handler.NewAdminHandler(store, providerMgr, catalogSvc, reloader)
 	adminHandler.SetHealthChecker(healthChecker)
-	srv := handler.NewServer(cfg.Server, h, adminHandler, httpMiddleware, ingressMiddleware)
+	srv := handler.NewServer(cfg.Server, h, adminHandler, httpMiddleware, ingressMiddleware, nil)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	// Start K8s controller-runtime for Provider CRD and Ingress reconciliation.
-	mgr, err := setupControllerManager(providerMgr, store, discoveryReg, routeTable, cfg.Ingress)
+	mgr, tlsManager, err := setupControllerManager(providerMgr, store, discoveryReg, routeTable, cfg.Ingress)
 	if err != nil {
 		slog.Warn("controller manager not started", "error", err)
 	} else {
+		if tlsManager != nil {
+			srv.SetTLSManager(tlsManager)
+		}
 		go func() {
 			if err := mgr.Start(ctx); err != nil {
 				slog.Error("controller manager stopped", "error", err)
@@ -417,22 +421,22 @@ func seedProviderRegistry(ctx context.Context, store repository.ProviderRegistry
 
 // setupControllerManager initializes the controller-runtime manager for Provider CRD and Ingress reconciliation.
 // Returns nil, nil when K8s is not available (e.g. local development).
-func setupControllerManager(providerMgr *provider.Manager, store repository.ProviderRegistryStore, discoveryReg *discovery.Registry, routeTable *ingress.RouteTable, ingressCfg config.IngressConfig) (ctrl.Manager, error) {
+func setupControllerManager(providerMgr *provider.Manager, store repository.ProviderRegistryStore, discoveryReg *discovery.Registry, routeTable *ingress.RouteTable, ingressCfg config.IngressConfig) (ctrl.Manager, *ingress.TLSManager, error) {
 	kubeCfg, err := ctrlconfig.GetConfig()
 	if err != nil {
-		return nil, fmt.Errorf("get kubeconfig: %w", err)
+		return nil, nil, fmt.Errorf("get kubeconfig: %w", err)
 	}
 
 	mgr, err := ctrl.NewManager(kubeCfg, ctrl.Options{})
 	if err != nil {
-		return nil, fmt.Errorf("create manager: %w", err)
+		return nil, nil, fmt.Errorf("create manager: %w", err)
 	}
 
 	if err := v1alpha1.AddToScheme(mgr.GetScheme()); err != nil {
-		return nil, fmt.Errorf("add scheme: %w", err)
+		return nil, nil, fmt.Errorf("add scheme: %w", err)
 	}
 	if err := networkingv1.AddToScheme(mgr.GetScheme()); err != nil {
-		return nil, fmt.Errorf("add networking scheme: %w", err)
+		return nil, nil, fmt.Errorf("add networking scheme: %w", err)
 	}
 
 	if err := (&controllers.ProviderReconciler{
@@ -441,22 +445,27 @@ func setupControllerManager(providerMgr *provider.Manager, store repository.Prov
 		ProviderMgr: providerMgr,
 		Store:       store,
 	}).SetupWithManager(mgr); err != nil {
-		return nil, fmt.Errorf("setup provider reconciler: %w", err)
+		return nil, nil, fmt.Errorf("setup provider reconciler: %w", err)
 	}
 
+	var tlsManager *ingress.TLSManager
 	if ingressCfg.Enabled && discoveryReg != nil && routeTable != nil {
 		discoveryReg.Register("kubernetes", discovery.NewK8sEndpointsDiscovery(mgr.GetClient(), ingressCfg.WatchNamespace))
+		if ingressCfg.TLSEnabled {
+			tlsManager = ingress.NewTLSManager(mgr.GetClient(), ingressCfg.TLSSecretNamespace)
+		}
 		if err := (&ingress.Controller{
 			Client:     mgr.GetClient(),
 			Scheme:     mgr.GetScheme(),
 			RouteTable: routeTable,
 			Discovery:  discoveryReg,
+			TLSManager: tlsManager,
 			Config:     ingressCfg,
 		}).SetupWithManager(mgr); err != nil {
-			return nil, fmt.Errorf("setup ingress reconciler: %w", err)
+			return nil, nil, fmt.Errorf("setup ingress reconciler: %w", err)
 		}
-		slog.Info("ingress controller registered", "class", ingressCfg.Class)
+		slog.Info("ingress controller registered", "class", ingressCfg.Class, "tls", ingressCfg.TLSEnabled)
 	}
 
-	return mgr, nil
+	return mgr, tlsManager, nil
 }
