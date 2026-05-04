@@ -67,6 +67,8 @@ func ParseAnnotations(raw map[string]string) *proxy.Annotations {
 			a.ProxyNextUpstream = parseBool(v)
 		case "proxy-next-upstream-tries":
 			a.ProxyNextUpstreamTries = parseInt(v)
+		case "enable-gzip":
+			a.EnableGzip = parseBool(v)
 		}
 	}
 	return a

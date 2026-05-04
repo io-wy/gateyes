@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"compress/gzip"
 	"fmt"
 	"log/slog"
 	"net"
@@ -191,6 +192,13 @@ func (p *Proxy) serveOnce(w http.ResponseWriter, req *http.Request, rule *RouteR
 		},
 	}
 
+	// Wrap response writer with gzip if enabled and client accepts it.
+	if rule.Annotations != nil && rule.Annotations.EnableGzip && strings.Contains(req.Header.Get("Accept-Encoding"), "gzip") {
+		gzw := newGzipResponseWriter(w)
+		defer gzw.Close()
+		w = gzw
+	}
+
 	outReq := req.Clone(req.Context())
 	rp.ServeHTTP(w, outReq)
 	return nil
@@ -279,4 +287,50 @@ func ProxyHTTPError(w http.ResponseWriter, code int, msg string) {
 // IsWebSocketUpgrade checks if the request is a WebSocket upgrade.
 func IsWebSocketUpgrade(req *http.Request) bool {
 	return strings.EqualFold(req.Header.Get("Upgrade"), "websocket")
+}
+
+// gzipResponseWriter wraps an http.ResponseWriter to gzip compress the response.
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	Writer      *gzip.Writer
+	wroteHeader bool
+}
+
+func newGzipResponseWriter(w http.ResponseWriter) *gzipResponseWriter {
+	return &gzipResponseWriter{
+		ResponseWriter: w,
+		Writer:         gzip.NewWriter(w),
+	}
+}
+
+func (w *gzipResponseWriter) WriteHeader(code int) {
+	if w.wroteHeader {
+		return
+	}
+	w.wroteHeader = true
+	// Only inject Content-Encoding if not already set by upstream.
+	if w.ResponseWriter.Header().Get("Content-Encoding") == "" {
+		w.ResponseWriter.Header().Set("Content-Encoding", "gzip")
+		w.ResponseWriter.Header().Del("Content-Length")
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *gzipResponseWriter) Write(b []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.Writer.Write(b)
+}
+
+func (w *gzipResponseWriter) Flush() {
+	w.Writer.Flush()
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Close ensures the gzip writer is closed after the response is complete.
+func (w *gzipResponseWriter) Close() error {
+	return w.Writer.Close()
 }

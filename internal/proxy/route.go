@@ -38,9 +38,10 @@ type Annotations struct {
 	CanaryByHeader       string            // nginx.ingress.kubernetes.io/canary-by-header
 	WhitelistSourceRange []string          // nginx.ingress.kubernetes.io/whitelist-source-range
 	BackendProtocol      string            // nginx.ingress.kubernetes.io/backend-protocol (HTTP, HTTPS, GRPC)
-	ProxyNextUpstream    bool              // nginx.ingress.kubernetes.io/proxy-next-upstream
-	ProxyNextUpstreamTries int             // nginx.ingress.kubernetes.io/proxy-next-upstream-tries
-	Raw                  map[string]string // untouched annotations
+	ProxyNextUpstream      bool              // nginx.ingress.kubernetes.io/proxy-next-upstream
+	ProxyNextUpstreamTries int               // nginx.ingress.kubernetes.io/proxy-next-upstream-tries
+	EnableGzip             bool              // nginx.ingress.kubernetes.io/enable-gzip
+	Raw                    map[string]string // untouched annotations
 }
 
 // RouteRule is a single ingress routing rule.

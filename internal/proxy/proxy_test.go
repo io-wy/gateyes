@@ -215,6 +215,80 @@ func TestIsWebSocketUpgrade(t *testing.T) {
 	}
 }
 
+func TestProxy_ServeHTTP_Gzip(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("hello hello hello hello hello"))
+	}))
+	defer upstream.Close()
+
+	p := NewProxy(DefaultProxyConfig())
+	b := NewBackend("b1", upstream.Listener.Addr().String(), "http", 1)
+	rule := RouteRule{
+		Path:     "/",
+		PathType: PathTypePrefix,
+		Annotations: &Annotations{
+			EnableGzip: true,
+		},
+		BackendPool: NewBackendPool([]Backend{b}),
+	}
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+
+	if err := p.ServeHTTP(rec, req, &rule, b); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Errorf("Content-Encoding = %q, want gzip", got)
+	}
+	// Body should be gzip compressed, not plain text.
+	body := rec.Body.Bytes()
+	if len(body) > 0 && string(body) == "hello hello hello hello hello" {
+		t.Error("expected gzip-compressed body, got plain text")
+	}
+}
+
+func TestProxy_ServeHTTP_Gzip_ClientNotAccept(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("plain text"))
+	}))
+	defer upstream.Close()
+
+	p := NewProxy(DefaultProxyConfig())
+	b := NewBackend("b1", upstream.Listener.Addr().String(), "http", 1)
+	rule := RouteRule{
+		Path:     "/",
+		PathType: PathTypePrefix,
+		Annotations: &Annotations{
+			EnableGzip: true,
+		},
+		BackendPool: NewBackendPool([]Backend{b}),
+	}
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	// No Accept-Encoding header.
+	rec := httptest.NewRecorder()
+
+	if err := p.ServeHTTP(rec, req, &rule, b); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+
+	if got := rec.Header().Get("Content-Encoding"); got != "" {
+		t.Errorf("Content-Encoding = %q, want empty", got)
+	}
+	if body := rec.Body.String(); body != "plain text" {
+		t.Errorf("body = %q, want plain text", body)
+	}
+}
+
 // --- Retry logic tests ---
 
 func TestProxy_ServeHTTPWithRetry_FirstFailsSecondSucceeds(t *testing.T) {
