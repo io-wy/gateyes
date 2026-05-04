@@ -22,7 +22,7 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses/status"]
-    verbs: ["get"]
+    verbs: ["get", "update", "patch"]
   # Service discovery and TLS secret permissions.
   - apiGroups: [""]
     resources: ["services", "endpoints", "secrets"]

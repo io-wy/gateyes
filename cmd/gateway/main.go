@@ -461,6 +461,7 @@ func setupControllerManager(providerMgr *provider.Manager, store repository.Prov
 			Discovery:  discoveryReg,
 			TLSManager: tlsManager,
 			Config:     ingressCfg,
+			PodIP:      os.Getenv("POD_IP"),
 		}).SetupWithManager(mgr); err != nil {
 			return nil, nil, fmt.Errorf("setup ingress reconciler: %w", err)
 		}

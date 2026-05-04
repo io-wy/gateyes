@@ -26,10 +26,11 @@ type Controller struct {
 	Discovery   *discovery.Registry
 	TLSManager  *TLSManager
 	Config      config.IngressConfig
+	PodIP       string // IP address of the running pod, written into Ingress status
 }
 
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch
-// +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses/status,verbs=get
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=services;endpoints;secrets,verbs=get;list;watch
 
 func (r *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -77,6 +78,13 @@ func (r *Controller) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if r.TLSManager != nil {
 		if err := r.syncTLS(ctx, ing); err != nil {
 			logger.Error(err, "failed to sync TLS")
+		}
+	}
+
+	// Update Ingress status with load balancer IP.
+	if r.PodIP != "" {
+		if err := r.updateStatus(ctx, ing); err != nil {
+			logger.Error(err, "failed to update ingress status")
 		}
 	}
 
@@ -208,6 +216,12 @@ func (r *Controller) syncTLS(ctx context.Context, ing networkingv1.Ingress) erro
 		}
 	}
 	return nil
+}
+
+func (r *Controller) updateStatus(ctx context.Context, ing networkingv1.Ingress) error {
+	patch := client.MergeFrom(ing.DeepCopy())
+	ing.Status.LoadBalancer.Ingress = []networkingv1.IngressLoadBalancerIngress{{IP: r.PodIP}}
+	return r.Status().Patch(ctx, &ing, patch)
 }
 
 func ingressRouteID(ns, name string) string {
