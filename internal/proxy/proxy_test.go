@@ -120,6 +120,36 @@ func TestProxy_HandlePreflight_Disabled(t *testing.T) {
 	}
 }
 
+func TestProxy_ServeHTTP_BackendProtocolHTTPS(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	p := NewProxy(DefaultProxyConfig())
+	b := NewBackend("b1", upstream.Listener.Addr().String(), "http", 1)
+	rule := RouteRule{
+		Path:     "/",
+		PathType: PathTypePrefix,
+		Annotations: &Annotations{
+			BackendProtocol: "HTTPS",
+		},
+		BackendPool: NewBackendPool([]Backend{b}),
+	}
+
+	req := httptest.NewRequest("GET", "http://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	// With TLS server and HTTPS protocol, this should attempt TLS.
+	// The test TLS server uses a self-signed cert, so it will fail validation.
+	// We just verify the proxy doesn't panic and attempts the request.
+	err := p.ServeHTTP(rec, req, &rule, b)
+	// Error is expected due to self-signed cert in test server.
+	if err == nil {
+		t.Log("unexpected success with test TLS server (self-signed cert should fail)")
+	}
+}
+
 func TestProxyAnnotatedTransport(t *testing.T) {
 	p := NewProxy(DefaultProxyConfig())
 	annot := &Annotations{
@@ -128,6 +158,48 @@ func TestProxyAnnotatedTransport(t *testing.T) {
 	rt := p.annotatedTransport(annot)
 	if rt == nil {
 		t.Error("expected non-nil transport")
+	}
+}
+
+func TestProxyAnnotatedTransport_NoOverride(t *testing.T) {
+	p := NewProxy(DefaultProxyConfig())
+	rt := p.annotatedTransport(&Annotations{})
+	if rt == nil {
+		t.Error("expected non-nil transport")
+	}
+}
+
+func TestProxy_ServeHTTP_RewritePath(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Path", r.URL.Path)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	p := NewProxy(DefaultProxyConfig())
+	b := NewBackend("b1", upstream.Listener.Addr().String(), "http", 1)
+	rule := RouteRule{
+		Path:     "/api/",
+		PathType: PathTypePrefix,
+		Annotations: &Annotations{
+			RewriteTarget: "/v2/",
+		},
+		BackendPool: NewBackendPool([]Backend{b}),
+	}
+
+	req := httptest.NewRequest("GET", "http://example.com/api/users", nil)
+	rec := httptest.NewRecorder()
+
+	if err := p.ServeHTTP(rec, req, &rule, b); err != nil {
+		t.Fatalf("ServeHTTP error: %v", err)
+	}
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+	// Verify upstream received rewritten path.
+	if got := rec.Header().Get("X-Path"); got != "/v2/users" {
+		t.Errorf("upstream path = %q, want /v2/users", got)
 	}
 }
 

@@ -9,6 +9,13 @@ import (
 	"github.com/gateyes/gateway/internal/proxy"
 )
 
+// responseWriterWrapper wraps an http.ResponseWriter to strip http.CloseNotifier.
+// This prevents httputil.ReverseProxy from calling CloseNotify when the
+// underlying writer does not support it (e.g. httptest.ResponseRecorder).
+type responseWriterWrapper struct {
+	http.ResponseWriter
+}
+
 // Middleware is a Gin middleware that intercepts ingress routes.
 type Middleware struct {
 	routeTable *RouteTable
@@ -127,6 +134,11 @@ func (m *Middleware) Handler() gin.HandlerFunc {
 
 		// Body size limit.
 		if rule.Annotations != nil && rule.Annotations.ProxyBodySize > 0 {
+			if c.Request.ContentLength > rule.Annotations.ProxyBodySize {
+				c.String(http.StatusRequestEntityTooLarge, "request entity too large")
+				c.Abort()
+				return
+			}
 			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, rule.Annotations.ProxyBodySize)
 		}
 
@@ -137,7 +149,7 @@ func (m *Middleware) Handler() gin.HandlerFunc {
 			"address", backend.Address(),
 		)
 
-		if err := m.proxy.ServeHTTP(c.Writer, c.Request, rule, backend); err != nil {
+		if err := m.proxy.ServeHTTP(&responseWriterWrapper{ResponseWriter: c.Writer}, c.Request, rule, backend); err != nil {
 			m.logger.Error("ingress proxy error", "error", err, "backend", backend.Name())
 			// Only write error if response not yet written.
 			if !c.Writer.Written() {

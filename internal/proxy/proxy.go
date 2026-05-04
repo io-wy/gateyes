@@ -149,16 +149,8 @@ func (p *Proxy) serveOnce(w http.ResponseWriter, req *http.Request, rule *RouteR
 		return fmt.Errorf("parse upstream URL: %w", err)
 	}
 
-	// Clone request to avoid mutating the original.
-	outReq := req.Clone(req.Context())
-	outReq.URL.Scheme = targetURL.Scheme
-	outReq.URL.Host = targetURL.Host
-	outReq.URL.Path = targetURL.Path
-	outReq.URL.RawQuery = req.URL.RawQuery
-	outReq.Host = req.Host // preserve original Host header by default; allow override via annotation.
-
 	if rule.Annotations != nil && rule.Annotations.BackendProtocol == "HTTPS" {
-		outReq.URL.Scheme = "https"
+		targetURL.Scheme = "https"
 	}
 
 	// Apply proxy timeouts from annotations if present.
@@ -167,21 +159,30 @@ func (p *Proxy) serveOnce(w http.ResponseWriter, req *http.Request, rule *RouteR
 		transport = p.annotatedTransport(rule.Annotations)
 	}
 
-	// Use httputil.ReverseProxy for full protocol support (WebSocket, H2, etc.).
-	rp := httputil.NewSingleHostReverseProxy(targetURL)
-	rp.Transport = transport
-	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		p.logger.Error("proxy error", "backend", backend.Name(), "error", err)
-		http.Error(w, "Bad Gateway", http.StatusBadGateway)
-	}
-	rp.ModifyResponse = func(resp *http.Response) error {
-		// Inject CORS headers if enabled.
-		if rule.Annotations != nil && rule.Annotations.EnableCORS {
-			p.injectCORS(resp.Header, rule.Annotations, req)
-		}
-		return nil
+	// Use a custom ReverseProxy to avoid NewSingleHostReverseProxy double-joining paths.
+	rp := &httputil.ReverseProxy{
+		Director: func(r *http.Request) {
+			r.URL.Scheme = targetURL.Scheme
+			r.URL.Host = targetURL.Host
+			r.URL.Path = targetURL.Path
+			r.URL.RawQuery = req.URL.RawQuery
+			r.Host = req.Host
+		},
+		Transport: transport,
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			p.logger.Error("proxy error", "backend", backend.Name(), "error", err)
+			http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		},
+		ModifyResponse: func(resp *http.Response) error {
+			// Inject CORS headers if enabled.
+			if rule.Annotations != nil && rule.Annotations.EnableCORS {
+				p.injectCORS(resp.Header, rule.Annotations, req)
+			}
+			return nil
+		},
 	}
 
+	outReq := req.Clone(req.Context())
 	rp.ServeHTTP(w, outReq)
 	return nil
 }

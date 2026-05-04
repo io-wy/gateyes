@@ -109,6 +109,34 @@ func TestRouteRule_UpstreamURL_HTTPS(t *testing.T) {
 	}
 }
 
+func TestRouteRule_RewritePath_RegexCapture(t *testing.T) {
+	r := RouteRule{
+		Path:        "/api/",
+		PathType:    PathTypePrefix,
+		Annotations: &Annotations{RewriteTarget: "/v2/$1"},
+	}
+	// Regex capture refs are not supported in MVP; should return original.
+	if got, want := r.RewritePath("/api/users"), "/api/users"; got != want {
+		t.Errorf("RewritePath regex = %q, want %q", got, want)
+	}
+}
+
+func TestRouteRule_Match_ImplementationSpecific(t *testing.T) {
+	r := RouteRule{Host: "", Path: "/api", PathType: PathTypeRegular}
+	req := mustReq("http://example.com/api/v1")
+	if !r.Match(req) {
+		t.Error("expected Match = true for ImplementationSpecific as prefix")
+	}
+}
+
+func TestRouteRule_Match_WrongHost(t *testing.T) {
+	r := RouteRule{Host: "api.example.com", Path: "/", PathType: PathTypePrefix}
+	req := mustReq("http://other.example.com/")
+	if r.Match(req) {
+		t.Error("expected Match = false for wrong host")
+	}
+}
+
 func mustReq(urlStr string) *http.Request {
 	req, err := http.NewRequest("GET", urlStr, nil)
 	if err != nil {

@@ -130,6 +130,45 @@ func TestParseAnnotations_RawPreserved(t *testing.T) {
 	}
 }
 
+func TestParseAnnotations_ProxyNextUpstream(t *testing.T) {
+	raw := map[string]string{
+		"nginx.ingress.kubernetes.io/proxy-next-upstream":       "true",
+		"nginx.ingress.kubernetes.io/proxy-next-upstream-tries": "3",
+	}
+	a := ParseAnnotations(raw)
+	if !a.ProxyNextUpstream {
+		t.Error("expected ProxyNextUpstream = true")
+	}
+	if a.ProxyNextUpstreamTries != 3 {
+		t.Errorf("ProxyNextUpstreamTries = %d, want 3", a.ProxyNextUpstreamTries)
+	}
+}
+
+func TestParseAnnotations_ProxySendTimeout(t *testing.T) {
+	a := ParseAnnotations(map[string]string{
+		"nginx.ingress.kubernetes.io/proxy-send-timeout": "30",
+	})
+	if a.ProxySendTimeout != 30*time.Second {
+		t.Errorf("ProxySendTimeout = %v, want 30s", a.ProxySendTimeout)
+	}
+}
+
+func TestParseAnnotations_Empty(t *testing.T) {
+	a := ParseAnnotations(map[string]string{})
+	if a == nil {
+		t.Fatal("expected non-nil Annotations for empty input")
+	}
+	if a.RewriteTarget != "" {
+		t.Errorf("expected empty RewriteTarget, got %q", a.RewriteTarget)
+	}
+	if a.Canary {
+		t.Error("expected Canary = false")
+	}
+	if a.RateLimitRPS != 0 {
+		t.Errorf("expected RateLimitRPS = 0, got %f", a.RateLimitRPS)
+	}
+}
+
 func TestParseAnnotations_ProxyBodySize_Binary(t *testing.T) {
 	a := ParseAnnotations(map[string]string{
 		"nginx.ingress.kubernetes.io/proxy-body-size": "1Gi",
