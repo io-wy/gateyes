@@ -19,9 +19,13 @@ import (
 	"github.com/gateyes/gateway/internal/service/alert"
 	"github.com/gateyes/gateway/internal/service/auth"
 	"github.com/gateyes/gateway/internal/service/cache"
+	"github.com/gateyes/gateway/internal/service/eventbus"
+	"github.com/gateyes/gateway/internal/service/guardrail"
 	"github.com/gateyes/gateway/internal/service/limiter"
+	"github.com/gateyes/gateway/internal/service/pricing"
 	"github.com/gateyes/gateway/internal/service/provider"
 	"github.com/gateyes/gateway/internal/service/router"
+	"golang.org/x/sync/singleflight"
 	"go.opentelemetry.io/otel/attribute"
 	"github.com/gateyes/gateway/internal/trace"
 )
@@ -52,6 +56,19 @@ type Dependencies struct {
 	Limiter     *limiter.Limiter
 	Cache       cache.Cache
 	Metrics     CacheMetrics
+	// EventBus is optional. When set, post-response persistence work
+	// (UpdateResponse body write, alert webhooks, callbacks) runs on the
+	// bus's worker pool off the hot path. When nil, falls back to inline
+	// detached goroutines.
+	EventBus *eventbus.Bus
+	// Guardrails is optional. When non-nil, PreCall runs before cache
+	// lookup / provider call; PostCall runs before cache write / response
+	// return. Block verdicts surface as errors to the client.
+	Guardrails *guardrail.Manager
+	// PricingFeed is optional. When provider.Cost() returns 0 (yaml has
+	// no price configured), the service falls back to the model→price
+	// feed before recording usage. yaml prices remain authoritative.
+	PricingFeed *pricing.Feed
 }
 
 type Service struct {
@@ -65,9 +82,30 @@ type Service struct {
 	circuitBreaker *CircuitBreaker
 	cache          cache.Cache
 	metrics        CacheMetrics
+	eventBus       *eventbus.Bus
+	guardrails     *guardrail.Manager
+	pricingFeed    *pricing.Feed
+	// sfg deduplicates concurrent cache misses against the same key,
+	// preventing thundering-herd upstream calls. The shared response is
+	// returned to all waiters; only the first caller does the bookkeeping
+	// (DB write + usage record). See cache.singleflight in config.
+	sfg singleflight.Group
 }
 
 const terminalPersistenceTimeout = 5 * time.Second
+
+// streamCancelDrainTimeout caps the absolute time we keep reading upstream
+// events after the client disconnects, so we capture the final usage chunk
+// for billing. LLM providers typically emit usage in the last chunk of a
+// stream; bailing out on client ctx.Done() drops that data.
+const streamCancelDrainTimeout = 5 * time.Second
+
+// streamCancelDrainQuiet is the soft, "no-activity" cap. If the upstream
+// goes silent for this long after a client disconnect, we assume nothing
+// more is coming and exit drain — even if the absolute timeout has not
+// fired. Keeps the cancellation path responsive when providers have
+// already emitted their last frame.
+const streamCancelDrainQuiet = 250 * time.Millisecond
 
 type CreateResult struct {
 	Response         *provider.Response
@@ -111,7 +149,193 @@ func New(deps *Dependencies) *Service {
 		circuitBreaker: NewCircuitBreaker(deps.Config.CircuitBreaker),
 		cache:          deps.Cache,
 		metrics:        deps.Metrics,
+		eventBus:       deps.EventBus,
+		guardrails:     deps.Guardrails,
+		pricingFeed:    deps.PricingFeed,
 	}
+}
+
+// computeCost returns the cost for a request. Provider yaml-config wins
+// when it has a non-zero price; otherwise we consult the pricing feed
+// keyed by the requested model name. When neither is set, returns 0
+// and the request is recorded as zero-cost (which is correct — we have
+// no basis to bill).
+func (s *Service) computeCost(p provider.Provider, requestedModel string, promptTokens, completionTokens int) float64 {
+	if cost := p.Cost(promptTokens, completionTokens); cost > 0 {
+		return cost
+	}
+	if s.pricingFeed != nil {
+		// Try requested model name first (what the user asked for);
+		// fall back to provider's actual model identifier.
+		for _, name := range []string{requestedModel, p.Model()} {
+			if name == "" {
+				continue
+			}
+			if mp, ok := s.pricingFeed.Get(name); ok {
+				return float64(promptTokens)*mp.InputPerToken + float64(completionTokens)*mp.OutputPerToken
+			}
+		}
+	}
+	return 0
+}
+
+// ErrGuardrailBlocked is returned when a guardrail vetoes the request
+// or response. The wrapped error includes the guardrail name + reason.
+var ErrGuardrailBlocked = errors.New("blocked by guardrail")
+
+// drainStreamForUsage continues reading from a provider's stream channel
+// after the caller's ctx has been cancelled, so the gateway can capture
+// the final usage chunk that providers typically emit at end-of-stream.
+//
+// The drain stops on stream close, upstream error, or after
+// streamCancelDrainTimeout — whichever comes first. The caller must have
+// already arranged for the provider's stream goroutine to be using a
+// detached context (via context.WithoutCancel + WithTimeout) so it does
+// not exit immediately when the client disconnected.
+//
+// Mutates the supplied accumulators in place, mirroring what the main
+// stream loop does for non-cancelled events. Visible payload (out chan)
+// is intentionally NOT updated — the client is gone.
+func (s *Service) drainStreamForUsage(
+	stream <-chan provider.ResponseEvent,
+	upstreamErrCh <-chan error,
+	finalResponse **provider.Response,
+	streamUsage **provider.Usage,
+	streamedOutputs *[]provider.ResponseOutput,
+	assistantText *string,
+) {
+	deadline := time.NewTimer(streamCancelDrainTimeout)
+	defer deadline.Stop()
+	quiet := time.NewTimer(streamCancelDrainQuiet)
+	defer quiet.Stop()
+	for {
+		select {
+		case event, ok := <-stream:
+			if !ok {
+				return
+			}
+			switch event.Type {
+			case provider.EventContentDelta:
+				if event.Usage != nil {
+					cp := *event.Usage
+					*streamUsage = &cp
+				}
+				if len(event.ToolCalls) > 0 {
+					*streamedOutputs = appendStreamedToolCalls(*streamedOutputs, event.ToolCalls)
+				}
+				if isRenderableStreamEvent(event) {
+					*assistantText += event.Text()
+				}
+			case provider.EventToolCallDone:
+				*streamedOutputs = appendStreamOutput(*streamedOutputs, event.Output)
+			case provider.EventResponseCompleted:
+				if event.Response != nil {
+					*finalResponse = event.Response
+				}
+			}
+			// Activity — reset the quiet-period guard.
+			if !quiet.Stop() {
+				select {
+				case <-quiet.C:
+				default:
+				}
+			}
+			quiet.Reset(streamCancelDrainQuiet)
+		case <-upstreamErrCh:
+			return
+		case <-quiet.C:
+			return
+		case <-deadline.C:
+			return
+		}
+	}
+}
+
+// sfCallResult is the shared payload returned to all singleflight waiters.
+type sfCallResult struct {
+	resp    *provider.Response
+	retries int
+}
+
+// callWithRetrySF wraps callWithRetry with a singleflight group keyed by
+// (tenant, model, prompt-canon, provider). When two requests arrive within
+// the same upstream-call window with identical inputs and route to the
+// same provider, only one HTTP roundtrip is made — waiters receive a copy
+// of the same response.
+//
+// Each caller still performs its own bookkeeping (DB record, persistSuccess
+// → RecordUsage → Stats). What we save is the network call to the model
+// provider and one token-of-tokens of upstream cost.
+//
+// When cache or singleflight is disabled, the call is direct.
+func (s *Service) callWithRetrySF(ctx context.Context, identity *repository.AuthIdentity, exec *execution, _ string, req *provider.ResponseRequest) (*provider.Response, int, error) {
+	if s.cache == nil || !s.cfg.Cache.Enabled || !s.cfg.Cache.Singleflight {
+		return s.callWithRetry(ctx, identity, exec)
+	}
+	if s.cfg.Cache.SkipTools && len(req.Tools) > 0 {
+		return s.callWithRetry(ctx, identity, exec)
+	}
+	cacheKey := s.buildCacheKey(ctx, identity, req)
+	if cacheKey == "" {
+		return s.callWithRetry(ctx, identity, exec)
+	}
+	sfKey := cacheKey + "|" + exec.provider.Name()
+
+	val, err, _ := s.sfg.Do(sfKey, func() (any, error) {
+		resp, retries, err := s.callWithRetry(ctx, identity, exec)
+		if err != nil {
+			return nil, err
+		}
+		return &sfCallResult{resp: resp, retries: retries}, nil
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	r := val.(*sfCallResult)
+	// Return a defensive shallow clone so the second caller's downstream
+	// mutations (e.g. normalizeResponse setting ID/Status) don't race
+	// with the first caller. Output / Usage are read-only at this point
+	// per provider contract; aliasing is acceptable.
+	respCopy := *r.resp
+	return &respCopy, r.retries, nil
+}
+
+// publishOrInline runs the given handler on the eventBus when configured.
+//
+// Three modes:
+//   - eventBus configured + Publish accepts → async on bus worker pool
+//     (production happy path — moves bookkeeping off the hot path)
+//   - eventBus configured + Publish drops (channel full) → spawn a detached
+//     goroutine. We never drop billing-relevant work; the bus just shapes
+//     back-pressure when the worker pool is saturated.
+//   - eventBus == nil → run inline synchronously. This preserves
+//     deterministic semantics for tests that read the DB right after
+//     Create returns. Production must wire an event bus to get the
+//     hot-path win.
+//
+// The handler always runs with a freshly detached context (independent of
+// the caller's request ctx); cancellation of the request does not cancel
+// the bookkeeping work.
+func (s *Service) publishOrInline(h func(ctx context.Context)) {
+	if h == nil {
+		return
+	}
+	if s.eventBus != nil {
+		if s.eventBus.Publish(h) {
+			return
+		}
+		// Bus saturated — fall back to a detached goroutine so we don't
+		// block the response and don't drop billing writes.
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), terminalPersistenceTimeout)
+			defer cancel()
+			h(ctx)
+		}()
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), terminalPersistenceTimeout)
+	defer cancel()
+	h(ctx)
 }
 
 func (s *Service) cacheLayer(stream bool) string {
@@ -121,7 +345,7 @@ func (s *Service) cacheLayer(stream bool) string {
 	return cache.LayerL1
 }
 
-func (s *Service) shouldSkipCache(req *provider.ResponseRequest) bool {
+func (s *Service) shouldSkipCache(ctx context.Context, req *provider.ResponseRequest) bool {
 	if s.cache == nil || !s.cfg.Cache.Enabled {
 		return true
 	}
@@ -131,10 +355,13 @@ func (s *Service) shouldSkipCache(req *provider.ResponseRequest) bool {
 	if s.cfg.Cache.SkipTools && len(req.Tools) > 0 {
 		return true
 	}
+	if CacheHintsFrom(ctx).Skip {
+		return true
+	}
 	return false
 }
 
-func (s *Service) buildCacheKey(identity *repository.AuthIdentity, req *provider.ResponseRequest) string {
+func (s *Service) buildCacheKey(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest) string {
 	msgs := req.InputMessages()
 	payload := map[string]any{
 		"model":    req.Model,
@@ -158,14 +385,15 @@ func (s *Service) buildCacheKey(identity *repository.AuthIdentity, req *provider
 		PromptCanon: string(canon),
 		Stream:      req.Stream,
 		Surface:     req.Surface,
+		Bucket:      CacheHintsFrom(ctx).Bucket,
 	})
 }
 
 func (s *Service) lookupCache(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest) (*cache.Entry, bool) {
-	if s.shouldSkipCache(req) {
+	if s.shouldSkipCache(ctx, req) {
 		return nil, false
 	}
-	cacheKey := s.buildCacheKey(identity, req)
+	cacheKey := s.buildCacheKey(ctx, identity, req)
 	start := time.Now()
 	entry, hit, err := s.cache.Get(ctx, cacheKey)
 	layer := s.cacheLayer(req.Stream)
@@ -184,14 +412,18 @@ func (s *Service) lookupCache(ctx context.Context, identity *repository.AuthIden
 }
 
 func (s *Service) writeCache(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, entry *cache.Entry) {
-	if s.shouldSkipCache(req) || entry == nil {
+	if s.shouldSkipCache(ctx, req) || entry == nil {
 		return
 	}
-	cacheKey := s.buildCacheKey(identity, req)
+	cacheKey := s.buildCacheKey(ctx, identity, req)
 	layer := s.cacheLayer(req.Stream)
 	var ttl time.Duration
 	if s.cfg.Cache.DefaultTTL > 0 {
 		ttl = time.Duration(s.cfg.Cache.DefaultTTL) * time.Second
+	}
+	// Header-driven TTL override beats yaml default. Zero means "use default".
+	if hint := CacheHintsFrom(ctx).TTL; hint > 0 {
+		ttl = hint
 	}
 	// fire-and-forget; cache write should not block the hot path
 	go func() {
@@ -247,6 +479,18 @@ func (s *Service) replayCachedStream(ctx context.Context, identity *repository.A
 func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*CreateResult, error) {
 	req.Normalize()
 	createStart := time.Now()
+
+	// Run pre-call guardrails before any cache lookup or provider call.
+	// Block here means the request never reaches upstream — no billing.
+	if s.guardrails != nil {
+		pre := s.guardrails.PreCall(ctx, req)
+		if pre.Verdict == guardrail.Block {
+			return nil, fmt.Errorf("%w: %s", ErrGuardrailBlocked, pre.Reason)
+		}
+		if pre.Verdict == guardrail.Transform && pre.Request != nil {
+			req = pre.Request
+		}
+	}
 
 	// L1 cache fast path
 	if entry, hit := s.lookupCache(ctx, identity, req); hit {
@@ -339,7 +583,7 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 
 		s.providerMgr.Stats.IncrementLoad(providerName)
 
-		resp, retries, err := s.callWithRetry(ctx, identity, exec)
+		resp, retries, err := s.callWithRetrySF(ctx, identity, exec, identity.TenantID, req)
 		totalRetries += retries
 		latencyMs := time.Since(exec.startedAt).Milliseconds()
 
@@ -372,6 +616,22 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 			return nil, budgetErr
 		}
 		appendRouteAttempt(exec.routeTrace, providerName, retries, "success", nil)
+
+		// Run post-call guardrails on the upstream response. Block here
+		// means we still owe the upstream call (we paid for it) but we
+		// won't return / cache the response — usage is recorded so the
+		// gateway operator sees the spend.
+		if s.guardrails != nil {
+			post := s.guardrails.PostCall(ctx, resp)
+			if post.Verdict == guardrail.Block {
+				_ = s.persistSuccess(ctx, identity, exec, resp, latencyMs)
+				return nil, fmt.Errorf("%w: %s", ErrGuardrailBlocked, post.Reason)
+			}
+			if post.Verdict == guardrail.Transform && post.Response != nil {
+				resp = post.Response
+			}
+		}
+
 		if err := s.persistSuccess(ctx, identity, exec, resp, latencyMs); err != nil {
 			return nil, err
 		}
@@ -585,7 +845,11 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 			Options:         provider.CloneRequestOptions(req.Options),
 		}
 
-		stream, upstreamErrCh := p.StreamResponse(ctx, upstreamReq)
+		// Detach upstream stream from client ctx so client disconnect doesn't
+		// kill it before the final usage chunk arrives. We still bound it
+		// with a generous timeout to avoid runaway streams.
+		streamCtx, streamCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
+		stream, upstreamErrCh := p.StreamResponse(streamCtx, upstreamReq)
 		var finalResponse *provider.Response
 		var assistantText string
 		var streamUsage *provider.Usage
@@ -595,6 +859,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 			select {
 			case event, ok := <-stream:
 				if !ok {
+					streamCancel()
 					fallbackExec := &execution{
 						provider:              p,
 						requestedModel:        req.Model,
@@ -666,6 +931,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 				if err == nil {
 					continue
 				}
+				streamCancel()
 				appendRouteAttempt(trace, providerName, 0, "error", err)
 				latencyMs := time.Since(startedAt).Milliseconds()
 				s.handleStreamError(ctx, identity, responseID, providerName, req.Model, latencyMs, err)
@@ -686,8 +952,9 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 						case <-time.After(time.Duration(delay) * time.Millisecond):
 						}
 
-						// 重试
-						stream, upstreamErrCh = p.StreamResponse(ctx, upstreamReq)
+						// Retry: open a new detached upstream ctx for this attempt.
+						streamCtx, streamCancel = context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
+						stream, upstreamErrCh = p.StreamResponse(streamCtx, upstreamReq)
 						assistantText = ""
 						goto retryLoop
 					}
@@ -703,6 +970,13 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 				errCh <- err
 				return
 			case <-ctx.Done():
+				// Client disconnected. Drain remaining upstream events for up
+				// to streamCancelDrainTimeout to capture the final usage
+				// chunk for billing — providers typically emit usage in the
+				// last frame. The upstream call uses a detached ctx so it
+				// keeps running while we drain.
+				s.drainStreamForUsage(stream, upstreamErrCh, &finalResponse, &streamUsage, &streamedOutputs, &assistantText)
+				streamCancel()
 				s.handleStreamCancellation(ctx, identity, req, responseID, p, trace, finalResponse, assistantText, streamedOutputs, streamUsage, startedAt)
 				s.providerMgr.Stats.DecrementLoad(providerName)
 				errCh <- ctx.Err()
@@ -715,6 +989,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 				select {
 				case event, ok := <-stream:
 					if !ok {
+						streamCancel()
 						fallbackExec := &execution{
 							provider:              p,
 							requestedModel:        req.Model,
@@ -798,6 +1073,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 					if err == nil {
 						continue
 					}
+					streamCancel()
 					appendRouteAttempt(trace, providerName, retryCfg.MaxRetries, "error", err)
 					latencyMs := time.Since(startedAt).Milliseconds()
 					s.handleStreamError(ctx, identity, responseID, providerName, req.Model, latencyMs, err)
@@ -815,6 +1091,9 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 					errCh <- err
 					return
 				case <-ctx.Done():
+					// Client disconnected during retry. Drain for usage too.
+					s.drainStreamForUsage(stream, upstreamErrCh, &finalResponse, &streamUsage, &streamedOutputs, &assistantText)
+					streamCancel()
 					s.handleStreamCancellation(ctx, identity, req, responseID, p, trace, finalResponse, assistantText, streamedOutputs, streamUsage, startedAt)
 					s.providerMgr.Stats.DecrementLoad(providerName)
 					errCh <- ctx.Err()
@@ -1182,7 +1461,9 @@ func (s *Service) runStream(ctx context.Context, identity *repository.AuthIdenti
 		},
 	}
 
-	stream, upstreamErrCh := exec.provider.StreamResponse(ctx, exec.upstreamRequest)
+	streamCtx, streamCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
+	defer streamCancel()
+	stream, upstreamErrCh := exec.provider.StreamResponse(streamCtx, exec.upstreamRequest)
 	var finalResponse *provider.Response
 	var assistantText string
 	hasSentPayload := false
@@ -1239,6 +1520,8 @@ func (s *Service) runStream(ctx context.Context, identity *repository.AuthIdenti
 			errCh <- err
 			return
 		case <-ctx.Done():
+			// Drain upstream so we capture final usage even after disconnect.
+			s.drainStreamForUsage(stream, upstreamErrCh, &finalResponse, &streamUsage, &streamedOutputs, &assistantText)
 			s.handleStreamCancellation(ctx, identity, exec.upstreamRequest, exec.responseID, exec.provider, exec.routeTrace, finalResponse, assistantText, streamedOutputs, streamUsage, exec.startedAt)
 			return
 		}
@@ -1271,7 +1554,7 @@ func (s *Service) handleStreamCancellation(ctx context.Context, identity *reposi
 	finalizeRouteTrace(trace, currentProvider.Name(), "cancelled", context.Canceled)
 
 	latencyMs := time.Since(startedAt).Milliseconds()
-	cost := currentProvider.Cost(resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
+	cost := s.computeCost(currentProvider, req.Model, resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
 
 	persistCtx, cancel := detachedPersistenceContext(ctx)
 	defer cancel()
@@ -1297,31 +1580,22 @@ func detachedPersistenceContext(ctx context.Context) (context.Context, context.C
 }
 
 func (s *Service) persistSuccess(ctx context.Context, identity *repository.AuthIdentity, exec *execution, resp *provider.Response, latencyMs int64) error {
-	cost := exec.provider.Cost(resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
-	if err := s.ensureQuotaAvailable(ctx, identity, exec, resp, latencyMs, exec.provider.Name(), cost); err != nil {
+	providerName := exec.provider.Name()
+	model := exec.requestedModel
+	cost := s.computeCost(exec.provider, exec.requestedModel, resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
+	if err := s.ensureQuotaAvailable(ctx, identity, exec, resp, latencyMs, providerName, cost); err != nil {
 		return err
 	}
 
-	finalizeRouteTrace(exec.routeTrace, exec.provider.Name(), "success", nil)
-	body, _ := json.Marshal(resp)
-	if err := s.store.UpdateResponse(ctx, repository.ResponseRecord{
-		ID:             exec.responseID,
-		TenantID:       identity.TenantID,
-		ProjectID:      identity.ProjectID,
-		ProviderName:   exec.provider.Name(),
-		Model:          exec.requestedModel,
-		Status:         "completed",
-		ResponseBody:   body,
-		RouteTraceBody: routeTraceBytes(exec.routeTrace),
-	}); err != nil {
-		return err
-	}
-
+	// RecordUsage stays synchronous: it consumes quota / budget atomically
+	// and must signal exceeded states back to the caller before we mark
+	// the response completed. If we async this, two parallel callers could
+	// both observe ok=true under a near-empty quota and silently overshoot.
 	if err := s.auth.RecordUsage(
 		ctx,
 		identity,
-		exec.provider.Name(),
-		exec.requestedModel,
+		providerName,
+		model,
 		resp.Usage.PromptTokens,
 		resp.Usage.CompletionTokens,
 		resp.Usage.TotalTokens,
@@ -1331,51 +1605,78 @@ func (s *Service) persistSuccess(ctx context.Context, identity *repository.AuthI
 		"",
 	); err != nil {
 		if errors.Is(err, auth.ErrQuotaExceeded) {
-			_ = s.recordQuotaExceeded(ctx, identity, exec, resp, latencyMs, exec.provider.Name(), cost)
+			_ = s.recordQuotaExceeded(ctx, identity, exec, resp, latencyMs, providerName, cost)
 		}
 		if errors.Is(err, auth.ErrBudgetExceeded) {
-			_ = s.recordBudgetExceeded(ctx, identity, exec, resp, latencyMs, exec.provider.Name(), cost)
+			_ = s.recordBudgetExceeded(ctx, identity, exec, resp, latencyMs, providerName, cost)
 		}
 		return err
 	}
 
-	s.providerMgr.Stats.RecordRequest(exec.provider.Name(), true, resp.Usage.TotalTokens, latencyMs)
+	s.providerMgr.Stats.RecordRequest(providerName, true, resp.Usage.TotalTokens, latencyMs)
 
-	// 检查配额使用情况并发送预警
-	if s.alert != nil {
-		s.alert.CheckQuotaUsage(ctx, identity)
-		s.alert.NotifyRequestEvent(ctx, map[string]any{
-			"tenant_id":      identity.TenantID,
-			"project_id":     identity.ProjectID,
-			"api_key_id":     identity.APIKeyID,
-			"provider_name":  exec.provider.Name(),
-			"model":          exec.requestedModel,
-			"status":         "success",
-			"latency_ms":     latencyMs,
-			"total_tokens":   resp.Usage.TotalTokens,
-			"total_cost_usd": cost,
-		})
-	}
+	finalizeRouteTrace(exec.routeTrace, providerName, "success", nil)
+	body, _ := json.Marshal(resp)
+	traceBytes := routeTraceBytes(exec.routeTrace)
+	responseID := exec.responseID
+	tenantID := identity.TenantID
+	projectID := identity.ProjectID
+	apiKeyID := identity.APIKeyID
+	virtualKeyID := identity.VirtualKeyID
+	totalTokens := resp.Usage.TotalTokens
+	promptTokens := resp.Usage.PromptTokens
+	completionTokens := resp.Usage.CompletionTokens
+	callbackURL := identity.CallbackURL
+	identitySnap := *identity
+	alertSvc := s.alert
 
-	if identity.CallbackURL != "" {
-		go s.sendCallback(identity.CallbackURL, map[string]any{
-			"event":          "request.completed",
-			"response_id":    exec.responseID,
-			"tenant_id":      identity.TenantID,
-			"api_key_id":     identity.APIKeyID,
-			"virtual_key_id": identity.VirtualKeyID,
-			"provider_name":  exec.provider.Name(),
-			"model":          exec.requestedModel,
-			"status":         "success",
-			"latency_ms":     latencyMs,
-			"cost_usd":       cost,
-			"usage": map[string]any{
-				"prompt_tokens":     resp.Usage.PromptTokens,
-				"completion_tokens": resp.Usage.CompletionTokens,
-				"total_tokens":      resp.Usage.TotalTokens,
-			},
+	s.publishOrInline(func(asyncCtx context.Context) {
+		_ = s.store.UpdateResponse(asyncCtx, repository.ResponseRecord{
+			ID:             responseID,
+			TenantID:       tenantID,
+			ProjectID:      projectID,
+			ProviderName:   providerName,
+			Model:          model,
+			Status:         "completed",
+			ResponseBody:   body,
+			RouteTraceBody: traceBytes,
 		})
-	}
+
+		if alertSvc != nil {
+			alertSvc.CheckQuotaUsage(asyncCtx, &identitySnap)
+			alertSvc.NotifyRequestEvent(asyncCtx, map[string]any{
+				"tenant_id":      tenantID,
+				"project_id":     projectID,
+				"api_key_id":     apiKeyID,
+				"provider_name":  providerName,
+				"model":          model,
+				"status":         "success",
+				"latency_ms":     latencyMs,
+				"total_tokens":   totalTokens,
+				"total_cost_usd": cost,
+			})
+		}
+
+		if callbackURL != "" {
+			s.sendCallback(callbackURL, map[string]any{
+				"event":          "request.completed",
+				"response_id":    responseID,
+				"tenant_id":      tenantID,
+				"api_key_id":     apiKeyID,
+				"virtual_key_id": virtualKeyID,
+				"provider_name":  providerName,
+				"model":          model,
+				"status":         "success",
+				"latency_ms":     latencyMs,
+				"cost_usd":       cost,
+				"usage": map[string]any{
+					"prompt_tokens":     promptTokens,
+					"completion_tokens": completionTokens,
+					"total_tokens":      totalTokens,
+				},
+			})
+		}
+	})
 
 	return nil
 }
@@ -1549,7 +1850,7 @@ func (s *Service) recordOutputBudgetError(ctx context.Context, identity *reposit
 	if resp == nil {
 		return s.auth.RecordUsage(ctx, identity, providerName, exec.requestedModel, 0, 0, 0, 0, latencyMs, "error", "output_budget_too_low")
 	}
-	cost := exec.provider.Cost(resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
+	cost := s.computeCost(exec.provider, exec.requestedModel, resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
 	return s.auth.RecordUsage(
 		ctx,
 		identity,

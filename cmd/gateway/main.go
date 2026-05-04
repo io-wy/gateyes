@@ -22,7 +22,10 @@ import (
 	"github.com/gateyes/gateway/internal/service/budget"
 	"github.com/gateyes/gateway/internal/service/cache"
 	"github.com/gateyes/gateway/internal/service/catalog"
+	"github.com/gateyes/gateway/internal/service/eventbus"
+	"github.com/gateyes/gateway/internal/service/guardrail"
 	"github.com/gateyes/gateway/internal/service/limiter"
+	"github.com/gateyes/gateway/internal/service/pricing"
 	"github.com/gateyes/gateway/internal/service/provider"
 	responseSvc "github.com/gateyes/gateway/internal/service/responses"
 	"github.com/gateyes/gateway/internal/service/router"
@@ -120,6 +123,23 @@ func main() {
 	limiterSvc := limiter.NewLimiter(cfg.Limiter)
 	routerSvc := router.NewRouter(cfg.Router, providerMgr.Stats)
 
+	if cfg.Router.InferenceMetrics.Enabled {
+		endpoints := make(map[string]string, len(cfg.Providers))
+		for _, p := range cfg.Providers {
+			if p.Enabled && p.MetricsURL != "" {
+				endpoints[p.Name] = p.MetricsURL
+			}
+		}
+		if len(endpoints) > 0 {
+			interval := time.Duration(cfg.Router.InferenceMetrics.ScrapeIntervalSeconds) * time.Second
+			scraper := router.NewInferenceScraper(endpoints, interval)
+			routerSvc.SetInferenceScraper(scraper)
+			defer scraper.Stop()
+			// Started below once we have the signal-aware ctx.
+			go scraper.Start(context.Background())
+		}
+	}
+
 	// Redis for distributed rate limiting and alert dedup
 	var redisClient *redis.Client
 	if cfg.Redis.Enabled() {
@@ -164,6 +184,31 @@ func main() {
 	}
 
 	httpMiddleware := middleware.New(store, limiterSvc, budgetSvc, alertSvc, metrics)
+
+	persistBus := eventbus.New(eventbus.Options{
+		Buffer:         cfg.Persistence.BusBuffer,
+		Workers:        cfg.Persistence.BusWorkers,
+		HandlerTimeout: time.Duration(cfg.Persistence.HandlerTimeoutSeconds) * time.Second,
+	})
+	persistBus.Start(context.Background())
+
+	guardrails := buildGuardrails(cfg.Guardrails)
+
+	var pricingFeed *pricing.Feed
+	if cfg.Pricing.Enabled {
+		interval := time.Duration(cfg.Pricing.RefreshIntervalSeconds) * time.Second
+		pricingFeed = pricing.New(pricing.Options{
+			URL:       cfg.Pricing.FeedURL,
+			CacheFile: cfg.Pricing.CacheFile,
+			Interval:  interval,
+		})
+		if err := pricingFeed.Bootstrap(); err != nil {
+			slog.Warn("pricing feed bootstrap failed", "error", err)
+		}
+		pricingFeed.Start(context.Background())
+		defer pricingFeed.Stop()
+	}
+
 	responsesService := responseSvc.New(&responseSvc.Dependencies{
 		Config:      cfg,
 		Store:       store,
@@ -174,6 +219,9 @@ func main() {
 		Limiter:     limiterSvc,
 		Cache:       cacheSvc,
 		Metrics:     metrics,
+		EventBus:    persistBus,
+		Guardrails:  guardrails,
+		PricingFeed: pricingFeed,
 	})
 	catalogSvc := catalog.New(&catalog.Dependencies{
 		Store:     store,
@@ -226,6 +274,12 @@ func main() {
 		slog.Error("shutdown error", "error", err)
 	}
 	limiterSvc.Stop()
+	if err := persistBus.Close(); err != nil {
+		slog.Warn("persistence event bus drain timeout", "error", err)
+	}
+	if dropped := persistBus.Dropped(); dropped > 0 {
+		slog.Warn("persistence event bus dropped events during run", "count", dropped)
+	}
 	providerMgr.CloseIdleConnections()
 }
 
@@ -342,6 +396,25 @@ func seedTenantProviders(ctx context.Context, store repository.TenantStore, tena
 		merged = append(merged, name)
 	}
 	return store.ReplaceTenantProviders(ctx, tenantID, merged)
+}
+
+func buildGuardrails(cfgs []config.GuardrailConfig) *guardrail.Manager {
+	if len(cfgs) == 0 {
+		return nil
+	}
+	chain := make([]guardrail.Guardrail, 0, len(cfgs))
+	for _, c := range cfgs {
+		switch c.Type {
+		case "regex":
+			chain = append(chain, guardrail.NewRegexBlocklist(c.Name, c.RequestPatterns, c.ResponsePatterns))
+		default:
+			slog.Warn("unsupported guardrail type, skipping", "name", c.Name, "type", c.Type)
+		}
+	}
+	if len(chain) == 0 {
+		return nil
+	}
+	return guardrail.New(chain)
 }
 
 func seedProviderRegistry(ctx context.Context, store repository.ProviderRegistryStore, providers []config.ProviderConfig) error {

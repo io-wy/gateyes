@@ -25,9 +25,55 @@ type Config struct {
 	Retry          RetryConfig          `yaml:"retry"`
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuitBreaker"`
 	Cache          CacheConfig          `yaml:"cache"`
+	Persistence    PersistenceConfig    `yaml:"persistence"`
+	Guardrails     []GuardrailConfig    `yaml:"guardrails"`
+	Pricing        PricingConfig        `yaml:"pricing"`
 	Providers      []ProviderConfig     `yaml:"providers"`
 	APIKeys        []APIKeyConfig       `yaml:"apiKeys"`
 	Admin          AdminConfig          `yaml:"admin"`
+}
+
+// GuardrailConfig defines a single pre-/post-call validator. Currently
+// only the "regex" type is bundled; users may add more via code.
+//
+// Example yaml:
+//
+//	guardrails:
+//	  - name: pii-blocklist
+//	    type: regex
+//	    requestPatterns: ["\\b\\d{3}-\\d{2}-\\d{4}\\b"]
+//	    responsePatterns: []
+type GuardrailConfig struct {
+	Name             string   `yaml:"name"`
+	Type             string   `yaml:"type"`
+	RequestPatterns  []string `yaml:"requestPatterns"`
+	ResponsePatterns []string `yaml:"responsePatterns"`
+}
+
+// PricingConfig enables an external model→price feed that fills in
+// per-token costs for models not explicitly priced in the provider yaml.
+//
+// yaml provider PriceInput / PriceOutput remain authoritative — the feed
+// only fills gaps. Refresh runs daily by default; on cold start, an
+// optional CacheFile is consulted before the first network fetch.
+type PricingConfig struct {
+	Enabled                  bool   `yaml:"enabled"`
+	FeedURL                  string `yaml:"feedURL"`
+	CacheFile                string `yaml:"cacheFile"`
+	RefreshIntervalSeconds   int    `yaml:"refreshIntervalSeconds"` // default 86400 (24h)
+}
+
+// PersistenceConfig configures the async event bus that moves bookkeeping
+// work (DB updates, alert webhooks, callbacks) off the request hot path.
+//
+// Defaults are sensible for a single mid-size node; tune Workers up for
+// higher-throughput deployments. When BusBuffer fills (saturated workers),
+// the gateway falls back to inline detached goroutines so no billing data
+// is dropped — observe the dropped counter via metrics.
+type PersistenceConfig struct {
+	BusBuffer             int `yaml:"busBuffer"`             // channel capacity, default 10000
+	BusWorkers            int `yaml:"busWorkers"`            // consumer goroutine count, default 8
+	HandlerTimeoutSeconds int `yaml:"handlerTimeoutSeconds"` // per-handler timeout, default 5
 }
 
 type RedisConfig struct {
@@ -70,10 +116,23 @@ type TracingConfig struct {
 }
 
 type RouterConfig struct {
-	Strategy   string           `yaml:"strategy"`
-	Ranker     RankerConfig     `yaml:"ranker"`
-	RuleEngine RuleEngineConfig `yaml:"ruleEngine"`
-	Affinity   AffinityConfig   `yaml:"affinity"`
+	Strategy         string                 `yaml:"strategy"`
+	Ranker           RankerConfig           `yaml:"ranker"`
+	RuleEngine       RuleEngineConfig       `yaml:"ruleEngine"`
+	Affinity         AffinityConfig         `yaml:"affinity"`
+	InferenceMetrics InferenceMetricsConfig `yaml:"inferenceMetrics"`
+}
+
+// InferenceMetricsConfig configures Prometheus-style scraping of
+// inference-server-side metrics (vLLM /metrics endpoint) so the
+// least_load strategy can include queue depth and KV-cache utilisation
+// in its scoring. When Enabled is false, falls back to in-process
+// CurrentLoad (existing behavior).
+//
+// Per-provider metricsURL is read from each provider's MetricsURL field.
+type InferenceMetricsConfig struct {
+	Enabled              bool `yaml:"enabled"`
+	ScrapeIntervalSeconds int `yaml:"scrapeIntervalSeconds"` // default 5
 }
 
 type RankerConfig struct {
@@ -148,7 +207,8 @@ type ProviderConfig struct {
 	Enabled       bool              `yaml:"enabled"`
 	Headers       map[string]string `yaml:"headers"`
 	ExtraBody     map[string]any    `yaml:"extraBody"`
-	EnvFile       string            `yaml:"envFile"` // 敏感字段外置 .env 文件路径，空则自动尝试 .env1, .env2...
+	EnvFile       string            `yaml:"envFile"`    // 敏感字段外置 .env 文件路径，空则自动尝试 .env1, .env2...
+	MetricsURL    string            `yaml:"metricsURL"` // optional: Prometheus /metrics endpoint for inference-aware routing (vLLM)
 }
 
 type APIKeyConfig struct {
@@ -207,12 +267,13 @@ type CircuitBreakerConfig struct {
 }
 
 type CacheConfig struct {
-	Enabled    bool   `yaml:"enabled"`
-	Backend    string `yaml:"backend"`    // "auto" | "memory"; auto = redis if available, else memory
-	DefaultTTL int    `yaml:"defaultTTL"` // seconds; 0 = no expiry
-	Capacity   int    `yaml:"capacity"`   // memory cache max entries; <1 = default 1024
-	SkipStream bool   `yaml:"skipStream"` // default false
-	SkipTools  bool   `yaml:"skipTools"`  // default true (tools responses are stateful)
+	Enabled      bool   `yaml:"enabled"`
+	Backend      string `yaml:"backend"`      // "auto" | "memory"; auto = redis if available, else memory
+	DefaultTTL   int    `yaml:"defaultTTL"`   // seconds; 0 = no expiry
+	Capacity     int    `yaml:"capacity"`     // memory cache max entries; <1 = default 1024
+	SkipStream   bool   `yaml:"skipStream"`   // default false
+	SkipTools    bool   `yaml:"skipTools"`    // default true (tools responses are stateful)
+	Singleflight bool   `yaml:"singleflight"` // dedupe concurrent cache misses on same key
 }
 
 type AffinityConfig struct {
@@ -419,6 +480,9 @@ func (c *Config) Validate() error {
 	if c.Cache.DefaultTTL < 0 || c.Cache.Capacity < 0 {
 		return fmt.Errorf("cache values must be >= 0")
 	}
+	if c.Persistence.BusBuffer < 0 || c.Persistence.BusWorkers < 0 || c.Persistence.HandlerTimeoutSeconds < 0 {
+		return fmt.Errorf("persistence values must be >= 0")
+	}
 	if !containsString([]string{"auto", "memory", ""}, c.Cache.Backend) {
 		return fmt.Errorf("unsupported cache.backend: %s", c.Cache.Backend)
 	}
@@ -503,6 +567,11 @@ func DefaultConfig() *Config {
 			Capacity:   0,
 			SkipStream: false,
 			SkipTools:  true,
+		},
+		Persistence: PersistenceConfig{
+			BusBuffer:             10000,
+			BusWorkers:            8,
+			HandlerTimeoutSeconds: 5,
 		},
 		Admin: AdminConfig{
 			DefaultTenant:   "default",

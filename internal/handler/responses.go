@@ -56,8 +56,11 @@ func (h *Handler) handleResponsesCreate(c *gin.Context) {
 		return
 	}
 
+	hints := responseSvc.ParseCacheHintsFromHeaders(c.GetHeader)
+	reqCtx := responseSvc.WithCacheHints(c.Request.Context(), hints)
+
 	if req.Stream {
-		stream, err := h.responses.CreateStream(c.Request.Context(), identity, &req, c.GetHeader("X-Session-ID"))
+		stream, err := h.responses.CreateStream(reqCtx, identity, &req, c.GetHeader("X-Session-ID"))
 		if err != nil {
 			h.renderServiceError(c, metricsSurfaceResponses, "", err)
 			return
@@ -66,7 +69,7 @@ func (h *Handler) handleResponsesCreate(c *gin.Context) {
 		return
 	}
 
-	result, err := h.responses.Create(c.Request.Context(), identity, &req, c.GetHeader("X-Session-ID"))
+	result, err := h.responses.Create(reqCtx, identity, &req, c.GetHeader("X-Session-ID"))
 	if err != nil {
 		h.renderServiceError(c, metricsSurfaceResponses, "", err)
 		return

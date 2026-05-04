@@ -99,8 +99,10 @@ func (h *Handler) Chat(c *gin.Context) {
 	}
 
 	responseReq := provider.ConvertChatRequest(&req)
+	hints := responseSvc.ParseCacheHintsFromHeaders(c.GetHeader)
+	reqCtx := responseSvc.WithCacheHints(c.Request.Context(), hints)
 	if req.Stream {
-		stream, err := h.responses.CreateStream(c.Request.Context(), identity, responseReq, c.GetHeader("X-Session-ID"))
+		stream, err := h.responses.CreateStream(reqCtx, identity, responseReq, c.GetHeader("X-Session-ID"))
 		if err != nil {
 			h.renderServiceError(c, metricsSurfaceChatCompletions, "", err)
 			return
@@ -109,7 +111,7 @@ func (h *Handler) Chat(c *gin.Context) {
 		return
 	}
 
-	result, err := h.responses.Create(c.Request.Context(), identity, responseReq, c.GetHeader("X-Session-ID"))
+	result, err := h.responses.Create(reqCtx, identity, responseReq, c.GetHeader("X-Session-ID"))
 	if err != nil {
 		h.renderServiceError(c, metricsSurfaceChatCompletions, "", err)
 		return
@@ -145,8 +147,10 @@ func (h *Handler) AnthropicMessages(c *gin.Context) {
 	}
 
 	responseReq := provider.ConvertAnthropicRequest(&req)
+	hints := responseSvc.ParseCacheHintsFromHeaders(c.GetHeader)
+	reqCtx := responseSvc.WithCacheHints(c.Request.Context(), hints)
 	if req.Stream {
-		stream, err := h.responses.CreateStream(c.Request.Context(), identity, responseReq, c.GetHeader("X-Session-ID"))
+		stream, err := h.responses.CreateStream(reqCtx, identity, responseReq, c.GetHeader("X-Session-ID"))
 		if err != nil {
 			h.renderServiceError(c, metricsSurfaceMessages, "", err)
 			return
@@ -155,7 +159,7 @@ func (h *Handler) AnthropicMessages(c *gin.Context) {
 		return
 	}
 
-	result, err := h.responses.Create(c.Request.Context(), identity, responseReq, c.GetHeader("X-Session-ID"))
+	result, err := h.responses.Create(reqCtx, identity, responseReq, c.GetHeader("X-Session-ID"))
 	if err != nil {
 		h.renderServiceError(c, metricsSurfaceMessages, "", err)
 		return

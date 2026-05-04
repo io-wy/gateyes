@@ -11,13 +11,23 @@ import (
 )
 
 type Router struct {
-	cfg       config.RouterConfig
-	providers []provider.Provider
-	stats     *provider.Stats
-	index     int
-	rrWeights map[string]int
-	mu        sync.Mutex
-	affinity  Affinity
+	cfg              config.RouterConfig
+	providers        []provider.Provider
+	stats            *provider.Stats
+	index            int
+	rrWeights        map[string]int
+	mu               sync.Mutex
+	affinity         Affinity
+	inferenceScraper *InferenceScraper
+}
+
+// SetInferenceScraper wires an optional inference-signal scraper. When
+// set, the least_load strategy prefers its load score over in-process
+// CurrentLoad. nil disables (default).
+func (r *Router) SetInferenceScraper(s *InferenceScraper) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.inferenceScraper = s
 }
 
 func NewRouter(cfg config.RouterConfig, stats *provider.Stats) *Router {
@@ -169,6 +179,11 @@ func (r *Router) orderByStrategyLocked(candidates []provider.Provider, sessionID
 		return r.weightedRoundRobin(ordered)
 	case "least_load":
 		sort.SliceStable(ordered, func(i, j int) bool {
+			scoreI, hasI := r.inferenceLoadLocked(ordered[i].Name())
+			scoreJ, hasJ := r.inferenceLoadLocked(ordered[j].Name())
+			if hasI && hasJ && scoreI != scoreJ {
+				return scoreI < scoreJ
+			}
 			var loadI, loadJ int64
 			if r.stats != nil {
 				loadI = r.stats.CurrentLoad(ordered[i].Name())
@@ -298,6 +313,20 @@ func (r *Router) affinityName() string {
 	default:
 		return "custom"
 	}
+}
+
+// inferenceLoadLocked returns the synthetic load score for a provider as
+// reported by the inference scraper. Boolean is false when no scraper is
+// configured or no fresh state exists for that provider.
+func (r *Router) inferenceLoadLocked(name string) (float64, bool) {
+	if r.inferenceScraper == nil {
+		return 0, false
+	}
+	state, ok := r.inferenceScraper.Get(name)
+	if !ok || state.Stale {
+		return 0, false
+	}
+	return state.LoadScore(), true
 }
 
 func (r *Router) PromoteAffinity(ctx RouteContext, providerName string) {

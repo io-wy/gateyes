@@ -52,12 +52,17 @@ type Entry struct {
 // PromptCanon must be a stable, canonical encoding of the request body
 // (typically JSON with sorted keys). Callers are responsible for canonicalisation
 // — see CanonicalizeMessages and CanonicalizeJSON helpers.
+//
+// Bucket is an opt-in extra dimension for A/B isolation. Two requests with
+// the same prompt but different buckets get different cache keys; empty
+// bucket preserves prior behavior.
 type KeyInput struct {
 	TenantID    string
 	Model       string
 	PromptCanon string
 	Stream      bool
 	Surface     string // "responses" | "chat_completions" | "messages" | "embeddings"
+	Bucket      string
 }
 
 // BuildKey returns a deterministic cache key for the given input.
@@ -73,6 +78,9 @@ func BuildKey(in KeyInput) string {
 		_, _ = h.Write([]byte{0x01})
 	} else {
 		_, _ = h.Write([]byte{0x00})
+	}
+	if in.Bucket != "" {
+		writeField(h, in.Bucket)
 	}
 	return "gw:l1:" + hex.EncodeToString(h.Sum(nil))
 }
