@@ -1,0 +1,185 @@
+package proxy
+
+import (
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"strings"
+	"time"
+)
+
+// Proxy is a dynamic reverse proxy for ingress traffic.
+type Proxy struct {
+	transport   http.RoundTripper
+	logger      *slog.Logger
+	dialTimeout time.Duration
+}
+
+// ProxyConfig holds proxy-level settings.
+type ProxyConfig struct {
+	ConnectTimeout  time.Duration
+	ReadTimeout     time.Duration
+	SendTimeout     time.Duration
+	IdleConnTimeout time.Duration
+	MaxIdleConns    int
+	MaxConnsPerHost int
+}
+
+func DefaultProxyConfig() ProxyConfig {
+	return ProxyConfig{
+		ConnectTimeout:  5 * time.Second,
+		ReadTimeout:     60 * time.Second,
+		SendTimeout:     60 * time.Second,
+		IdleConnTimeout: 90 * time.Second,
+		MaxIdleConns:    100,
+		MaxConnsPerHost: 10,
+	}
+}
+
+func NewProxy(cfg ProxyConfig) *Proxy {
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   cfg.ConnectTimeout,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		MaxIdleConns:          cfg.MaxIdleConns,
+		MaxIdleConnsPerHost:   cfg.MaxConnsPerHost,
+		IdleConnTimeout:       cfg.IdleConnTimeout,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ForceAttemptHTTP2:     true,
+	}
+	return &Proxy{
+		transport:   transport,
+		logger:      slog.With("component", "proxy"),
+		dialTimeout: cfg.ConnectTimeout,
+	}
+}
+
+// ServeHTTP proxies the request to the selected backend.
+func (p *Proxy) ServeHTTP(w http.ResponseWriter, req *http.Request, rule *RouteRule, backend Backend) error {
+	if backend == nil {
+		return fmt.Errorf("no backend available")
+	}
+
+	targetURL, err := url.Parse(rule.UpstreamURL(backend, req.URL.Path))
+	if err != nil {
+		return fmt.Errorf("parse upstream URL: %w", err)
+	}
+
+	// Clone request to avoid mutating the original.
+	outReq := req.Clone(req.Context())
+	outReq.URL.Scheme = targetURL.Scheme
+	outReq.URL.Host = targetURL.Host
+	outReq.URL.Path = targetURL.Path
+	outReq.URL.RawQuery = req.URL.RawQuery
+	outReq.Host = req.Host // preserve original Host header by default; allow override via annotation.
+
+	if rule.Annotations != nil && rule.Annotations.BackendProtocol == "HTTPS" {
+		outReq.URL.Scheme = "https"
+	}
+
+	// Apply proxy timeouts from annotations if present.
+	transport := p.transport
+	if rule.Annotations != nil {
+		transport = p.annotatedTransport(rule.Annotations)
+	}
+
+	// Use httputil.ReverseProxy for full protocol support (WebSocket, H2, etc.).
+	rp := httputil.NewSingleHostReverseProxy(targetURL)
+	rp.Transport = transport
+	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		p.logger.Error("proxy error", "backend", backend.Name(), "error", err)
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+	}
+	rp.ModifyResponse = func(resp *http.Response) error {
+		// Inject CORS headers if enabled.
+		if rule.Annotations != nil && rule.Annotations.EnableCORS {
+			p.injectCORS(resp.Header, rule.Annotations, req)
+		}
+		return nil
+	}
+
+	rp.ServeHTTP(w, outReq)
+	return nil
+}
+
+func (p *Proxy) annotatedTransport(annot *Annotations) http.RoundTripper {
+	base := p.transport.(*http.Transport)
+	// Clone and override timeouts.
+	clone := base.Clone()
+	if annot.ProxyConnectTimeout > 0 {
+		clone.DialContext = (&net.Dialer{
+			Timeout:   annot.ProxyConnectTimeout,
+			KeepAlive: 30 * time.Second,
+		}).DialContext
+	}
+	return clone
+}
+
+func (p *Proxy) injectCORS(hdr http.Header, annot *Annotations, req *http.Request) {
+	origin := req.Header.Get("Origin")
+	if origin == "" {
+		origin = "*"
+	}
+	if len(annot.CORSAllowOrigin) > 0 {
+		allowed := false
+		for _, o := range annot.CORSAllowOrigin {
+			if o == origin || o == "*" {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return
+		}
+	}
+	hdr.Set("Access-Control-Allow-Origin", origin)
+	if annot.CORSAllowCredentials {
+		hdr.Set("Access-Control-Allow-Credentials", "true")
+	}
+	if len(annot.CORSAllowMethods) > 0 {
+		hdr.Set("Access-Control-Allow-Methods", strings.Join(annot.CORSAllowMethods, ", "))
+	} else {
+		hdr.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH")
+	}
+	if len(annot.CORSAllowHeaders) > 0 {
+		hdr.Set("Access-Control-Allow-Headers", strings.Join(annot.CORSAllowHeaders, ", "))
+	} else {
+		hdr.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-ID")
+	}
+}
+
+// HandlePreflight responds to OPTIONS requests for CORS preflight.
+func (p *Proxy) HandlePreflight(w http.ResponseWriter, annot *Annotations, req *http.Request) {
+	if annot == nil || !annot.EnableCORS {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	origin := req.Header.Get("Origin")
+	if origin == "" {
+		origin = "*"
+	}
+	w.Header().Set("Access-Control-Allow-Origin", origin)
+	w.Header().Set("Access-Control-Allow-Methods", strings.Join(annot.CORSAllowMethods, ", "))
+	w.Header().Set("Access-Control-Allow-Headers", strings.Join(annot.CORSAllowHeaders, ", "))
+	if annot.CORSAllowCredentials {
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+	}
+	w.Header().Set("Access-Control-Max-Age", "86400")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ProxyHTTPError writes a standard proxy error response.
+func ProxyHTTPError(w http.ResponseWriter, code int, msg string) {
+	http.Error(w, msg, code)
+}
+
+// IsWebSocketUpgrade checks if the request is a WebSocket upgrade.
+func IsWebSocketUpgrade(req *http.Request) bool {
+	return strings.EqualFold(req.Header.Get("Upgrade"), "websocket")
+}

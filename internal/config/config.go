@@ -25,6 +25,9 @@ type Config struct {
 	Retry          RetryConfig          `yaml:"retry"`
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuitBreaker"`
 	Cache          CacheConfig          `yaml:"cache"`
+	Ingress        IngressConfig        `yaml:"ingress"`
+	Discovery      DiscoveryConfig      `yaml:"discovery"`
+	Proxy          ProxyConfig          `yaml:"proxy"`
 	Providers      []ProviderConfig     `yaml:"providers"`
 	APIKeys        []APIKeyConfig       `yaml:"apiKeys"`
 	Admin          AdminConfig          `yaml:"admin"`
@@ -213,6 +216,55 @@ type CacheConfig struct {
 	Capacity   int    `yaml:"capacity"`   // memory cache max entries; <1 = default 1024
 	SkipStream bool   `yaml:"skipStream"` // default false
 	SkipTools  bool   `yaml:"skipTools"`  // default true (tools responses are stateful)
+}
+
+type IngressConfig struct {
+	Enabled            bool   `yaml:"enabled"`
+	Class              string `yaml:"class"`              // ingressClassName, default "gateyes"
+	WatchNamespace     string `yaml:"watchNamespace"`     // empty = all namespaces
+	DefaultBackend     string `yaml:"defaultBackend"`     // fallback service when no rule matches
+	TLSEnabled         bool   `yaml:"tlsEnabled"`         // enable TLS termination from Ingress TLS secrets
+	TLSSecretNamespace string `yaml:"tlsSecretNamespace"` // namespace to watch for TLS secrets
+}
+
+type DiscoveryConfig struct {
+	Type      string            `yaml:"type"` // kubernetes | consul | nacos | etcd | static
+	K8s       K8sDiscoveryConfig `yaml:"kubernetes"`
+	Consul    ConsulDiscoveryConfig `yaml:"consul"`
+	Nacos     NacosDiscoveryConfig `yaml:"nacos"`
+	Etcd      EtcdDiscoveryConfig `yaml:"etcd"`
+}
+
+type K8sDiscoveryConfig struct {
+	Namespace string `yaml:"namespace"` // empty = all namespaces
+}
+
+type ConsulDiscoveryConfig struct {
+	Addr       string `yaml:"addr"`
+	Datacenter string `yaml:"datacenter"`
+	Token      string `yaml:"token"`
+}
+
+type NacosDiscoveryConfig struct {
+	ServerAddr  string `yaml:"serverAddr"`
+	NamespaceID string `yaml:"namespaceId"`
+	Group       string `yaml:"group"`
+}
+
+type EtcdDiscoveryConfig struct {
+	Endpoints []string `yaml:"endpoints"`
+	Username  string   `yaml:"username"`
+	Password  string   `yaml:"password"`
+}
+
+type ProxyConfig struct {
+	ConnectTimeout  int `yaml:"connectTimeout"`  // seconds
+	ReadTimeout     int `yaml:"readTimeout"`     // seconds
+	SendTimeout     int `yaml:"sendTimeout"`     // seconds
+	IdleConnTimeout int `yaml:"idleConnTimeout"` // seconds
+	MaxIdleConns    int `yaml:"maxIdleConns"`
+	MaxConnsPerHost int `yaml:"maxConnsPerHost"`
+	MaxBodySize     int64 `yaml:"maxBodySize"`   // bytes, 0 = unlimited
 }
 
 type AffinityConfig struct {
@@ -425,6 +477,15 @@ func (c *Config) Validate() error {
 	if c.Router.Affinity.SessionTTL < 0 || c.Router.Affinity.PrefixTTL < 0 || c.Router.Affinity.PrefixDepth < 0 {
 		return fmt.Errorf("router.affinity values must be >= 0")
 	}
+	if !containsString([]string{"kubernetes", "consul", "nacos", "etcd", "static", ""}, c.Discovery.Type) {
+		return fmt.Errorf("unsupported discovery.type: %s", c.Discovery.Type)
+	}
+	if c.Proxy.ConnectTimeout < 0 || c.Proxy.ReadTimeout < 0 || c.Proxy.SendTimeout < 0 {
+		return fmt.Errorf("proxy timeout values must be >= 0")
+	}
+	if c.Proxy.MaxBodySize < 0 {
+		return fmt.Errorf("proxy.maxBodySize must be >= 0")
+	}
 	return nil
 }
 
@@ -503,6 +564,24 @@ func DefaultConfig() *Config {
 			Capacity:   0,
 			SkipStream: false,
 			SkipTools:  true,
+		},
+		Ingress: IngressConfig{
+			Enabled:        false,
+			Class:          "gateyes",
+			WatchNamespace: "",
+			TLSEnabled:     false,
+		},
+		Discovery: DiscoveryConfig{
+			Type: "kubernetes",
+		},
+		Proxy: ProxyConfig{
+			ConnectTimeout:  5,
+			ReadTimeout:     60,
+			SendTimeout:     60,
+			IdleConnTimeout: 90,
+			MaxIdleConns:    100,
+			MaxConnsPerHost: 10,
+			MaxBodySize:     0,
 		},
 		Admin: AdminConfig{
 			DefaultTenant:   "default",
