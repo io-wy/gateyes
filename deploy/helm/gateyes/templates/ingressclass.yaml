@@ -1,0 +1,10 @@
+{{- if .Values.ingressController.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: {{ .Values.ingressController.class | default "gateyes" }}
+  labels:
+    {{- include "gateyes.labels" . | nindent 4 }}
+spec:
+  controller: gateway.gateyes.io/ingress-controller
+{{- end }}
