@@ -219,52 +219,52 @@ type CacheConfig struct {
 }
 
 type IngressConfig struct {
-	Enabled            bool   `yaml:"enabled"`
-	Class              string `yaml:"class"`              // ingressClassName, default "gateyes"
-	WatchNamespace     string `yaml:"watchNamespace"`     // empty = all namespaces
-	DefaultBackend     string `yaml:"defaultBackend"`     // fallback service when no rule matches
-	TLSEnabled         bool   `yaml:"tlsEnabled"`         // enable TLS termination from Ingress TLS secrets
-	TLSSecretNamespace string `yaml:"tlsSecretNamespace"` // namespace to watch for TLS secrets
+	Enabled            bool   `yaml:"enabled" mapstructure:"enabled"`
+	Class              string `yaml:"class" mapstructure:"class"`                           // ingressClassName, default "gateyes"
+	WatchNamespace     string `yaml:"watchNamespace" mapstructure:"watchNamespace"`         // empty = all namespaces
+	DefaultBackend     string `yaml:"defaultBackend" mapstructure:"defaultBackend"`         // fallback service when no rule matches
+	TLSEnabled         bool   `yaml:"tlsEnabled" mapstructure:"tlsEnabled"`                 // enable TLS termination from Ingress TLS secrets
+	TLSSecretNamespace string `yaml:"tlsSecretNamespace" mapstructure:"tlsSecretNamespace"` // namespace to watch for TLS secrets
 }
 
 type DiscoveryConfig struct {
-	Type      string            `yaml:"type"` // kubernetes | consul | nacos | etcd | static
-	K8s       K8sDiscoveryConfig `yaml:"kubernetes"`
-	Consul    ConsulDiscoveryConfig `yaml:"consul"`
-	Nacos     NacosDiscoveryConfig `yaml:"nacos"`
-	Etcd      EtcdDiscoveryConfig `yaml:"etcd"`
+	Type   string                `yaml:"type" mapstructure:"type"` // kubernetes | consul | nacos | etcd | static
+	K8s    K8sDiscoveryConfig    `yaml:"kubernetes" mapstructure:"kubernetes"`
+	Consul ConsulDiscoveryConfig `yaml:"consul" mapstructure:"consul"`
+	Nacos  NacosDiscoveryConfig  `yaml:"nacos" mapstructure:"nacos"`
+	Etcd   EtcdDiscoveryConfig   `yaml:"etcd" mapstructure:"etcd"`
 }
 
 type K8sDiscoveryConfig struct {
-	Namespace string `yaml:"namespace"` // empty = all namespaces
+	Namespace string `yaml:"namespace" mapstructure:"namespace"` // empty = all namespaces
 }
 
 type ConsulDiscoveryConfig struct {
-	Addr       string `yaml:"addr"`
-	Datacenter string `yaml:"datacenter"`
-	Token      string `yaml:"token"`
+	Addr       string `yaml:"addr" mapstructure:"addr"`
+	Datacenter string `yaml:"datacenter" mapstructure:"datacenter"`
+	Token      string `yaml:"token" mapstructure:"token"`
 }
 
 type NacosDiscoveryConfig struct {
-	ServerAddr  string `yaml:"serverAddr"`
-	NamespaceID string `yaml:"namespaceId"`
-	Group       string `yaml:"group"`
+	ServerAddr  string `yaml:"serverAddr" mapstructure:"serverAddr"`
+	NamespaceID string `yaml:"namespaceId" mapstructure:"namespaceId"`
+	Group       string `yaml:"group" mapstructure:"group"`
 }
 
 type EtcdDiscoveryConfig struct {
-	Endpoints []string `yaml:"endpoints"`
-	Username  string   `yaml:"username"`
-	Password  string   `yaml:"password"`
+	Endpoints []string `yaml:"endpoints" mapstructure:"endpoints"`
+	Username  string   `yaml:"username" mapstructure:"username"`
+	Password  string   `yaml:"password" mapstructure:"password"`
 }
 
 type ProxyConfig struct {
-	ConnectTimeout  int `yaml:"connectTimeout"`  // seconds
-	ReadTimeout     int `yaml:"readTimeout"`     // seconds
-	SendTimeout     int `yaml:"sendTimeout"`     // seconds
-	IdleConnTimeout int `yaml:"idleConnTimeout"` // seconds
-	MaxIdleConns    int `yaml:"maxIdleConns"`
-	MaxConnsPerHost int `yaml:"maxConnsPerHost"`
-	MaxBodySize     int64 `yaml:"maxBodySize"`   // bytes, 0 = unlimited
+	ConnectTimeout  int   `yaml:"connectTimeout" mapstructure:"connectTimeout"`   // seconds
+	ReadTimeout     int   `yaml:"readTimeout" mapstructure:"readTimeout"`         // seconds
+	SendTimeout     int   `yaml:"sendTimeout" mapstructure:"sendTimeout"`         // seconds
+	IdleConnTimeout int   `yaml:"idleConnTimeout" mapstructure:"idleConnTimeout"` // seconds
+	MaxIdleConns    int   `yaml:"maxIdleConns" mapstructure:"maxIdleConns"`
+	MaxConnsPerHost int   `yaml:"maxConnsPerHost" mapstructure:"maxConnsPerHost"`
+	MaxBodySize     int64 `yaml:"maxBodySize" mapstructure:"maxBodySize"`         // bytes, 0 = unlimited
 }
 
 type AffinityConfig struct {

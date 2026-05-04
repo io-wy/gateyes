@@ -32,15 +32,13 @@ func NewK8sEndpointsDiscovery(c client.Reader, namespace string) *K8sEndpointsDi
 
 func (d *K8sEndpointsDiscovery) Watch(ctx context.Context, serviceName string) ([]Endpoint, error) {
 	ns := d.namespace
-	if ns == "" {
-		// Parse namespace from serviceName if qualified: namespace/name
-		parts := strings.SplitN(serviceName, "/", 2)
-		if len(parts) == 2 {
-			ns = parts[0]
-			serviceName = parts[1]
-		} else {
-			ns = "default"
-		}
+	// Parse namespace from serviceName if qualified: namespace/name
+	parts := strings.SplitN(serviceName, "/", 2)
+	if len(parts) == 2 {
+		ns = parts[0]
+		serviceName = parts[1]
+	} else if ns == "" {
+		ns = "default"
 	}
 
 	// Try EndpointSlice first (modern API).
