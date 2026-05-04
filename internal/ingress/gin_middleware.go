@@ -6,10 +6,30 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 
 	"github.com/gateyes/gateway/internal/proxy"
+)
+
+var (
+	ingressRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ingress_requests_total",
+		Help: "Total number of ingress requests handled",
+	}, []string{"host", "path", "status"})
+	ingressRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "ingress_request_duration_seconds",
+		Help:    "Latency of ingress requests in seconds",
+		Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+	}, []string{"host", "path"})
+	ingressBackendErrorsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ingress_backend_errors_total",
+		Help: "Total number of ingress backend errors",
+	}, []string{"host", "backend"})
 )
 
 // responseWriterWrapper wraps an http.ResponseWriter to strip http.CloseNotifier.
@@ -17,6 +37,16 @@ import (
 // underlying writer does not support it (e.g. httptest.ResponseRecorder).
 type responseWriterWrapper struct {
 	http.ResponseWriter
+	statusCode int
+}
+
+func (w *responseWriterWrapper) WriteHeader(code int) {
+	w.statusCode = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *responseWriterWrapper) Status() int {
+	return w.statusCode
 }
 
 func (w *responseWriterWrapper) Hijack() (net.Conn, *bufio.ReadWriter, error) {
@@ -165,13 +195,22 @@ func (m *Middleware) Handler() gin.HandlerFunc {
 			"address", backend.Address(),
 		)
 
-		if err := m.proxy.ServeHTTP(&responseWriterWrapper{ResponseWriter: c.Writer}, c.Request, rule, backend); err != nil {
+		start := time.Now()
+		wrapped := &responseWriterWrapper{ResponseWriter: c.Writer}
+		if err := m.proxy.ServeHTTP(wrapped, c.Request, rule, backend); err != nil {
 			m.logger.Error("ingress proxy error", "error", err, "backend", backend.Name())
+			ingressBackendErrorsTotal.WithLabelValues(c.Request.Host, backend.Name()).Inc()
 			// Only write error if response not yet written.
 			if !c.Writer.Written() {
 				c.JSON(http.StatusBadGateway, gin.H{"error": "bad gateway"})
 			}
 		}
+		status := wrapped.Status()
+		if status == 0 {
+			status = http.StatusOK
+		}
+		ingressRequestDuration.WithLabelValues(c.Request.Host, rule.Path).Observe(time.Since(start).Seconds())
+		ingressRequestsTotal.WithLabelValues(c.Request.Host, rule.Path, strconv.Itoa(status)).Inc()
 		c.Abort()
 	}
 }
