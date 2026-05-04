@@ -377,8 +377,8 @@ func TestBuildCacheKey_WithTools(t *testing.T) {
 		Tools:  []any{map[string]any{"type": "function", "name": "fn1"}},
 	}
 	identity := &repository.AuthIdentity{TenantID: "t1", UserID: "u1"}
-	k1 := svc.buildCacheKey(identity, req)
-	k2 := svc.buildCacheKey(identity, req)
+	k1 := svc.buildCacheKey(context.Background(), identity, req)
+	k2 := svc.buildCacheKey(context.Background(), identity, req)
 	if k1 != k2 {
 		t.Fatal("cache key should be deterministic")
 	}
@@ -389,7 +389,7 @@ func TestBuildCacheKey_StreamDiffers(t *testing.T) {
 	identity := &repository.AuthIdentity{TenantID: "t1", UserID: "u1"}
 	req1 := &provider.ResponseRequest{Model: "gpt-4", Input: "hi", Stream: false}
 	req2 := &provider.ResponseRequest{Model: "gpt-4", Input: "hi", Stream: true}
-	if svc.buildCacheKey(identity, req1) == svc.buildCacheKey(identity, req2) {
+	if svc.buildCacheKey(context.Background(), identity, req1) == svc.buildCacheKey(context.Background(), identity, req2) {
 		t.Fatal("stream flag should affect cache key")
 	}
 }

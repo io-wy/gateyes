@@ -46,6 +46,13 @@ router:
     sessionTTL: 3600
     prefixTTL: 300
     prefixDepth: 128
+  inferenceMetrics:
+    # When enabled, scrape per-provider metricsURL (e.g. vLLM /metrics) on
+    # an interval and feed queue-depth + KV-cache utilisation into the
+    # least_load strategy. Providers without metricsURL fall back to the
+    # in-process CurrentLoad signal.
+    enabled: false
+    scrapeIntervalSeconds: 5
 
 cache:
   enabled: false
@@ -54,6 +61,37 @@ cache:
   capacity: 0                   # memory cache max entries; <1 = default 1024
   skipStream: false
   skipTools: true
+  # Dedupe concurrent cache misses on the same prompt+model+provider key.
+  # Saves an upstream HTTP roundtrip per dogpile, but means waiters share
+  # a single-tenant response. Recommended on for high-concurrency demos
+  # where prompts repeat; off (default) when strict per-virtual-key
+  # billing of every concurrent request matters.
+  singleflight: false
+
+# Async event bus for post-response bookkeeping (DB body write, alert
+# webhooks, callbacks). Moves these off the request hot path; falls back
+# to inline detached goroutines when the bus channel is full.
+persistence:
+  busBuffer: 10000
+  busWorkers: 8
+  handlerTimeoutSeconds: 5
+
+# Optional model→price feed. yaml provider PriceInput / PriceOutput remain
+# authoritative; this fills gaps for models you didn't price by hand.
+# Default URL points to LiteLLM's public table (MIT-licensed).
+pricing:
+  enabled: false
+  feedURL: ""                   # empty = use built-in default
+  cacheFile: data/prices.json
+  refreshIntervalSeconds: 86400 # 24h
+
+# Pre-/post-call validators. Block verdicts surface as errors to the
+# client; transform verdicts replace the in-flight payload.
+guardrails:
+  - name: pii-blocklist-example
+    type: regex
+    requestPatterns: []         # e.g. ["\\b\\d{3}-\\d{2}-\\d{4}\\b"]
+    responsePatterns: []
 
 limiter:
   globalQPS: 1000

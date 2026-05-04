@@ -2,12 +2,19 @@ package provider
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
+// Stats tracks per-provider runtime counters.
+//
+// The hot path (RecordRequest, IncrementLoad, DecrementLoad) takes only an
+// RLock on the provider map plus atomic ops or a short per-provider mutex on
+// the slow-path fields (buckets, status). Multiple goroutines updating
+// different providers do not contend.
 type Stats struct {
 	mu            sync.RWMutex
-	providerStats map[string]*ProviderStats
+	providerStats map[string]*providerStatsAtomic
 }
 
 type tokenBucket struct {
@@ -15,6 +22,39 @@ type tokenBucket struct {
 	tokens    int64
 }
 
+// providerStatsAtomic is the internal storage form. Hot-path counters are
+// updated via sync/atomic; slow-path mutable state (buckets, status, times)
+// is guarded by `inner`. The struct is laid out so 64-bit fields are
+// 8-byte aligned (required for atomic access on 32-bit platforms).
+type providerStatsAtomic struct {
+	// 64-bit atomic fields first (alignment).
+	currentLoad     atomic.Int64
+	totalRequests   atomic.Int64
+	successRequests atomic.Int64
+	failedRequests  atomic.Int64
+	totalTokens     atomic.Int64
+	latencySum      atomic.Int64
+	latencyCount    atomic.Int64
+	minLatencyMs    atomic.Int64
+	maxLatencyMs    atomic.Int64
+	lastRequestUnix atomic.Int64
+	updatedAtUnix   atomic.Int64
+
+	// Static, set at Register and never mutated.
+	name    string
+	pType   string
+	model   string
+	baseURL string
+
+	// Slow-path mutable state.
+	inner   sync.Mutex
+	status  string
+	buckets [60]tokenBucket
+}
+
+// ProviderStats is the snapshot returned to callers. Fields are plain Go
+// values; readers may consume them freely. Each call to Get/List/snapshot
+// returns a fresh copy; the source values are read via atomic loads.
 type ProviderStats struct {
 	Name            string    `json:"name"`
 	Type            string    `json:"type"`
@@ -31,27 +71,26 @@ type ProviderStats struct {
 	MaxLatencyMs    int64     `json:"max_latency_ms"`
 	LastRequestAt   time.Time `json:"last_request_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
-	latencySum      int64
-	latencyCount    int64
-	buckets         [60]tokenBucket
 }
 
 func NewStats() *Stats {
-	return &Stats{providerStats: make(map[string]*ProviderStats)}
+	return &Stats{providerStats: make(map[string]*providerStatsAtomic)}
 }
 
 func (s *Stats) Register(p Provider) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.providerStats[p.Name()] = &ProviderStats{
-		Name:      p.Name(),
-		Type:      p.Type(),
-		Model:     p.Model(),
-		BaseURL:   p.BaseURL(),
-		Status:    "healthy",
-		UpdatedAt: time.Now(),
+	now := time.Now()
+	a := &providerStatsAtomic{
+		name:    p.Name(),
+		pType:   p.Type(),
+		model:   p.Model(),
+		baseURL: p.BaseURL(),
+		status:  "healthy",
 	}
+	a.updatedAtUnix.Store(now.UnixNano())
+	s.providerStats[p.Name()] = a
 }
 
 func (s *Stats) Unregister(name string) {
@@ -61,101 +100,178 @@ func (s *Stats) Unregister(name string) {
 }
 
 func (s *Stats) RecordRequest(name string, success bool, tokens int, latencyMs int64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	stats, ok := s.providerStats[name]
+	s.mu.RLock()
+	a, ok := s.providerStats[name]
+	s.mu.RUnlock()
 	if !ok {
 		return
 	}
 
-	stats.TotalRequests++
-	stats.TotalTokens += int64(tokens)
-	stats.LastRequestAt = time.Now()
-	stats.UpdatedAt = stats.LastRequestAt
-
+	a.totalRequests.Add(1)
+	a.totalTokens.Add(int64(tokens))
 	if success {
-		stats.SuccessRequests++
+		a.successRequests.Add(1)
 	} else {
-		stats.FailedRequests++
+		a.failedRequests.Add(1)
 	}
 
-	stats.latencySum += latencyMs
-	stats.latencyCount++
-	stats.AvgLatencyMs = float64(stats.latencySum) / float64(stats.latencyCount)
+	a.latencySum.Add(latencyMs)
+	a.latencyCount.Add(1)
 
-	if stats.MinLatencyMs == 0 || latencyMs < stats.MinLatencyMs {
-		stats.MinLatencyMs = latencyMs
+	// Min via CAS loop. Init to first value if zero.
+	for {
+		cur := a.minLatencyMs.Load()
+		if cur != 0 && cur <= latencyMs {
+			break
+		}
+		if a.minLatencyMs.CompareAndSwap(cur, latencyMs) {
+			break
+		}
 	}
-	if latencyMs > stats.MaxLatencyMs {
-		stats.MaxLatencyMs = latencyMs
+	// Max via CAS loop.
+	for {
+		cur := a.maxLatencyMs.Load()
+		if latencyMs <= cur {
+			break
+		}
+		if a.maxLatencyMs.CompareAndSwap(cur, latencyMs) {
+			break
+		}
 	}
 
-	now := time.Now().Unix()
-	idx := now % 60
-	if stats.buckets[idx].timestamp != now {
-		stats.buckets[idx] = tokenBucket{timestamp: now, tokens: 0}
+	now := time.Now()
+	a.lastRequestUnix.Store(now.UnixNano())
+	a.updatedAtUnix.Store(now.UnixNano())
+
+	// Bucket update needs the per-provider mutex (array slot rotation by
+	// timestamp would otherwise race). Held only for a few instructions.
+	a.inner.Lock()
+	idx := now.Unix() % 60
+	if a.buckets[idx].timestamp != now.Unix() {
+		a.buckets[idx] = tokenBucket{timestamp: now.Unix(), tokens: 0}
 	}
-	stats.buckets[idx].tokens += int64(tokens)
+	a.buckets[idx].tokens += int64(tokens)
+	a.inner.Unlock()
 }
 
 func (s *Stats) IncrementLoad(name string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if stats, ok := s.providerStats[name]; ok {
-		stats.CurrentLoad++
-		stats.UpdatedAt = time.Now()
+	s.mu.RLock()
+	a, ok := s.providerStats[name]
+	s.mu.RUnlock()
+	if !ok {
+		return
 	}
+	a.currentLoad.Add(1)
+	a.updatedAtUnix.Store(time.Now().UnixNano())
 }
 
 func (s *Stats) DecrementLoad(name string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if stats, ok := s.providerStats[name]; ok && stats.CurrentLoad > 0 {
-		stats.CurrentLoad--
-		stats.UpdatedAt = time.Now()
+	s.mu.RLock()
+	a, ok := s.providerStats[name]
+	s.mu.RUnlock()
+	if !ok {
+		return
 	}
+	// Decrement only if > 0; use CAS loop.
+	for {
+		cur := a.currentLoad.Load()
+		if cur <= 0 {
+			return
+		}
+		if a.currentLoad.CompareAndSwap(cur, cur-1) {
+			a.updatedAtUnix.Store(time.Now().UnixNano())
+			return
+		}
+	}
+}
+
+func (s *Stats) SetStatus(name string, status string) {
+	s.mu.RLock()
+	a, ok := s.providerStats[name]
+	s.mu.RUnlock()
+	if !ok {
+		return
+	}
+	a.inner.Lock()
+	a.status = status
+	a.inner.Unlock()
+	a.updatedAtUnix.Store(time.Now().UnixNano())
+}
+
+// snapshot reads the atomic state of a provider into a stable value.
+func (a *providerStatsAtomic) snapshot() *ProviderStats {
+	count := a.latencyCount.Load()
+	avg := 0.0
+	if count > 0 {
+		avg = float64(a.latencySum.Load()) / float64(count)
+	}
+	a.inner.Lock()
+	status := a.status
+	a.inner.Unlock()
+	return &ProviderStats{
+		Name:            a.name,
+		Type:            a.pType,
+		Model:           a.model,
+		BaseURL:         a.baseURL,
+		Status:          status,
+		CurrentLoad:     a.currentLoad.Load(),
+		TotalRequests:   a.totalRequests.Load(),
+		SuccessRequests: a.successRequests.Load(),
+		FailedRequests:  a.failedRequests.Load(),
+		TotalTokens:     a.totalTokens.Load(),
+		AvgLatencyMs:    avg,
+		MinLatencyMs:    a.minLatencyMs.Load(),
+		MaxLatencyMs:    a.maxLatencyMs.Load(),
+		LastRequestAt:   unixNanoToTime(a.lastRequestUnix.Load()),
+		UpdatedAt:       unixNanoToTime(a.updatedAtUnix.Load()),
+	}
+}
+
+func unixNanoToTime(ns int64) time.Time {
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
 }
 
 func (s *Stats) Get(name string) (*ProviderStats, bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	stats, ok := s.providerStats[name]
-	return stats, ok
-}
-
-func (s *Stats) SetStatus(name string, status string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if stats, ok := s.providerStats[name]; ok {
-		stats.Status = status
-		stats.UpdatedAt = time.Now()
+	a, ok := s.providerStats[name]
+	s.mu.RUnlock()
+	if !ok {
+		return nil, false
 	}
+	return a.snapshot(), true
 }
 
 func (s *Stats) List() []*ProviderStats {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
+	atoms := make([]*providerStatsAtomic, 0, len(s.providerStats))
+	for _, a := range s.providerStats {
+		atoms = append(atoms, a)
+	}
+	s.mu.RUnlock()
 
-	result := make([]*ProviderStats, 0, len(s.providerStats))
-	for _, stats := range s.providerStats {
-		result = append(result, stats)
+	result := make([]*ProviderStats, 0, len(atoms))
+	for _, a := range atoms {
+		result = append(result, a.snapshot())
 	}
 	return result
 }
 
 func (s *Stats) TPM(name string) int64 {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	stats, ok := s.providerStats[name]
+	a, ok := s.providerStats[name]
+	s.mu.RUnlock()
 	if !ok {
 		return 0
 	}
 
 	cutoff := time.Now().Unix() - 60
+	a.inner.Lock()
+	defer a.inner.Unlock()
 	var total int64
-	for _, b := range stats.buckets {
+	for _, b := range a.buckets {
 		if b.timestamp >= cutoff {
 			total += b.tokens
 		}
@@ -165,37 +281,33 @@ func (s *Stats) TPM(name string) int64 {
 
 func (s *Stats) CurrentLoad(name string) int64 {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	stats, ok := s.providerStats[name]
+	a, ok := s.providerStats[name]
+	s.mu.RUnlock()
 	if !ok {
 		return 0
 	}
-	return stats.CurrentLoad
+	return a.currentLoad.Load()
 }
 
 func (s *Stats) GlobalStats() (int64, int64, int64, int64, float64) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var totalReq int64
-	var successReq int64
-	var failedReq int64
-	var totalTokens int64
-	var totalLatency int64
-
-	for _, stats := range s.providerStats {
-		totalReq += stats.TotalRequests
-		successReq += stats.SuccessRequests
-		failedReq += stats.FailedRequests
-		totalTokens += stats.TotalTokens
-		totalLatency += stats.latencySum
+	atoms := make([]*providerStatsAtomic, 0, len(s.providerStats))
+	for _, a := range s.providerStats {
+		atoms = append(atoms, a)
 	}
+	s.mu.RUnlock()
 
+	var totalReq, successReq, failedReq, totalTokens, totalLatency int64
+	for _, a := range atoms {
+		totalReq += a.totalRequests.Load()
+		successReq += a.successRequests.Load()
+		failedReq += a.failedRequests.Load()
+		totalTokens += a.totalTokens.Load()
+		totalLatency += a.latencySum.Load()
+	}
 	var avgLatency float64
 	if totalReq > 0 {
 		avgLatency = float64(totalLatency) / float64(totalReq)
 	}
-
 	return totalReq, successReq, failedReq, totalTokens, avgLatency
 }

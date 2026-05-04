@@ -64,7 +64,7 @@ func TestLookupCacheReturnsHitWhenEntryExists(t *testing.T) {
 	svc := newCacheService(mc)
 	identity := &repository.AuthIdentity{TenantID: "t1"}
 	req := &provider.ResponseRequest{Model: "m1", Input: "hello"}
-	key := svc.buildCacheKey(identity, req)
+	key := svc.buildCacheKey(context.Background(), identity, req)
 	mc.data[key] = &cache.Entry{Response: []byte(`{"id":"cached"}`), Provider: "p1"}
 
 	entry, hit := svc.lookupCache(context.Background(), identity, req)
@@ -129,7 +129,7 @@ func TestWriteCachePersistsEntry(t *testing.T) {
 	svc.writeCache(context.Background(), identity, req, entry)
 	time.Sleep(50 * time.Millisecond)
 
-	key := svc.buildCacheKey(identity, req)
+	key := svc.buildCacheKey(context.Background(), identity, req)
 	got, ok := mc.data[key]
 	if !ok || got.Provider != "p1" {
 		t.Fatalf("writeCache() did not persist entry, got=%v", got)
@@ -145,7 +145,7 @@ func TestWriteCacheSkipsNilEntry(t *testing.T) {
 	svc.writeCache(context.Background(), identity, req, nil)
 	time.Sleep(50 * time.Millisecond)
 
-	key := svc.buildCacheKey(identity, req)
+	key := svc.buildCacheKey(context.Background(), identity, req)
 	if _, ok := mc.data[key]; ok {
 		t.Fatal("writeCache() should skip nil entry")
 	}
@@ -156,8 +156,8 @@ func TestBuildCacheKeyIsDeterministic(t *testing.T) {
 	identity := &repository.AuthIdentity{TenantID: "t1"}
 	req := &provider.ResponseRequest{Model: "m1", Input: "hello"}
 
-	k1 := svc.buildCacheKey(identity, req)
-	k2 := svc.buildCacheKey(identity, req)
+	k1 := svc.buildCacheKey(context.Background(), identity, req)
+	k2 := svc.buildCacheKey(context.Background(), identity, req)
 	if k1 != k2 {
 		t.Fatalf("buildCacheKey() not deterministic: %q vs %q", k1, k2)
 	}
@@ -167,8 +167,8 @@ func TestBuildCacheKeyDiffersByTenant(t *testing.T) {
 	svc := newCacheService(newMockCache())
 	req := &provider.ResponseRequest{Model: "m1", Input: "hello"}
 
-	k1 := svc.buildCacheKey(&repository.AuthIdentity{TenantID: "t1"}, req)
-	k2 := svc.buildCacheKey(&repository.AuthIdentity{TenantID: "t2"}, req)
+	k1 := svc.buildCacheKey(context.Background(), &repository.AuthIdentity{TenantID: "t1"}, req)
+	k2 := svc.buildCacheKey(context.Background(), &repository.AuthIdentity{TenantID: "t2"}, req)
 	if k1 == k2 {
 		t.Fatal("buildCacheKey() should differ by tenant")
 	}
@@ -179,7 +179,7 @@ func TestShouldSkipCacheReturnsTrueWhenDisabled(t *testing.T) {
 		Config: &config.Config{Cache: config.CacheConfig{Enabled: false}},
 	})
 	req := &provider.ResponseRequest{Model: "m1"}
-	if !svc.shouldSkipCache(req) {
+	if !svc.shouldSkipCache(context.Background(), req) {
 		t.Fatal("shouldSkipCache() = false, want true when disabled")
 	}
 }
@@ -189,7 +189,7 @@ func TestShouldSkipCacheReturnsTrueForToolsWhenConfigured(t *testing.T) {
 		Config: &config.Config{Cache: config.CacheConfig{Enabled: true, SkipTools: true}},
 	})
 	req := &provider.ResponseRequest{Model: "m1", Tools: []any{map[string]any{"type": "function"}}}
-	if !svc.shouldSkipCache(req) {
+	if !svc.shouldSkipCache(context.Background(), req) {
 		t.Fatal("shouldSkipCache() = false, want true for tools")
 	}
 }
