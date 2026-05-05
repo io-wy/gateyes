@@ -61,6 +61,14 @@ metrics:
 | `gateway_provider_requests_total` | `provider,result` | provider 维度请求数 |
 | `gateway_provider_circuit_state` | `tenant_id,provider` | circuit breaker 状态 |
 
+### Ingress 维度指标
+
+| 指标 | labels | 说明 |
+|---|---|---|
+| `ingress_requests_total` | `host,path,status` | Ingress 请求总数 |
+| `ingress_request_duration_seconds` | `host,path` | Ingress 请求延迟 |
+| `ingress_backend_errors_total` | `host,backend` | 后端代理错误数 |
+
 ### 2.2 Label 语义
 
 #### `surface`

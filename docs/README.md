@@ -30,6 +30,7 @@
 | [Limiter](./limiter.md) | 深入 | 多维度令牌桶算法的完整实现：内存/Redis 双后端、Lua 脚本、队列行为、Fail-Open |
 | [Monitoring](./monitoring.md) | 深入 | 14 个 Prometheus 指标口径、label 语义、埋点边界、推荐 PromQL |
 | [Testing](./testing.md) | 参考 | 测试策略、覆盖率报告、Benchmark 体系、CI 检查项、调试指南 |
+| [Ingress Controller](./ingress.md) | 运维 / SRE | K8s Ingress Controller 部署、Nginx 注解兼容矩阵、服务发现、TLS、金丝雀迁移指南 |
 
 **阅读建议**：先看 `runtime-mechanisms.md` 建立整体认知，再根据需求深入 `limiter.md` 或 `monitoring.md`。
 
