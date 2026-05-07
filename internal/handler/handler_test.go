@@ -572,7 +572,7 @@ func newHandlerTestEnv(t *testing.T, cfg handlerTestEnvConfig) *handlerTestEnv {
 	adminHandler.SetHealthChecker(healthChecker)
 
 	return &handlerTestEnv{
-		server:           NewServer(cfgObj.Server, h, adminHandler, mw),
+		server:           NewServer(cfgObj.Server, h, adminHandler, mw, nil, nil),
 		store:            store,
 		providerMgr:      providerMgr,
 		catalogSvc:       catalogSvc,

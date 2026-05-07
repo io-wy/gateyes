@@ -5,9 +5,28 @@ metadata:
   name: {{ include "gateyes.fullname" . }}
   labels:
     {{- include "gateyes.labels" . | nindent 4 }}
-rules: []
-  # Gateyes 当前不访问 K8s API，保留空权限列表以通过审计。
-  # 后续 Operator 阶段会根据 CRD 需求扩展此处权限。
+rules:
+  # Provider CRD permissions for in-process controller-runtime.
+  - apiGroups: ["gateway.gateyes.io"]
+    resources: ["providers"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["gateway.gateyes.io"]
+    resources: ["providers/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["gateway.gateyes.io"]
+    resources: ["providers/finalizers"]
+    verbs: ["update"]
+  # Ingress controller permissions.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses/status"]
+    verbs: ["get", "update", "patch"]
+  # Service discovery and TLS secret permissions.
+  - apiGroups: [""]
+    resources: ["services", "endpoints", "secrets"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

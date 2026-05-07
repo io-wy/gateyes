@@ -45,5 +45,5 @@ coverage.out
 handler-coverage.out
 
 # 编译产物（根目录）
-gateyes
-gateyes~
+/gateyes
+/gateyes~

@@ -24,6 +24,7 @@ type AdminHandler struct {
 	reloader           *config.Reloader
 	healthChecker      *provider.HealthChecker
 	startedAt          time.Time
+	crdMode            bool
 }
 
 func NewAdminHandler(store repository.Store, providerMgr *provider.Manager, catalogSvc *catalog.Service, reloader *config.Reloader) *AdminHandler {
@@ -37,11 +38,21 @@ func NewAdminHandler(store repository.Store, providerMgr *provider.Manager, cata
 	}
 }
 
+func (h *AdminHandler) SetCRDMode(enabled bool) {
+	h.crdMode = enabled
+}
+
 func (h *AdminHandler) SetHealthChecker(hc *provider.HealthChecker) {
 	h.healthChecker = hc
 }
 
 func (h *AdminHandler) ReloadConfig(c *gin.Context) {
+	if h.crdMode {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "provider configuration is managed by Kubernetes CRD; use 'kubectl edit provider' instead of reload",
+		})
+		return
+	}
 	if h.reloader == nil {
 		c.JSON(http.StatusNotImplemented, gin.H{"error": "reloader not configured"})
 		return

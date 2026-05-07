@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -282,6 +283,59 @@ func closeProviderIdleConnections(instance Provider) {
 	if closer, ok := instance.(interface{ CloseIdleConnections() }); ok {
 		closer.CloseIdleConnections()
 	}
+}
+
+func (m *Manager) Name() string { return "provider" }
+
+func (m *Manager) Reload(cfg *config.Config) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	newProviders := make(map[string]Provider, len(cfg.Providers))
+	newRegistry := make(map[string]repository.ProviderRegistryRecord, len(cfg.Providers))
+
+	for _, providerCfg := range cfg.Providers {
+		record := DefaultRegistryRecordFromConfig(providerCfg)
+		newRegistry[providerCfg.Name] = record
+
+		if !providerCfg.Enabled {
+			continue
+		}
+
+		instance, err := newProvider(providerCfg)
+		if err != nil {
+			return fmt.Errorf("create provider %s: %w", providerCfg.Name, err)
+		}
+		newProviders[providerCfg.Name] = instance
+		if m.Stats != nil {
+			m.Stats.Register(instance)
+			m.Stats.SetStatus(providerCfg.Name, firstNonEmptyHealth(record.HealthStatus))
+		}
+	}
+
+	for name, existing := range m.providers {
+		if _, ok := newProviders[name]; !ok {
+			closeProviderIdleConnections(existing)
+			if m.Stats != nil {
+				m.Stats.Unregister(name)
+			}
+		} else {
+			closeProviderIdleConnections(existing)
+		}
+	}
+
+	m.providers = newProviders
+	m.registry = newRegistry
+
+	m.defaultProvider = ""
+	for _, providerCfg := range cfg.Providers {
+		if providerCfg.Enabled {
+			m.defaultProvider = providerCfg.Name
+			break
+		}
+	}
+
+	return nil
 }
 
 func cloneStringMap(values map[string]string) map[string]string {

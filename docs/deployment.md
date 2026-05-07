@@ -118,8 +118,57 @@ Deployment assets already wire:
 1. readiness: `/ready`
 2. liveness: `/health`
 
-## 5. Production notes
+## 5. Ingress Controller 部署
+
+Gateyes 可作为集群 Ingress Controller 运行，与 Nginx Ingress Controller 并存或替代。
+
+### 5.1 启用 Ingress Controller
+
+```yaml
+ingressController:
+  enabled: true
+  class: gateyes
+  watchNamespace: ""
+  tlsEnabled: false
+  proxy:
+    connectTimeout: 5
+    readTimeout: 60
+    maxIdleConns: 100
+  discovery:
+    type: kubernetes
+```
+
+Helm 会自动创建 `IngressClass` 资源并扩展 RBAC 权限。
+
+### 5.2 使用 Gateyes 接管 Ingress
+
+将现有 Ingress 的 `ingressClassName` 改为 `gateyes`：
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: my-app
+spec:
+  ingressClassName: gateyes
+  rules:
+    - host: app.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: my-svc
+                port:
+                  number: 8080
+```
+
+完整注解兼容列表和迁移指南见 [Ingress Controller 文档](./ingress.md)。
+
+## 6. Production notes
 
 1. Prefer Postgres/MySQL in staging/prod
 2. Do not keep provider keys in repo or values files
 3. Use external secret manager or pre-created K8s Secret for production
+4. Ingress Controller 多副本时建议开启 leader election（controller-runtime 默认未启用）
