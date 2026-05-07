@@ -153,7 +153,7 @@ func main() {
 	budgetSvc := budget.New(store)
 
 	reloader := config.NewReloader(*configPath)
-	reloader.Register(limiterSvc, routerSvc, alertSvc)
+	reloader.Register(limiterSvc, routerSvc, alertSvc, providerMgr)
 
 	// Cache: Redis primary + Memory fallback
 	var cacheSvc cache.Cache
@@ -255,7 +255,11 @@ func main() {
 			}
 		}()
 		slog.Info("controller manager started")
-		adminHandler.SetCRDMode(true)
+		if cfg.Admin.CRDMode != nil {
+			adminHandler.SetCRDMode(*cfg.Admin.CRDMode)
+		} else {
+			adminHandler.SetCRDMode(true)
+		}
 	}
 
 	go metrics.StartProviderStatsExporter(ctx, providerMgr.Stats, 5*time.Second)

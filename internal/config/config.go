@@ -166,6 +166,7 @@ type AdminConfig struct {
 	DefaultTenant   string `yaml:"defaultTenant"`
 	BootstrapKey    string `yaml:"bootstrapKey"`
 	BootstrapSecret string `yaml:"bootstrapSecret"`
+	CRDMode         *bool  `yaml:"crdMode"`
 }
 
 type AlertConfig struct {
