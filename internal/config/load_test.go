@@ -6,7 +6,7 @@ import (
 )
 
 func TestLoadRealProviders(t *testing.T) {
-	cfg, err := Load("../../configs/config-example.yaml")
+	cfg, err := Load("../../configs/config.example.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
