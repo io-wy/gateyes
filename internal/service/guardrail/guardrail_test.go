@@ -110,3 +110,138 @@ func TestManagerTransformPropagates(t *testing.T) {
 		t.Fatalf("downstream guardrail saw original instead of rewritten: %+v", check.pre.Request)
 	}
 }
+
+func TestManagerPostCallBlocksMatchingResponse(t *testing.T) {
+	allow := &stubGuardrail{name: "a", postFn: func(r *provider.Response) PostResult { return PostResult{Verdict: Allow} }}
+	block := &stubGuardrail{name: "b", postFn: func(r *provider.Response) PostResult {
+		return PostResult{Verdict: Block, Reason: "bad output"}
+	}}
+	m := New([]Guardrail{allow, block})
+	res := m.PostCall(context.Background(), &provider.Response{})
+	if res.Verdict != Block || res.Reason != "bad output" {
+		t.Fatalf("got %+v, want Block reason=bad output", res)
+	}
+}
+
+func TestManagerPostCallAllowsCleanResponse(t *testing.T) {
+	allow := &stubGuardrail{name: "a", postFn: func(r *provider.Response) PostResult { return PostResult{Verdict: Allow} }}
+	m := New([]Guardrail{allow})
+	res := m.PostCall(context.Background(), &provider.Response{ID: "r1"})
+	if res.Verdict != Allow || res.Response == nil || res.Response.ID != "r1" {
+		t.Fatalf("got %+v, want Allow with original response", res)
+	}
+}
+
+func TestManagerPostCallTransformPropagates(t *testing.T) {
+	rewritten := &provider.Response{ID: "r2"}
+	transform := &stubGuardrail{name: "rewrite", postFn: func(r *provider.Response) PostResult {
+		return PostResult{Verdict: Transform, Response: rewritten}
+	}}
+	check := &stubGuardrail{name: "check", postFn: func(r *provider.Response) PostResult {
+		if r.ID != "r2" {
+			t.Fatalf("downstream saw %s, want r2", r.ID)
+		}
+		return PostResult{Verdict: Allow}
+	}}
+	m := New([]Guardrail{transform, check})
+	res := m.PostCall(context.Background(), &provider.Response{ID: "r1"})
+	if res.Verdict != Allow || res.Response == nil || res.Response.ID != "r2" {
+		t.Fatalf("got %+v, want Allow with transformed response", res)
+	}
+}
+
+func TestManagerNilPostCall(t *testing.T) {
+	var m *Manager
+	res := m.PostCall(context.Background(), &provider.Response{ID: "r1"})
+	if res.Verdict != Allow || res.Response == nil || res.Response.ID != "r1" {
+		t.Fatalf("got %+v, want Allow on nil manager", res)
+	}
+}
+
+func TestManagerEmptyChainPostCall(t *testing.T) {
+	m := New(nil)
+	res := m.PostCall(context.Background(), &provider.Response{ID: "r1"})
+	if res.Verdict != Allow || res.Response == nil || res.Response.ID != "r1" {
+		t.Fatalf("got %+v, want Allow on empty chain", res)
+	}
+}
+
+func TestRegexBlocklistPostCallAllowsCleanResponse(t *testing.T) {
+	g := NewRegexBlocklist("test", nil, []string{`badword`})
+	resp := &provider.Response{
+		Output: []provider.ResponseOutput{{Type: "message", Content: []provider.ResponseContent{{Type: "output_text", Text: "clean output"}}}},
+	}
+	res := g.PostCall(context.Background(), resp)
+	if res.Verdict != Allow {
+		t.Fatalf("verdict = %v, want Allow", res.Verdict)
+	}
+}
+
+func TestManagerBlockDefaultReason(t *testing.T) {
+	block := &stubGuardrail{name: "guard-a", pre: PreResult{Verdict: Block}}
+	m := New([]Guardrail{block})
+	res := m.PreCall(context.Background(), &provider.ResponseRequest{Input: "x"})
+	if res.Verdict != Block {
+		t.Fatalf("verdict = %v, want Block", res.Verdict)
+	}
+	if res.Reason != "guard-a blocked the request" {
+		t.Fatalf("reason = %q, want default reason", res.Reason)
+	}
+}
+
+func TestManagerPostCallBlockDefaultReason(t *testing.T) {
+	block := &stubGuardrail{name: "guard-b", postFn: func(r *provider.Response) PostResult {
+		return PostResult{Verdict: Block}
+	}}
+	m := New([]Guardrail{block})
+	res := m.PostCall(context.Background(), &provider.Response{})
+	if res.Verdict != Block {
+		t.Fatalf("verdict = %v, want Block", res.Verdict)
+	}
+	if res.Reason != "guard-b blocked the response" {
+		t.Fatalf("reason = %q, want default reason", res.Reason)
+	}
+}
+
+func TestVerdictString(t *testing.T) {
+	if Allow.String() != "allow" {
+		t.Fatalf("Allow.String() = %q", Allow.String())
+	}
+	if Block.String() != "block" {
+		t.Fatalf("Block.String() = %q", Block.String())
+	}
+	if Transform.String() != "transform" {
+		t.Fatalf("Transform.String() = %q", Transform.String())
+	}
+	if Verdict(99).String() != "unknown" {
+		t.Fatalf("Verdict(99).String() = %q", Verdict(99).String())
+	}
+}
+
+func TestRegexBlocklistPreCallInputMessagesFallback(t *testing.T) {
+	g := NewRegexBlocklist("test", []string{`badword`}, nil)
+	req := &provider.ResponseRequest{
+		Messages: []provider.Message{{
+			Role:    "user",
+			Content: []provider.ContentBlock{{Type: "text", Text: "hello badword there"}},
+		}},
+	}
+	res := g.PreCall(context.Background(), req)
+	if res.Verdict != Block {
+		t.Fatalf("verdict = %v, want Block via InputMessages fallback", res.Verdict)
+	}
+}
+
+func TestRegexBlocklistPreCallAllowWithMessages(t *testing.T) {
+	g := NewRegexBlocklist("test", []string{`badword`}, nil)
+	req := &provider.ResponseRequest{
+		Messages: []provider.Message{{
+			Role:    "user",
+			Content: []provider.ContentBlock{{Type: "text", Text: "clean message"}},
+		}},
+	}
+	res := g.PreCall(context.Background(), req)
+	if res.Verdict != Allow {
+		t.Fatalf("verdict = %v, want Allow", res.Verdict)
+	}
+}

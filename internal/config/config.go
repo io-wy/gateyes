@@ -28,9 +28,6 @@ type Config struct {
 	Persistence    PersistenceConfig    `yaml:"persistence"`
 	Guardrails     []GuardrailConfig    `yaml:"guardrails"`
 	Pricing        PricingConfig        `yaml:"pricing"`
-	Ingress        IngressConfig        `yaml:"ingress"`
-	Discovery      DiscoveryConfig      `yaml:"discovery"`
-	Proxy          ProxyConfig          `yaml:"proxy"`
 	Providers      []ProviderConfig     `yaml:"providers"`
 	APIKeys        []APIKeyConfig       `yaml:"apiKeys"`
 	Admin          AdminConfig          `yaml:"admin"`
@@ -226,7 +223,6 @@ type AdminConfig struct {
 	DefaultTenant   string `yaml:"defaultTenant"`
 	BootstrapKey    string `yaml:"bootstrapKey"`
 	BootstrapSecret string `yaml:"bootstrapSecret"`
-	CRDMode         *bool  `yaml:"crdMode"`
 }
 
 type AlertConfig struct {
@@ -278,55 +274,6 @@ type CacheConfig struct {
 	SkipStream   bool   `yaml:"skipStream"`   // default false
 	SkipTools    bool   `yaml:"skipTools"`    // default true (tools responses are stateful)
 	Singleflight bool   `yaml:"singleflight"` // dedupe concurrent cache misses on same key
-}
-
-type IngressConfig struct {
-	Enabled            bool   `yaml:"enabled" mapstructure:"enabled"`
-	Class              string `yaml:"class" mapstructure:"class"`                           // ingressClassName, default "gateyes"
-	WatchNamespace     string `yaml:"watchNamespace" mapstructure:"watchNamespace"`         // empty = all namespaces
-	DefaultBackend     string `yaml:"defaultBackend" mapstructure:"defaultBackend"`         // fallback service when no rule matches
-	TLSEnabled         bool   `yaml:"tlsEnabled" mapstructure:"tlsEnabled"`                 // enable TLS termination from Ingress TLS secrets
-	TLSSecretNamespace string `yaml:"tlsSecretNamespace" mapstructure:"tlsSecretNamespace"` // namespace to watch for TLS secrets
-}
-
-type DiscoveryConfig struct {
-	Type   string                `yaml:"type" mapstructure:"type"` // kubernetes | consul | nacos | etcd | static
-	K8s    K8sDiscoveryConfig    `yaml:"kubernetes" mapstructure:"kubernetes"`
-	Consul ConsulDiscoveryConfig `yaml:"consul" mapstructure:"consul"`
-	Nacos  NacosDiscoveryConfig  `yaml:"nacos" mapstructure:"nacos"`
-	Etcd   EtcdDiscoveryConfig   `yaml:"etcd" mapstructure:"etcd"`
-}
-
-type K8sDiscoveryConfig struct {
-	Namespace string `yaml:"namespace" mapstructure:"namespace"` // empty = all namespaces
-}
-
-type ConsulDiscoveryConfig struct {
-	Addr       string `yaml:"addr" mapstructure:"addr"`
-	Datacenter string `yaml:"datacenter" mapstructure:"datacenter"`
-	Token      string `yaml:"token" mapstructure:"token"`
-}
-
-type NacosDiscoveryConfig struct {
-	ServerAddr  string `yaml:"serverAddr" mapstructure:"serverAddr"`
-	NamespaceID string `yaml:"namespaceId" mapstructure:"namespaceId"`
-	Group       string `yaml:"group" mapstructure:"group"`
-}
-
-type EtcdDiscoveryConfig struct {
-	Endpoints []string `yaml:"endpoints" mapstructure:"endpoints"`
-	Username  string   `yaml:"username" mapstructure:"username"`
-	Password  string   `yaml:"password" mapstructure:"password"`
-}
-
-type ProxyConfig struct {
-	ConnectTimeout  int   `yaml:"connectTimeout" mapstructure:"connectTimeout"`   // seconds
-	ReadTimeout     int   `yaml:"readTimeout" mapstructure:"readTimeout"`         // seconds
-	SendTimeout     int   `yaml:"sendTimeout" mapstructure:"sendTimeout"`         // seconds
-	IdleConnTimeout int   `yaml:"idleConnTimeout" mapstructure:"idleConnTimeout"` // seconds
-	MaxIdleConns    int   `yaml:"maxIdleConns" mapstructure:"maxIdleConns"`
-	MaxConnsPerHost int   `yaml:"maxConnsPerHost" mapstructure:"maxConnsPerHost"`
-	MaxBodySize     int64 `yaml:"maxBodySize" mapstructure:"maxBodySize"`         // bytes, 0 = unlimited
 }
 
 type AffinityConfig struct {
@@ -542,15 +489,6 @@ func (c *Config) Validate() error {
 	if c.Router.Affinity.SessionTTL < 0 || c.Router.Affinity.PrefixTTL < 0 || c.Router.Affinity.PrefixDepth < 0 {
 		return fmt.Errorf("router.affinity values must be >= 0")
 	}
-	if !containsString([]string{"kubernetes", "consul", "nacos", "etcd", "static", ""}, c.Discovery.Type) {
-		return fmt.Errorf("unsupported discovery.type: %s", c.Discovery.Type)
-	}
-	if c.Proxy.ConnectTimeout < 0 || c.Proxy.ReadTimeout < 0 || c.Proxy.SendTimeout < 0 {
-		return fmt.Errorf("proxy timeout values must be >= 0")
-	}
-	if c.Proxy.MaxBodySize < 0 {
-		return fmt.Errorf("proxy.maxBodySize must be >= 0")
-	}
 	return nil
 }
 
@@ -634,24 +572,6 @@ func DefaultConfig() *Config {
 			BusBuffer:             10000,
 			BusWorkers:            8,
 			HandlerTimeoutSeconds: 5,
-		},
-		Ingress: IngressConfig{
-			Enabled:        false,
-			Class:          "gateyes",
-			WatchNamespace: "",
-			TLSEnabled:     false,
-		},
-		Discovery: DiscoveryConfig{
-			Type: "kubernetes",
-		},
-		Proxy: ProxyConfig{
-			ConnectTimeout:  5,
-			ReadTimeout:     60,
-			SendTimeout:     60,
-			IdleConnTimeout: 90,
-			MaxIdleConns:    100,
-			MaxConnsPerHost: 10,
-			MaxBodySize:     0,
 		},
 		Admin: AdminConfig{
 			DefaultTenant:   "default",

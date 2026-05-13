@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"net/http"
 	"time"
@@ -10,7 +9,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/gateyes/gateway/internal/config"
-	"github.com/gateyes/gateway/internal/ingress"
 	"github.com/gateyes/gateway/internal/middleware"
 	"github.com/gateyes/gateway/internal/repository"
 )
@@ -18,23 +16,18 @@ import (
 var ErrServerClosed = fmt.Errorf("server closed")
 
 type Server struct {
-	cfg         config.ServerConfig
-	engine      *gin.Engine
-	srv         *http.Server
-	tlsManager  *ingress.TLSManager
-	tlsEnabled  bool
+	cfg    config.ServerConfig
+	engine *gin.Engine
+	srv    *http.Server
 }
 
-func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mw *middleware.Middleware, ingressMW *ingress.Middleware, tlsManager *ingress.TLSManager) *Server {
+func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mw *middleware.Middleware) *Server {
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
 	engine.Use(gin.Recovery())
 	engine.Use(middleware.Correlation())
 	engine.Use(middleware.OtelTrace())
 	engine.Use(gin.Logger())
-	if ingressMW != nil {
-		engine.Use(ingressMW.Handler())
-	}
 
 	engine.GET("/health", h.Health)
 	engine.GET("/ready", h.Ready)
@@ -135,24 +128,12 @@ func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mw *mi
 		tenants.POST("/:id/providers", adminH.ReplaceTenantProviders)
 	}
 
-	s := &Server{cfg: cfg, engine: engine, tlsManager: tlsManager}
-	if tlsManager != nil {
-		s.tlsEnabled = true
-	}
+	s := &Server{cfg: cfg, engine: engine}
 	return s
-}
-
-// SetTLSManager enables TLS termination using the given TLSManager.
-func (s *Server) SetTLSManager(tm *ingress.TLSManager) {
-	s.tlsManager = tm
-	s.tlsEnabled = tm != nil
 }
 
 func (s *Server) Start() error {
 	s.srv = s.buildHTTPServer()
-	if s.tlsEnabled {
-		return s.srv.ListenAndServeTLS("", "")
-	}
 	return s.srv.ListenAndServe()
 }
 
@@ -164,17 +145,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) buildHTTPServer() *http.Server {
-	srv := &http.Server{
+	return &http.Server{
 		Addr:         s.cfg.ListenAddr,
 		Handler:      s.engine,
 		ReadTimeout:  time.Duration(s.cfg.ReadTimeout) * time.Second,
 		WriteTimeout: time.Duration(s.cfg.WriteTimeout) * time.Second,
 		IdleTimeout:  time.Duration(s.cfg.IdleTimeout) * time.Second,
 	}
-	if s.tlsEnabled && s.tlsManager != nil {
-		srv.TLSConfig = &tls.Config{
-			GetCertificate: s.tlsManager.GetCertificate,
-		}
-	}
-	return srv
 }

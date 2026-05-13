@@ -20,24 +20,6 @@ ingress:
           pathType: Prefix
   tls: []
 
-ingressController:
-  enabled: false
-  class: gateyes
-  watchNamespace: ""
-  tlsEnabled: false
-  tlsSecretNamespace: ""
-  defaultBackend: ""
-  proxy:
-    connectTimeout: 5
-    readTimeout: 60
-    sendTimeout: 60
-    idleConnTimeout: 90
-    maxIdleConns: 100
-    maxConnsPerHost: 10
-    maxBodySize: 0
-  discovery:
-    type: kubernetes
-
 resources:
   requests:
     cpu: 100m
@@ -135,26 +117,6 @@ appConfig: |
   metrics:
     namespace: gateway
     enabled: true
-
-  ingress:
-    enabled: false
-    class: gateyes
-    watchNamespace: ""
-    tlsEnabled: false
-    tlsSecretNamespace: ""
-    defaultBackend: ""
-
-  proxy:
-    connectTimeout: 5
-    readTimeout: 60
-    sendTimeout: 60
-    idleConnTimeout: 90
-    maxIdleConns: 100
-    maxConnsPerHost: 10
-    maxBodySize: 0
-
-  discovery:
-    type: kubernetes
 
   router:
     strategy: round_robin

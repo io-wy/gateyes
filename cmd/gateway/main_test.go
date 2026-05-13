@@ -67,6 +67,77 @@ func (f *fakeIdentityStore) EnsureBootstrapKey(ctx context.Context, params repos
 	f.params = append(f.params, params)
 	return nil
 }
+func (f *fakeIdentityStore) EnsureTenant(ctx context.Context, params repository.EnsureTenantParams) (*repository.TenantRecord, error) {
+	return &repository.TenantRecord{ID: params.ID}, nil
+}
+func (f *fakeIdentityStore) ListTenants(ctx context.Context) ([]repository.TenantRecord, error) { return nil, nil }
+func (f *fakeIdentityStore) GetTenant(ctx context.Context, idOrSlug string) (*repository.TenantRecord, error) {
+	return &repository.TenantRecord{ID: idOrSlug}, nil
+}
+func (f *fakeIdentityStore) UpdateTenant(ctx context.Context, idOrSlug string, params repository.UpdateTenantParams) (*repository.TenantRecord, error) {
+	return nil, nil
+}
+func (f *fakeIdentityStore) DeleteTenant(ctx context.Context, idOrSlug string) error { return nil }
+func (f *fakeIdentityStore) ListTenantProviders(ctx context.Context, tenantID string) ([]string, error) {
+	return nil, nil
+}
+func (f *fakeIdentityStore) ReplaceTenantProviders(ctx context.Context, tenantID string, providerNames []string) error {
+	return nil
+}
+func (f *fakeIdentityStore) ListProviderRegistry(ctx context.Context) ([]repository.ProviderRegistryRecord, error) {
+	return nil, nil
+}
+func (f *fakeIdentityStore) GetProviderRegistry(ctx context.Context, name string) (*repository.ProviderRegistryRecord, error) {
+	return nil, repository.ErrNotFound
+}
+func (f *fakeIdentityStore) UpsertProviderRegistry(ctx context.Context, record repository.ProviderRegistryRecord) error {
+	return nil
+}
+func (f *fakeIdentityStore) UpdateProviderRegistry(ctx context.Context, name string, params repository.UpdateProviderRegistryParams) (*repository.ProviderRegistryRecord, error) {
+	return nil, nil
+}
+func (f *fakeIdentityStore) DeleteProviderRegistry(ctx context.Context, name string) error { return nil }
+
+func TestSeedTenantProviders(t *testing.T) {
+	store := &fakeIdentityStore{}
+	ctx := context.Background()
+	if err := seedTenantProviders(ctx, store, "tenant-a", []string{"p1", "p2"}); err != nil {
+		t.Fatalf("seedTenantProviders() error: %v", err)
+	}
+	if len(store.params) != 0 {
+		t.Fatalf("seedTenantProviders should not call EnsureBootstrapKey, got %d calls", len(store.params))
+	}
+}
+
+func TestSeedProviderRegistry(t *testing.T) {
+	store := &fakeIdentityStore{}
+	ctx := context.Background()
+	providers := []config.ProviderConfig{
+		{Name: "p1", Type: "openai", Enabled: true},
+		{Name: "p2", Type: "anthropic", Enabled: false},
+	}
+	if err := seedProviderRegistry(ctx, store, providers); err != nil {
+		t.Fatalf("seedProviderRegistry() error: %v", err)
+	}
+}
+
+func TestBuildGuardrails(t *testing.T) {
+	if buildGuardrails(nil) != nil {
+		t.Fatal("buildGuardrails(nil) should return nil")
+	}
+	if buildGuardrails([]config.GuardrailConfig{}) != nil {
+		t.Fatal("buildGuardrails(empty) should return nil")
+	}
+	if buildGuardrails([]config.GuardrailConfig{{Type: "unknown", Name: "x"}}) != nil {
+		t.Fatal("buildGuardrails(unknown type) should return nil")
+	}
+	m := buildGuardrails([]config.GuardrailConfig{
+		{Name: "blocklist", Type: "regex", RequestPatterns: []string{`bad`}},
+	})
+	if m == nil {
+		t.Fatal("buildGuardrails(regex) should return non-nil")
+	}
+}
 
 func TestEnabledProviderNamesAndSeedHelpers(t *testing.T) {
 	if got := enabledProviderNames([]config.ProviderConfig{

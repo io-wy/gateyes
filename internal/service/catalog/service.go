@@ -892,6 +892,9 @@ func normalizeStringList(values []string) []string {
 		seen[value] = struct{}{}
 		result = append(result, value)
 	}
+	if len(result) == 0 {
+		return nil
+	}
 	return result
 }
 

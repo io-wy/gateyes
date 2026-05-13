@@ -453,7 +453,7 @@ func newLiveGatewayEnv(t *testing.T) *gatewayE2EEnv {
 	})
 	adminHandler := NewAdminHandler(store, providerMgr, catalogSvc, nil)
 	handlerEnv := &handlerTestEnv{
-		server:      NewServer(cfgObj.Server, h, adminHandler, mw, nil, nil),
+		server:      NewServer(cfgObj.Server, h, adminHandler, mw),
 		store:       store,
 		providerMgr: providerMgr,
 	}

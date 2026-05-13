@@ -38,22 +38,6 @@ persistence:
 autoscaling:
   enabled: false
 
-ingressController:
-  enabled: true
-  class: gateyes
-  watchNamespace: ""
-  tlsEnabled: false
-  proxy:
-    connectTimeout: 5
-    readTimeout: 60
-    sendTimeout: 60
-    idleConnTimeout: 90
-    maxIdleConns: 100
-    maxConnsPerHost: 10
-    maxBodySize: 0
-  discovery:
-    type: kubernetes
-
 podDisruptionBudget:
   enabled: false
 
@@ -113,26 +97,6 @@ appConfig: |
   metrics:
     namespace: gateway
     enabled: true
-
-  ingress:
-    enabled: true
-    class: gateyes
-    watchNamespace: ""
-    tlsEnabled: false
-    tlsSecretNamespace: ""
-    defaultBackend: ""
-
-  proxy:
-    connectTimeout: 5
-    readTimeout: 60
-    sendTimeout: 60
-    idleConnTimeout: 90
-    maxIdleConns: 100
-    maxConnsPerHost: 10
-    maxBodySize: 0
-
-  discovery:
-    type: kubernetes
 
   tracing:
     enabled: true

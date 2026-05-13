@@ -159,4 +159,3 @@ admin:
   defaultTenant: default
   bootstrapKey: admin-key-001
   bootstrapSecret: admin-secret-001
-  crdMode: true
