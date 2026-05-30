@@ -193,9 +193,6 @@ type ProviderConfig struct {
 	Type          string            `yaml:"type"`
 	Vendor        string            `yaml:"vendor"`
 	BaseURL       string            `yaml:"baseURL"`
-	GRPCTarget    string            `yaml:"grpcTarget"`
-	GRPCUseTLS    bool              `yaml:"grpcUseTLS"`
-	GRPCAuthority string            `yaml:"grpcAuthority"`
 	Endpoint      string            `yaml:"endpoint"` // "chat" or "responses", default "chat"
 	APIKey        string            `yaml:"apiKey"`
 	Model         string            `yaml:"model"`
@@ -363,10 +360,6 @@ func applyEnvToProvider(env map[string]string, p *ProviderConfig) {
 			p.APIKey = v
 		case "BASE_URL", "API_BASE":
 			p.BaseURL = v
-		case "GRPC_TARGET":
-			p.GRPCTarget = v
-		case "GRPC_AUTHORITY":
-			p.GRPCAuthority = v
 		case "ENDPOINT":
 			p.Endpoint = v
 		case "MODEL":
@@ -413,8 +406,8 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Server.ListenAddr) == "" {
 		return fmt.Errorf("server.listenAddr is required")
 	}
-	if !containsString([]string{"sqlite", "postgres", "mysql", ""}, c.Database.Driver) {
-		return fmt.Errorf("unsupported database.driver: %s", c.Database.Driver)
+	if !containsString([]string{"postgres", ""}, c.Database.Driver) {
+		return fmt.Errorf("unsupported database.driver (only postgres is supported): %s", c.Database.Driver)
 	}
 	if !containsString([]string{"round_robin", "random", "least_load", "least_tpm", "cost_based", "sticky", "ml_rank", ""}, c.Router.Strategy) {
 		return fmt.Errorf("unsupported router.strategy: %s", c.Router.Strategy)
@@ -438,7 +431,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("duplicate provider name: %s", name)
 		}
 		seenProviders[name] = struct{}{}
-		if !containsString([]string{"openai", "anthropic", "grpc", "azure", ""}, strings.ToLower(strings.TrimSpace(provider.Type))) {
+		if !containsString([]string{"openai", "anthropic", "azure", ""}, strings.ToLower(strings.TrimSpace(provider.Type))) {
 			return fmt.Errorf("unsupported provider type for %s: %s", name, provider.Type)
 		}
 		if endpoint := strings.ToLower(strings.TrimSpace(provider.Endpoint)); endpoint != "" && !containsString([]string{"chat", "responses"}, endpoint) {

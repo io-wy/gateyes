@@ -65,6 +65,7 @@ type IdentityStore interface {
 	CheckTenantBudget(ctx context.Context, tenantID string, estimatedCost float64) (*BudgetCheckResult, error)
 	CheckVirtualKeyBudget(ctx context.Context, virtualKeyID string, estimatedCost float64) (*BudgetCheckResult, error)
 	ConsumeVirtualKeyBudget(ctx context.Context, virtualKeyID string, cost float64) (bool, error)
+	ConsumeBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, cost float64) (bool, error)
 	GetBudgetStatus(ctx context.Context, tenantID, projectID, apiKeyID string) ([]BudgetStatus, error)
 	EnsureBootstrapKey(ctx context.Context, params BootstrapAPIKeyParams) error
 }
@@ -130,6 +131,7 @@ type ResponseStore interface {
 	GetResponse(ctx context.Context, tenantID string, id string) (*ResponseRecord, error)
 	ListResponses(ctx context.Context, tenantID string, filter ResponseFilter) ([]ResponseRecord, error)
 	CountResponses(ctx context.Context, tenantID string, filter ResponseFilter) (int, error)
+	DeleteResponsesOlderThan(ctx context.Context, before time.Time) (int64, error)
 }
 
 type ResponseFilter struct {
@@ -248,7 +250,6 @@ type BudgetStatus struct {
 	ID          string  `json:"id"`
 	BudgetUSD   float64 `json:"budget_usd"`
 	SpentUSD    float64 `json:"spent_usd"`
-	OverageUSD  float64 `json:"overage_usd"`
 	Policy      string  `json:"policy"`
 	Utilization float64 `json:"utilization"`
 	IsExhausted bool    `json:"is_exhausted"`
@@ -711,17 +712,14 @@ type ProviderRegistryRecord struct {
 }
 
 type ProviderRuntimeConfig struct {
-	GRPCTarget    string            `json:"grpc_target,omitempty"`
-	GRPCUseTLS    bool              `json:"grpc_use_tls,omitempty"`
-	GRPCAuthority string            `json:"grpc_authority,omitempty"`
-	APIKey        string            `json:"api_key,omitempty"`
-	PriceInput    float64           `json:"price_input,omitempty"`
-	PriceOutput   float64           `json:"price_output,omitempty"`
-	MaxTokens     int               `json:"max_tokens,omitempty"`
-	Timeout       int               `json:"timeout,omitempty"`
-	Enabled       bool              `json:"enabled,omitempty"`
-	Headers       map[string]string `json:"headers,omitempty"`
-	ExtraBody     map[string]any    `json:"extra_body,omitempty"`
+	APIKey      string            `json:"api_key,omitempty"`
+	PriceInput  float64           `json:"price_input,omitempty"`
+	PriceOutput float64           `json:"price_output,omitempty"`
+	MaxTokens   int               `json:"max_tokens,omitempty"`
+	Timeout     int               `json:"timeout,omitempty"`
+	Enabled     bool              `json:"enabled,omitempty"`
+	Headers     map[string]string `json:"headers,omitempty"`
+	ExtraBody   map[string]any    `json:"extra_body,omitempty"`
 }
 
 type UpdateProviderRegistryParams struct {

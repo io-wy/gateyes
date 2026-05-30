@@ -230,20 +230,7 @@ func newProvider(cfg config.ProviderConfig) (Provider, error) {
 }
 
 func validateProviderConfig(cfg config.ProviderConfig) error {
-	if normalizeProviderType(cfg.Type) != "grpc" {
-		return nil
-	}
-	if strings.TrimSpace(cfg.GRPCTarget) == "" {
-		return newProviderConfigError("provider.grpc.config", "grpcTarget is required for grpc providers")
-	}
-	switch strings.ToLower(strings.TrimSpace(cfg.Vendor)) {
-	case "vllm":
-		return nil
-	case "":
-		return newProviderConfigError("provider.grpc.config", "vendor is required for grpc providers")
-	default:
-		return newProviderConfigError("provider.grpc.config", "unsupported grpc vendor: "+cfg.Vendor)
-	}
+	return nil
 }
 
 func firstNonEmptyHealth(value string) string {
@@ -265,9 +252,6 @@ func providerConfigFromRegistry(record repository.ProviderRegistryRecord) config
 		Enabled:  record.Enabled,
 	}
 	if record.RuntimeConfig != nil {
-		cfg.GRPCTarget = record.RuntimeConfig.GRPCTarget
-		cfg.GRPCUseTLS = record.RuntimeConfig.GRPCUseTLS
-		cfg.GRPCAuthority = record.RuntimeConfig.GRPCAuthority
 		cfg.APIKey = record.RuntimeConfig.APIKey
 		cfg.PriceInput = record.RuntimeConfig.PriceInput
 		cfg.PriceOutput = record.RuntimeConfig.PriceOutput

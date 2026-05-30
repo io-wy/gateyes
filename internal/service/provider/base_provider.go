@@ -29,10 +29,7 @@ func (p *baseProvider) Type() string {
 }
 
 func (p *baseProvider) BaseURL() string {
-	if p.cfg.BaseURL != "" {
-		return p.cfg.BaseURL
-	}
-	return p.cfg.GRPCTarget
+	return p.cfg.BaseURL
 }
 
 func (p *baseProvider) Model() string {

@@ -178,8 +178,6 @@ func driverName(driver string) (string, error) {
 		return "sqlite", nil
 	case "postgres":
 		return "pgx", nil
-	case "mysql":
-		return "mysql", nil
 	default:
 		return "", fmt.Errorf("unsupported database driver: %s", driver)
 	}

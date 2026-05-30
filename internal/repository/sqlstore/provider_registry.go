@@ -72,6 +72,9 @@ func (s *Store) UpsertProviderRegistry(ctx context.Context, record repository.Pr
 	if err != nil {
 		return fmt.Errorf("encode provider runtime config: %w", err)
 	}
+	if err := validateJSON("config_body", configBody); err != nil {
+		return err
+	}
 
 	existing, err := s.GetProviderRegistry(ctx, record.Name)
 	switch err {

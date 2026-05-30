@@ -49,13 +49,6 @@ func DefaultRegistryRecordFromConfig(cfg config.ProviderConfig) repository.Provi
 		record.SupportsChat = true
 		record.SupportsResponses = true
 		record.SupportsMessages = true
-	case "grpc":
-		record.SupportsResponses = true
-		record.SupportsChat = false
-		record.SupportsMessages = false
-		record.SupportsTools = false
-		record.SupportsImages = false
-		record.SupportsStructuredOutput = strings.EqualFold(strings.TrimSpace(cfg.Vendor), "vllm")
 	default:
 		record.SupportsChat = true
 	}
@@ -65,17 +58,14 @@ func DefaultRegistryRecordFromConfig(cfg config.ProviderConfig) repository.Provi
 
 func runtimeConfigFromProviderConfig(cfg config.ProviderConfig) *repository.ProviderRuntimeConfig {
 	return &repository.ProviderRuntimeConfig{
-		GRPCTarget:    cfg.GRPCTarget,
-		GRPCUseTLS:    cfg.GRPCUseTLS,
-		GRPCAuthority: cfg.GRPCAuthority,
-		APIKey:        cfg.APIKey,
-		PriceInput:    cfg.PriceInput,
-		PriceOutput:   cfg.PriceOutput,
-		MaxTokens:     cfg.MaxTokens,
-		Timeout:       cfg.Timeout,
-		Enabled:       cfg.Enabled,
-		Headers:       cfg.Headers,
-		ExtraBody:     cfg.ExtraBody,
+		APIKey:     cfg.APIKey,
+		PriceInput: cfg.PriceInput,
+		PriceOutput: cfg.PriceOutput,
+		MaxTokens:   cfg.MaxTokens,
+		Timeout:     cfg.Timeout,
+		Enabled:     cfg.Enabled,
+		Headers:     cfg.Headers,
+		ExtraBody:   cfg.ExtraBody,
 	}
 }
 
