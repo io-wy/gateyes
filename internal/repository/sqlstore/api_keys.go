@@ -29,6 +29,19 @@ func (s *Store) CreateAPIKey(ctx context.Context, params repository.CreateAPIKey
 		status = repository.StatusActive
 	}
 
+	modelsJSON := encodeStringSlice(params.AllowedModels)
+	providersJSON := encodeStringSlice(params.AllowedProviders)
+	servicesJSON := encodeStringSlice(params.AllowedServices)
+	if err := validateJSON("allowed_models", modelsJSON); err != nil {
+		return nil, err
+	}
+	if err := validateJSON("allowed_providers", providersJSON); err != nil {
+		return nil, err
+	}
+	if err := validateJSON("allowed_services", servicesJSON); err != nil {
+		return nil, err
+	}
+
 	if _, err := s.db.Conn.ExecContext(ctx, s.db.Rebind(`
 INSERT INTO api_keys (
 	id, user_id, key, secret_hash, name, status, project_id, budget_usd, spent_usd,
@@ -43,9 +56,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`),
 		status,
 		params.ProjectID,
 		params.BudgetUSD,
-		encodeStringSlice(params.AllowedModels),
-		encodeStringSlice(params.AllowedProviders),
-		encodeStringSlice(params.AllowedServices),
+		modelsJSON,
+		providersJSON,
+		servicesJSON,
 		params.RateLimitQPS,
 		now,
 		now,
@@ -171,15 +184,27 @@ func (s *Store) UpdateAPIKey(ctx context.Context, tenantID string, idOrKey strin
 	}
 	if params.AllowedModels != nil {
 		sets = append(sets, "allowed_models = ?")
-		args = append(args, encodeStringSlice(*params.AllowedModels))
+		v := encodeStringSlice(*params.AllowedModels)
+		if err := validateJSON("allowed_models", v); err != nil {
+			return nil, err
+		}
+		args = append(args, v)
 	}
 	if params.AllowedProviders != nil {
 		sets = append(sets, "allowed_providers = ?")
-		args = append(args, encodeStringSlice(*params.AllowedProviders))
+		v := encodeStringSlice(*params.AllowedProviders)
+		if err := validateJSON("allowed_providers", v); err != nil {
+			return nil, err
+		}
+		args = append(args, v)
 	}
 	if params.AllowedServices != nil {
 		sets = append(sets, "allowed_services = ?")
-		args = append(args, encodeStringSlice(*params.AllowedServices))
+		v := encodeStringSlice(*params.AllowedServices)
+		if err := validateJSON("allowed_services", v); err != nil {
+			return nil, err
+		}
+		args = append(args, v)
 	}
 	if params.RevokedAt != nil {
 		sets = append(sets, "revoked_at = ?")

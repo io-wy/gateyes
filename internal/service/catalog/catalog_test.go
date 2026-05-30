@@ -136,6 +136,9 @@ func (m *mockStore) CheckVirtualKeyBudget(ctx context.Context, virtualKeyID stri
 func (m *mockStore) ConsumeVirtualKeyBudget(ctx context.Context, virtualKeyID string, cost float64) (bool, error) {
 	return true, nil
 }
+func (m *mockStore) ConsumeBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, cost float64) (bool, error) {
+	return true, nil
+}
 func (m *mockStore) GetBudgetStatus(ctx context.Context, tenantID, projectID, apiKeyID string) ([]repository.BudgetStatus, error) {
 	return nil, nil
 }
@@ -219,7 +222,10 @@ func (m *mockStore) AuthenticateVirtualKey(ctx context.Context, key string) (*re
 func (m *mockStore) CreateAuditLog(ctx context.Context, record repository.AuditLogRecord) error { return nil }
 func (m *mockStore) ListAuditLogs(ctx context.Context, tenantID string, filter repository.AuditLogFilter) ([]repository.AuditLogRecord, error) {
 	return nil, nil
+
 }
+	func (m *mockStore) DeleteResponsesOlderThan(ctx context.Context, before time.Time) (int64, error) { return 0, nil }
+
 
 func newMockCatalogService(store repository.Store) *Service {
 	authSvc := auth.NewAuth(store)

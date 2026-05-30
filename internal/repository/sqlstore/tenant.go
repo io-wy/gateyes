@@ -106,7 +106,6 @@ func (s *Store) ListTenantProviders(ctx context.Context, tenantID string) ([]str
 SELECT provider_name
 FROM tenant_providers
 WHERE tenant_id = ?
-  AND enabled = 1
 ORDER BY provider_name`), tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("list tenant providers: %w", err)
@@ -143,8 +142,8 @@ func (s *Store) ReplaceTenantProviders(ctx context.Context, tenantID string, pro
 	now := time.Now().UTC()
 	for _, providerName := range providerNames {
 		if _, err := tx.ExecContext(ctx, s.db.Rebind(`
-INSERT INTO tenant_providers (id, tenant_id, provider_name, enabled, created_at, updated_at)
-VALUES (?, ?, ?, 1, ?, ?)`), uuid.NewString(), tenantID, providerName, now, now); err != nil {
+INSERT INTO tenant_providers (id, tenant_id, provider_name, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?)`), uuid.NewString(), tenantID, providerName, now, now); err != nil {
 			tx.Rollback()
 			return fmt.Errorf("insert tenant provider: %w", err)
 		}
@@ -168,30 +167,52 @@ func (s *Store) DeleteTenant(ctx context.Context, idOrSlug string) error {
 		return fmt.Errorf("begin delete tenant: %w", err)
 	}
 
-	queries := []struct {
+	now := time.Now().UTC()
+
+	// Soft-delete child resources
+	if _, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE users SET status = ?, updated_at = ? WHERE tenant_id = ?`),
+		repository.StatusInactive, now, tenant.ID); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("soft-delete tenant users: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE api_keys SET status = ?, revoked_at = ?, updated_at = ? WHERE user_id IN (SELECT id FROM users WHERE tenant_id = ?)`),
+		repository.StatusRevoked, now, now, tenant.ID); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("soft-delete tenant api keys: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE projects SET status = ?, updated_at = ? WHERE tenant_id = ?`),
+		repository.StatusInactive, now, tenant.ID); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("soft-delete tenant projects: %w", err)
+	}
+
+	// Clean up data-only tables (no status column)
+	dataQueries := []struct {
 		query string
 		arg   string
 	}{
 		{s.db.Rebind(`DELETE FROM virtual_keys WHERE tenant_id = ?`), tenant.ID},
-		{s.db.Rebind(`DELETE FROM user_models WHERE user_id IN (SELECT id FROM users WHERE tenant_id = ?)`), tenant.ID},
 		{s.db.Rebind(`DELETE FROM responses WHERE tenant_id = ?`), tenant.ID},
 		{s.db.Rebind(`DELETE FROM usage_records WHERE tenant_id = ?`), tenant.ID},
-		{s.db.Rebind(`DELETE FROM api_keys WHERE user_id IN (SELECT id FROM users WHERE tenant_id = ?)`), tenant.ID},
-		{s.db.Rebind(`DELETE FROM users WHERE tenant_id = ?`), tenant.ID},
 		{s.db.Rebind(`DELETE FROM service_subscriptions WHERE tenant_id = ?`), tenant.ID},
 		{s.db.Rebind(`DELETE FROM service_versions WHERE tenant_id = ?`), tenant.ID},
 		{s.db.Rebind(`DELETE FROM services WHERE tenant_id = ?`), tenant.ID},
 		{s.db.Rebind(`DELETE FROM tenant_providers WHERE tenant_id = ?`), tenant.ID},
-		{s.db.Rebind(`DELETE FROM projects WHERE tenant_id = ?`), tenant.ID},
 		{s.db.Rebind(`DELETE FROM audit_logs WHERE tenant_id = ?`), tenant.ID},
-		{s.db.Rebind(`DELETE FROM tenants WHERE id = ?`), tenant.ID},
 	}
 
-	for _, q := range queries {
+	for _, q := range dataQueries {
 		if _, err := tx.ExecContext(ctx, q.query, q.arg); err != nil {
 			tx.Rollback()
-			return fmt.Errorf("delete tenant cascade: %w", err)
+			return fmt.Errorf("delete tenant data: %w", err)
 		}
+	}
+
+	// Soft-delete the tenant itself
+	if _, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE tenants SET status = ?, updated_at = ? WHERE id = ?`),
+		repository.StatusInactive, now, tenant.ID); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("soft-delete tenant: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {

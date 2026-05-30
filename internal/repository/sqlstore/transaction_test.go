@@ -75,12 +75,12 @@ func TestDeleteProject_TxRollback(t *testing.T) {
 		t.Fatalf("delete project: %v", err)
 	}
 
-	_, err = store.GetProject(ctx, tenant.ID, project.ID)
-	if err == nil {
-		t.Fatalf("expected project to be deleted")
+	got, err := store.GetProject(ctx, tenant.ID, project.ID)
+	if err != nil {
+		t.Fatalf("GetProject error = %v", err)
 	}
-	if err != repository.ErrNotFound {
-		t.Fatalf("expected ErrNotFound, got %v", err)
+	if got.Status != repository.StatusInactive {
+		t.Fatalf("expected Status=inactive, got %q", got.Status)
 	}
 }
 

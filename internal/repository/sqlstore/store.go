@@ -50,8 +50,8 @@ func (s *Store) CreateUser(ctx context.Context, params repository.CreateUserPara
 	}
 
 	if _, err := tx.ExecContext(ctx, s.db.Rebind(`
-INSERT INTO users (id, tenant_id, name, email, role, status, quota, used, qps, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`),
+	INSERT INTO users (id, tenant_id, name, email, role, status, quota, used, qps, created_at, updated_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`),
 		userID, params.TenantID, params.Name, params.Email, role, status, params.Quota, params.QPS, now, now,
 	); err != nil {
 		tx.Rollback()
@@ -59,17 +59,12 @@ VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`),
 	}
 
 	if _, err := tx.ExecContext(ctx, s.db.Rebind(`
-INSERT INTO api_keys (id, user_id, key, secret_hash, status, project_id, budget_usd, spent_usd, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`),
-		apiKeyID, userID, params.APIKey, params.SecretHash, repository.StatusActive, params.ProjectID, params.KeyBudgetUSD, now, now,
+	INSERT INTO api_keys (id, user_id, key, secret_hash, status, project_id, budget_usd, spent_usd, allowed_models, created_at, updated_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`),
+		apiKeyID, userID, params.APIKey, params.SecretHash, repository.StatusActive, params.ProjectID, params.KeyBudgetUSD, encodeStringSlice(params.Models), now, now,
 	); err != nil {
 		tx.Rollback()
 		return nil, fmt.Errorf("insert api key: %w", err)
-	}
-
-	if err := s.replaceModels(ctx, tx, userID, params.Models, now); err != nil {
-		tx.Rollback()
-		return nil, err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -81,29 +76,30 @@ VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`),
 
 func (s *Store) ListUsers(ctx context.Context, tenantID string) ([]repository.UserRecord, error) {
 	query := `
-SELECT u.id,
-	u.tenant_id,
-	t.slug,
-	COALESCE((SELECT ak.key FROM api_keys ak WHERE ak.user_id = u.id ORDER BY ak.created_at LIMIT 1), ''),
-	u.name,
-	u.email,
-	u.role,
-	u.quota,
-	u.used,
-	u.qps,
-	u.status,
-	u.created_at,
-	u.updated_at
-FROM users u
-JOIN tenants t ON t.id = u.tenant_id`
+	SELECT u.id,
+		u.tenant_id,
+		t.slug,
+		COALESCE((SELECT ak.key FROM api_keys ak WHERE ak.user_id = u.id ORDER BY ak.created_at LIMIT 1), ''),
+		u.name,
+		u.email,
+		u.role,
+		u.quota,
+		u.used,
+		u.qps,
+		u.status,
+		u.created_at,
+		u.updated_at,
+		COALESCE((SELECT ak.allowed_models FROM api_keys ak WHERE ak.user_id = u.id ORDER BY ak.created_at LIMIT 1), '')
+	FROM users u
+	JOIN tenants t ON t.id = u.tenant_id`
 	args := make([]any, 0, 1)
 	if tenantID != "" {
 		query += `
-WHERE u.tenant_id = ?`
+	WHERE u.tenant_id = ?`
 		args = append(args, tenantID)
 	}
 	query += `
-ORDER BY u.created_at DESC`
+	ORDER BY u.created_at DESC`
 
 	rows, err := s.db.Conn.QueryContext(ctx, s.db.Rebind(query), args...)
 	if err != nil {
@@ -114,6 +110,7 @@ ORDER BY u.created_at DESC`
 	var users []repository.UserRecord
 	for rows.Next() {
 		var user repository.UserRecord
+		var allowedModelsRaw string
 		if err := rows.Scan(
 			&user.ID,
 			&user.TenantID,
@@ -128,15 +125,12 @@ ORDER BY u.created_at DESC`
 			&user.Status,
 			&user.CreatedAt,
 			&user.UpdatedAt,
+			&allowedModelsRaw,
 		); err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
 		}
 
-		models, err := s.loadModels(ctx, user.ID)
-		if err != nil {
-			return nil, err
-		}
-		user.Models = models
+		user.Models = decodeStringSlice(allowedModelsRaw)
 		users = append(users, user)
 	}
 
@@ -190,15 +184,15 @@ func (s *Store) UpdateUser(ctx context.Context, tenantID string, idOrAPIKey stri
 	args = append(args, time.Now().UTC(), user.ID)
 
 	if _, err := tx.ExecContext(ctx, s.db.Rebind(fmt.Sprintf(`
-UPDATE users
-SET %s
-WHERE id = ?`, strings.Join(sets, ", "))), args...); err != nil {
+	UPDATE users
+	SET %s
+	WHERE id = ?`, strings.Join(sets, ", "))), args...); err != nil {
 		tx.Rollback()
 		return nil, fmt.Errorf("update user: %w", err)
 	}
 
-	keySets := make([]string, 0, 3)
-	keyArgs := make([]any, 0, 4)
+	keySets := make([]string, 0, 4)
+	keyArgs := make([]any, 0, 5)
 	if params.ProjectID != nil {
 		keySets = append(keySets, "project_id = ?")
 		keyArgs = append(keyArgs, *params.ProjectID)
@@ -207,22 +201,19 @@ WHERE id = ?`, strings.Join(sets, ", "))), args...); err != nil {
 		keySets = append(keySets, "budget_usd = ?")
 		keyArgs = append(keyArgs, *params.KeyBudgetUSD)
 	}
+	if params.Models != nil {
+		keySets = append(keySets, "allowed_models = ?")
+		keyArgs = append(keyArgs, encodeStringSlice(*params.Models))
+	}
 	if len(keySets) > 0 {
 		keySets = append(keySets, "updated_at = ?")
 		keyArgs = append(keyArgs, time.Now().UTC(), user.ID)
 		if _, err := tx.ExecContext(ctx, s.db.Rebind(fmt.Sprintf(`
-UPDATE api_keys
-SET %s
-WHERE user_id = ?`, strings.Join(keySets, ", "))), keyArgs...); err != nil {
+	UPDATE api_keys
+	SET %s
+	WHERE user_id = ?`, strings.Join(keySets, ", "))), keyArgs...); err != nil {
 			tx.Rollback()
 			return nil, fmt.Errorf("update user api key metadata: %w", err)
-		}
-	}
-
-	if params.Models != nil {
-		if err := s.replaceModels(ctx, tx, user.ID, *params.Models, time.Now().UTC()); err != nil {
-			tx.Rollback()
-			return nil, err
 		}
 	}
 
@@ -240,23 +231,34 @@ func (s *Store) DeleteUser(ctx context.Context, tenantID string, idOrAPIKey stri
 	}
 
 	tx, err := s.db.Conn.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin delete user: %w", err)
+
+	now := time.Now().UTC()
+
+	// Soft-delete child api keys
+	if _, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE api_keys SET status = ?, revoked_at = ?, updated_at = ? WHERE user_id = ?`),
+		repository.StatusRevoked, now, now, user.ID); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("soft-delete user api keys: %w", err)
 	}
 
-	queries := []string{
-		`DELETE FROM user_models WHERE user_id = ?`,
+	// Clean up data-only tables (no status column)
+	dataQueries := []string{
 		`DELETE FROM usage_records WHERE user_id = ?`,
 		`DELETE FROM responses WHERE user_id = ?`,
-		`DELETE FROM api_keys WHERE user_id = ?`,
-		`DELETE FROM users WHERE id = ?`,
 	}
 
-	for _, query := range queries {
+	for _, query := range dataQueries {
 		if _, err := tx.ExecContext(ctx, s.db.Rebind(query), user.ID); err != nil {
 			tx.Rollback()
 			return fmt.Errorf("delete user data: %w", err)
 		}
+	}
+
+	// Soft-delete the user itself
+	if _, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE users SET status = ?, updated_at = ? WHERE id = ?`),
+		repository.StatusInactive, now, user.ID); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("soft-delete user: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {

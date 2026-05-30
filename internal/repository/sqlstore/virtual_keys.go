@@ -17,9 +17,18 @@ import (
 func (s *Store) CreateVirtualKey(ctx context.Context, params repository.CreateVirtualKeyParams) (*repository.VirtualKeyRecord, error) {
 	id := uuid.NewString()
 	now := time.Now().UTC()
-	modelsJSON, _ := json.Marshal(params.AllowedModels)
-	providersJSON, _ := json.Marshal(params.AllowedProviders)
-	metadataJSON, _ := json.Marshal(params.Metadata)
+	modelsJSON, err := json.Marshal(params.AllowedModels)
+	if err != nil {
+		return nil, fmt.Errorf("marshal allowed_models: %w", err)
+	}
+	providersJSON, err := json.Marshal(params.AllowedProviders)
+	if err != nil {
+		return nil, fmt.Errorf("marshal allowed_providers: %w", err)
+	}
+	metadataJSON, err := json.Marshal(params.Metadata)
+	if err != nil {
+		return nil, fmt.Errorf("marshal metadata: %w", err)
+	}
 
 	if _, err := s.db.Conn.ExecContext(ctx, s.db.Rebind(`
 INSERT INTO virtual_keys (
@@ -138,15 +147,27 @@ func (s *Store) UpdateVirtualKey(ctx context.Context, tenantID string, idOrKey s
 	}
 	if params.AllowedModels != nil {
 		setClauses = append(setClauses, "allowed_models = ?")
-		args = append(args, mustJSON(*params.AllowedModels))
+		v := mustJSON(*params.AllowedModels)
+		if err := validateJSON("allowed_models", v); err != nil {
+			return nil, err
+		}
+		args = append(args, v)
 	}
 	if params.AllowedProviders != nil {
 		setClauses = append(setClauses, "allowed_providers = ?")
-		args = append(args, mustJSON(*params.AllowedProviders))
+		v := mustJSON(*params.AllowedProviders)
+		if err := validateJSON("allowed_providers", v); err != nil {
+			return nil, err
+		}
+		args = append(args, v)
 	}
 	if params.Metadata != nil {
 		setClauses = append(setClauses, "metadata = ?")
-		args = append(args, mustJSON(*params.Metadata))
+		v := mustJSON(*params.Metadata)
+		if err := validateJSON("metadata", v); err != nil {
+			return nil, err
+		}
+		args = append(args, v)
 	}
 	if params.CallbackURL != nil {
 		setClauses = append(setClauses, "callback_url = ?")

@@ -140,7 +140,17 @@ func (s *Store) DeleteProject(ctx context.Context, tenantID string, idOrSlug str
 		return fmt.Errorf("begin delete project: %w", err)
 	}
 
-	queries := []struct {
+	now := time.Now().UTC()
+
+	// Soft-delete child api keys
+	if _, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE api_keys SET status = ?, revoked_at = ?, updated_at = ? WHERE project_id = ?`),
+		repository.StatusRevoked, now, now, project.ID); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("soft-delete project api keys: %w", err)
+	}
+
+	// Clean up data-only tables (no status column)
+	dataQueries := []struct {
 		query string
 		arg   string
 	}{
@@ -150,15 +160,20 @@ func (s *Store) DeleteProject(ctx context.Context, tenantID string, idOrSlug str
 		{s.db.Rebind(`DELETE FROM services WHERE project_id = ?`), project.ID},
 		{s.db.Rebind(`DELETE FROM responses WHERE project_id = ?`), project.ID},
 		{s.db.Rebind(`DELETE FROM usage_records WHERE project_id = ?`), project.ID},
-		{s.db.Rebind(`DELETE FROM api_keys WHERE project_id = ?`), project.ID},
-		{s.db.Rebind(`DELETE FROM projects WHERE id = ?`), project.ID},
 	}
 
-	for _, q := range queries {
+	for _, q := range dataQueries {
 		if _, err := tx.ExecContext(ctx, q.query, q.arg); err != nil {
 			tx.Rollback()
-			return fmt.Errorf("delete project cascade: %w", err)
+			return fmt.Errorf("delete project data: %w", err)
 		}
+	}
+
+	// Soft-delete the project itself
+	if _, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE projects SET status = ?, updated_at = ? WHERE id = ?`),
+		repository.StatusInactive, now, project.ID); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("soft-delete project: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {

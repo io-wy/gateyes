@@ -18,6 +18,10 @@ func (s *Store) CreateAuditLog(ctx context.Context, record repository.AuditLogRe
 	if record.CreatedAt.IsZero() {
 		record.CreatedAt = time.Now().UTC()
 	}
+	payloadStr := string(record.Payload)
+	if err := validateJSON("payload", payloadStr); err != nil {
+		return err
+	}
 	if _, err := s.db.Conn.ExecContext(ctx, s.db.Rebind(`
 INSERT INTO audit_logs (
 	id, tenant_id, actor_user_id, actor_api_key_id, actor_role, action, resource_type, resource_id,
@@ -34,7 +38,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		record.ResourceID,
 		record.RequestID,
 		record.IPAddress,
-		string(record.Payload),
+		payloadStr,
 		record.CreatedAt,
 	); err != nil {
 		return fmt.Errorf("create audit log: %w", err)

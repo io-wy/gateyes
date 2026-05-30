@@ -70,11 +70,7 @@ LIMIT 1`), key, key)
 		return nil, fmt.Errorf("authenticate key: %w", err)
 	}
 
-	models, err := s.loadModels(ctx, identity.UserID)
-	if err != nil {
-		return nil, err
-	}
-	identity.Models = models
+	identity.Models = decodeStringSlice(apiKeyModelsRaw)
 	identity.APIKeyModels = decodeStringSlice(apiKeyModelsRaw)
 	identity.APIKeyProviders = decodeStringSlice(apiKeyProvidersRaw)
 	identity.APIKeyServices = decodeStringSlice(apiKeyServicesRaw)
@@ -184,6 +180,105 @@ WHERE id = ?
 	return rowsAffected > 0, nil
 }
 
+func (s *Store) ConsumeBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, cost float64) (bool, error) {
+	if cost <= 0 {
+		return true, nil
+	}
+
+	tx, err := s.db.Conn.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin budget tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC()
+
+	if virtualKeyID != "" {
+		result, err := tx.ExecContext(ctx, s.db.Rebind(`
+	UPDATE virtual_keys
+	SET spent_usd = spent_usd + ?, updated_at = ?
+	WHERE id = ?
+	  AND (budget_usd <= 0 OR spent_usd + ? <= budget_usd OR budget_policy != 'hard_reject')`),
+			cost, now, virtualKeyID, cost,
+		)
+		if err != nil {
+			return false, fmt.Errorf("consume virtual key budget: %w", err)
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return false, fmt.Errorf("consume virtual key budget rows: %w", err)
+		}
+		if rows == 0 {
+			return false, nil
+		}
+	}
+
+	if apiKeyID != "" {
+		result, err := tx.ExecContext(ctx, s.db.Rebind(`
+	UPDATE api_keys
+	SET spent_usd = spent_usd + ?, updated_at = ?
+	WHERE id = ?
+	  AND (budget_usd <= 0 OR spent_usd + ? <= budget_usd OR budget_policy != 'hard_reject')`),
+			cost, now, apiKeyID, cost,
+		)
+		if err != nil {
+			return false, fmt.Errorf("consume api key budget: %w", err)
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return false, fmt.Errorf("consume api key budget rows: %w", err)
+		}
+		if rows == 0 {
+			return false, nil
+		}
+	}
+
+	if projectID != "" {
+		result, err := tx.ExecContext(ctx, s.db.Rebind(`
+	UPDATE projects
+	SET spent_usd = spent_usd + ?, updated_at = ?
+	WHERE id = ?
+	  AND (budget_usd <= 0 OR spent_usd + ? <= budget_usd OR budget_policy != 'hard_reject')`),
+			cost, now, projectID, cost,
+		)
+		if err != nil {
+			return false, fmt.Errorf("consume project budget: %w", err)
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return false, fmt.Errorf("consume project budget rows: %w", err)
+		}
+		if rows == 0 {
+			return false, nil
+		}
+	}
+
+	if tenantID != "" {
+		result, err := tx.ExecContext(ctx, s.db.Rebind(`
+	UPDATE tenants
+	SET spent_usd = spent_usd + ?, updated_at = ?
+	WHERE id = ?
+	  AND (budget_usd <= 0 OR spent_usd + ? <= budget_usd OR budget_policy != 'hard_reject')`),
+			cost, now, tenantID, cost,
+		)
+		if err != nil {
+			return false, fmt.Errorf("consume tenant budget: %w", err)
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return false, fmt.Errorf("consume tenant budget rows: %w", err)
+		}
+		if rows == 0 {
+			return false, nil
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit budget tx: %w", err)
+	}
+	return true, nil
+}
+
 func (s *Store) ConsumeProjectBudget(ctx context.Context, projectID string, cost float64) (bool, error) {
 	if projectID == "" || cost <= 0 {
 		return true, nil
@@ -263,15 +358,10 @@ WHERE id = ?`),
 
 		if _, err := tx.ExecContext(ctx, s.db.Rebind(`
 UPDATE api_keys
-SET secret_hash = ?, status = ?, project_id = ?, budget_usd = ?, updated_at = ?
-WHERE id = ?`), params.SecretHash, repository.StatusActive, params.ProjectID, params.KeyBudgetUSD, time.Now().UTC(), existing.APIKeyID); err != nil {
+SET secret_hash = ?, status = ?, project_id = ?, budget_usd = ?, allowed_models = ?, updated_at = ?
+WHERE id = ?`), params.SecretHash, repository.StatusActive, params.ProjectID, params.KeyBudgetUSD, encodeStringSlice(params.Models), time.Now().UTC(), existing.APIKeyID); err != nil {
 			tx.Rollback()
 			return fmt.Errorf("update bootstrap key: %w", err)
-		}
-
-		if err := s.replaceModels(ctx, tx, existing.UserID, params.Models, time.Now().UTC()); err != nil {
-			tx.Rollback()
-			return err
 		}
 
 		return tx.Commit()
@@ -308,8 +398,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`),
 	}
 
 	if _, err := tx.ExecContext(ctx, s.db.Rebind(`
-INSERT INTO api_keys (id, user_id, key, secret_hash, status, project_id, budget_usd, spent_usd, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`),
+INSERT INTO api_keys (id, user_id, key, secret_hash, status, project_id, budget_usd, spent_usd, allowed_models, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`),
 		apiKeyID,
 		userID,
 		params.Key,
@@ -317,16 +407,12 @@ VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`),
 		repository.StatusActive,
 		params.ProjectID,
 		params.KeyBudgetUSD,
+		encodeStringSlice(params.Models),
 		now,
 		now,
 	); err != nil {
 		tx.Rollback()
 		return fmt.Errorf("insert bootstrap key: %w", err)
-	}
-
-	if err := s.replaceModels(ctx, tx, userID, params.Models, now); err != nil {
-		tx.Rollback()
-		return err
 	}
 
 	return tx.Commit()
@@ -376,52 +462,52 @@ func (s *Store) checkBudget(ctx context.Context, table, id string, estimatedCost
 func (s *Store) GetBudgetStatus(ctx context.Context, tenantID, projectID, apiKeyID string) ([]repository.BudgetStatus, error) {
 	var result []repository.BudgetStatus
 	if tenantID != "" {
-		var budget, spent, overage float64
+		var budget, spent float64
 		var policy string
 		if err := s.db.Conn.QueryRowContext(ctx, s.db.Rebind(
-			`SELECT budget_usd, spent_usd, overage_usd, budget_policy FROM tenants WHERE id = ?`), tenantID,
-		).Scan(&budget, &spent, &overage, &policy); err == nil {
+			`SELECT budget_usd, spent_usd, budget_policy FROM tenants WHERE id = ?`), tenantID,
+		).Scan(&budget, &spent, &policy); err == nil {
 			utilization := 0.0
 			if budget > 0 {
 				utilization = spent / budget
 			}
 			result = append(result, repository.BudgetStatus{
 				Scope: "tenant", ID: tenantID, BudgetUSD: budget, SpentUSD: spent,
-				OverageUSD: overage, Policy: policy, Utilization: utilization,
+				Policy: policy, Utilization: utilization,
 				IsExhausted: budget > 0 && spent >= budget,
 			})
 		}
 	}
 	if projectID != "" {
-		var budget, spent, overage float64
+		var budget, spent float64
 		var policy string
 		if err := s.db.Conn.QueryRowContext(ctx, s.db.Rebind(
-			`SELECT budget_usd, spent_usd, overage_usd, budget_policy FROM projects WHERE id = ?`), projectID,
-		).Scan(&budget, &spent, &overage, &policy); err == nil {
+			`SELECT budget_usd, spent_usd, budget_policy FROM projects WHERE id = ?`), projectID,
+		).Scan(&budget, &spent, &policy); err == nil {
 			utilization := 0.0
 			if budget > 0 {
 				utilization = spent / budget
 			}
 			result = append(result, repository.BudgetStatus{
 				Scope: "project", ID: projectID, BudgetUSD: budget, SpentUSD: spent,
-				OverageUSD: overage, Policy: policy, Utilization: utilization,
+				Policy: policy, Utilization: utilization,
 				IsExhausted: budget > 0 && spent >= budget,
 			})
 		}
 	}
 	if apiKeyID != "" {
-		var budget, spent, overage float64
+		var budget, spent float64
 		var policy string
 		if err := s.db.Conn.QueryRowContext(ctx, s.db.Rebind(
-			`SELECT budget_usd, spent_usd, overage_usd, budget_policy FROM api_keys WHERE id = ?`), apiKeyID,
-		).Scan(&budget, &spent, &overage, &policy); err == nil {
+			`SELECT budget_usd, spent_usd, budget_policy FROM api_keys WHERE id = ?`), apiKeyID,
+		).Scan(&budget, &spent, &policy); err == nil {
 			utilization := 0.0
 			if budget > 0 {
 				utilization = spent / budget
 			}
 			result = append(result, repository.BudgetStatus{
 				Scope: "api_key", ID: apiKeyID, BudgetUSD: budget, SpentUSD: spent,
-				OverageUSD: overage, Policy: policy, Utilization: utilization,
+				Policy: policy, Utilization: utilization,
 				IsExhausted: budget > 0 && spent >= budget,
 			})
 		}

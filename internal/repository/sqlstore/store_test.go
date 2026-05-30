@@ -222,9 +222,6 @@ func TestProviderRegistryPersistsRuntimeConfig(t *testing.T) {
 		HealthStatus:  "healthy",
 		RoutingWeight: 4,
 		RuntimeConfig: &repository.ProviderRuntimeConfig{
-			GRPCTarget:    "",
-			GRPCUseTLS:    false,
-			GRPCAuthority: "",
 			APIKey:        "runtime-secret",
 			PriceInput:    0.1,
 			PriceOutput:   0.2,

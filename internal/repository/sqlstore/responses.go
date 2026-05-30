@@ -24,6 +24,19 @@ func (s *Store) CreateResponse(ctx context.Context, record repository.ResponseRe
 		record.UpdatedAt = now
 	}
 
+	requestBody := string(record.RequestBody)
+	responseBody := string(record.ResponseBody)
+	routeTraceBody := string(record.RouteTraceBody)
+	if err := validateJSON("request_body", requestBody); err != nil {
+		return err
+	}
+	if err := validateJSON("response_body", responseBody); err != nil {
+		return err
+	}
+	if err := validateJSON("route_trace_body", routeTraceBody); err != nil {
+		return err
+	}
+
 	if _, err := s.db.Conn.ExecContext(ctx, s.db.Rebind(`
 INSERT INTO responses (
 	id, tenant_id, project_id, user_id, api_key_id, provider_name, model, status,
@@ -38,9 +51,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		record.ProviderName,
 		record.Model,
 		record.Status,
-		string(record.RequestBody),
-		string(record.ResponseBody),
-		string(record.RouteTraceBody),
+		requestBody,
+		responseBody,
+		routeTraceBody,
 		record.CreatedAt,
 		record.UpdatedAt,
 	); err != nil {
@@ -58,7 +71,16 @@ func (s *Store) UpdateResponse(ctx context.Context, record repository.ResponseRe
 	var query string
 	var args []any
 
+	respBody := string(record.ResponseBody)
+	if err := validateJSON("response_body", respBody); err != nil {
+		return err
+	}
+
 	if record.RouteTraceBody != nil {
+		routeBody := string(record.RouteTraceBody)
+		if err := validateJSON("route_trace_body", routeBody); err != nil {
+			return err
+		}
 		query = `
 UPDATE responses
 SET provider_name = ?, model = ?, status = ?, response_body = ?, route_trace_body = ?, updated_at = ?
@@ -68,8 +90,8 @@ WHERE id = ?
 			record.ProviderName,
 			record.Model,
 			record.Status,
-			string(record.ResponseBody),
-			string(record.RouteTraceBody),
+			respBody,
+			routeBody,
 			record.UpdatedAt,
 			record.ID,
 			record.TenantID,
@@ -84,7 +106,7 @@ WHERE id = ?
 			record.ProviderName,
 			record.Model,
 			record.Status,
-			string(record.ResponseBody),
+			respBody,
 			record.UpdatedAt,
 			record.ID,
 			record.TenantID,
@@ -256,4 +278,12 @@ SELECT id, tenant_id, project_id, user_id, api_key_id, provider_name, model, sta
 		return nil, fmt.Errorf("iterate responses: %w", err)
 	}
 	return items, nil
+}
+
+func (s *Store) DeleteResponsesOlderThan(ctx context.Context, before time.Time) (int64, error) {
+	result, err := s.db.Conn.ExecContext(ctx, s.db.Rebind(`DELETE FROM responses WHERE created_at < ?`), before)
+	if err != nil {
+		return 0, fmt.Errorf("delete old responses: %w", err)
+	}
+	return result.RowsAffected()
 }

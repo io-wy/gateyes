@@ -218,7 +218,11 @@ func TestDeleteAPIKey(t *testing.T) {
 	if err := store.DeleteUser(ctx, tenantID, userID); err != nil {
 		t.Fatalf("DeleteUser() error: %v", err)
 	}
-	if _, err := store.GetAPIKey(ctx, tenantID, key.ID); err != repository.ErrNotFound {
-		t.Fatalf("GetAPIKey(after delete) error = %v, want %v", err, repository.ErrNotFound)
+	got, err := store.GetAPIKey(ctx, tenantID, key.ID)
+	if err != nil {
+		t.Fatalf("GetAPIKey error = %v", err)
+	}
+	if got.Status != repository.StatusRevoked {
+		t.Fatalf("expected Status=revoked, got %q", got.Status)
 	}
 }

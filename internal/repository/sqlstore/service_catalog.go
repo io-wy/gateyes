@@ -30,6 +30,9 @@ func (s *Store) CreateService(ctx context.Context, params repository.CreateServi
 	if err != nil {
 		return nil, err
 	}
+	if err := validateJSON("config_body", configBody); err != nil {
+		return nil, err
+	}
 	now := time.Now().UTC()
 	record := repository.ServiceRecord{
 		ID:              uuid.NewString(),
@@ -175,6 +178,9 @@ func (s *Store) UpdateService(ctx context.Context, tenantID string, idOrPrefix s
 		if err != nil {
 			return nil, err
 		}
+		if err := validateJSON("config_body", configBody); err != nil {
+			return nil, err
+		}
 		sets = append(sets, "config_body = ?")
 		args = append(args, configBody)
 	}
@@ -202,6 +208,9 @@ func (s *Store) CreateServiceVersion(ctx context.Context, tenantID string, param
 	}
 	body, err := encodeJSON(snapshot)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateJSON("snapshot_body", body); err != nil {
 		return nil, err
 	}
 
