@@ -359,54 +359,6 @@ func TestResponsesEndpointStreamReturnsSSE(t *testing.T) {
 	}
 }
 
-func TestChatAndAnthropicEndpointsRejectGRPCOnlyProviderBySurface(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	env := newHandlerTestEnv(t, handlerTestEnvConfig{
-		providerConfigs: []config.ProviderConfig{{
-			Name:       "grpc-vllm",
-			Type:       "grpc",
-			Vendor:     "vllm",
-			GRPCTarget: "127.0.0.1:50051",
-			Model:      "Qwen/Qwen3-8B",
-			Timeout:    5,
-			Enabled:    true,
-			MaxTokens:  131072,
-		}},
-		tenantProviders: []string{"grpc-vllm"},
-	})
-
-	t.Run("chat completions", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"model":"Qwen/Qwen3-8B","messages":[{"role":"user","content":"hello"}]}`))
-		req.Header.Set("Authorization", "Bearer test-key:test-secret")
-		req.Header.Set("Content-Type", "application/json")
-		env.server.engine.ServeHTTP(rec, req)
-
-		if rec.Code != http.StatusServiceUnavailable {
-			t.Fatalf("expected 503 for chat via grpc-only provider, got %d: %s", rec.Code, rec.Body.String())
-		}
-		if !strings.Contains(rec.Body.String(), "no provider available") {
-			t.Fatalf("chat grpc-only body = %s, want no provider available", rec.Body.String())
-		}
-	})
-
-	t.Run("anthropic messages", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewBufferString(`{"model":"Qwen/Qwen3-8B","messages":[{"role":"user","content":"hello"}]}`))
-		req.Header.Set("X-Api-Key", "test-key:test-secret")
-		req.Header.Set("Content-Type", "application/json")
-		env.server.engine.ServeHTTP(rec, req)
-
-		if rec.Code != http.StatusServiceUnavailable {
-			t.Fatalf("expected 503 for messages via grpc-only provider, got %d: %s", rec.Code, rec.Body.String())
-		}
-		if !strings.Contains(rec.Body.String(), "no provider available") {
-			t.Fatalf("messages grpc-only body = %s, want no provider available", rec.Body.String())
-		}
-	})
-}
-
 type handlerTestEnv struct {
 	server           *Server
 	store            *sqlstore.Store

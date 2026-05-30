@@ -33,7 +33,7 @@ func (h *AdminHandler) ListAuditLogs(c *gin.Context) {
 	if raw := c.Query("start_time"); raw != "" {
 		parsed, err := time.Parse(time.RFC3339, raw)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid start_time"})
+			writeError(c, http.StatusBadRequest, CodeInvalidParameter, "invalid start_time")
 			return
 		}
 		filter.StartTime = parsed
@@ -41,21 +41,21 @@ func (h *AdminHandler) ListAuditLogs(c *gin.Context) {
 	if raw := c.Query("end_time"); raw != "" {
 		parsed, err := time.Parse(time.RFC3339, raw)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid end_time"})
+			writeError(c, http.StatusBadRequest, CodeInvalidParameter, "invalid end_time")
 			return
 		}
 		filter.EndTime = parsed
 	}
 	items, err := h.store.ListAuditLogs(c.Request.Context(), tenantID, filter)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeDatabaseError, err.Error())
 		return
 	}
 	result := make([]gin.H, 0, len(items))
 	for _, item := range items {
 		result = append(result, auditLogToResponse(item))
 	}
-	c.JSON(http.StatusOK, gin.H{"data": result})
+	writeList(c, result, int64(len(result)))
 }
 
 func (h *AdminHandler) recordAudit(c *gin.Context, action, resourceType, resourceID string, payload any) {

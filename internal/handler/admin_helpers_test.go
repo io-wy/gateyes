@@ -19,7 +19,7 @@ func TestUsageFilter(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET usage summary with filter status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	data := decodeBodyMap(t, rec)["data"].(map[string]any)
+	data := decodeBodyMap(t, rec)
 	filter := data["filter"].(map[string]any)
 	if filter["provider"] != "test-openai" || filter["model"] != "m" || filter["project_id"] != "p1" {
 		t.Fatalf("usageFilter did not parse query params correctly: %#v", filter)
@@ -140,8 +140,8 @@ func TestResolveTargetTenant(t *testing.T) {
 
 	// super admin with tenant_id succeeds
 	rec = performJSONRequest(t, env, http.MethodPost, "/admin/users", superToken, `{"tenant_id":"tenant-a","name":"has-tenant","email":"h@example.com"}`)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("super admin with tenant_id status = %d, want %d: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("super admin with tenant_id status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 }
 
@@ -168,8 +168,8 @@ func TestAppendTenantProvider(t *testing.T) {
 
 	// Create a new runtime provider which auto-appends to tenant
 	rec := performJSONRequest(t, env, http.MethodPost, "/admin/providers", adminToken, `{"name":"append-provider","type":"openai","model":"m1","enabled":true}`)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("POST provider status = %d, want %d: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST provider status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 }
 

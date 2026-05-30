@@ -117,7 +117,6 @@ func (h *Handler) Chat(c *gin.Context) {
 		return
 	}
 
-	// upstreamLatency = total latency - (retry delays)
 	upstreamLatency := time.Duration(result.LatencyMs) * time.Millisecond
 	h.observeResponseWithUpstream(metricsSurfaceChatCompletions, result.ProviderName, result.Response.Usage, time.Since(start), upstreamLatency, result.Retries, result.Fallback)
 	h.logRequestCompleted(c, metricsSurfaceChatCompletions, result.ProviderName, http.StatusOK, time.Since(start))
@@ -289,15 +288,15 @@ func (h *Handler) Metrics(c *gin.Context) {
 }
 
 func (h *Handler) Health(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	writeOKMsg(c, "ok", gin.H{"status": "ok"})
 }
 
 func (h *Handler) Ready(c *gin.Context) {
 	if len(h.deps.ProviderMgr.List()) == 0 {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no providers"})
+		writeError(c, http.StatusServiceUnavailable, CodeNoHealthyProvider, "")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"status": "ready"})
+	writeOKMsg(c, "ready", gin.H{"status": "ready"})
 }
 
 func (h *Handler) observeResponse(surface, providerName string, usage provider.Usage, latency time.Duration) {
@@ -325,6 +324,54 @@ func (h *Handler) renderServiceError(c *gin.Context, surface, providerName strin
 	h.logRequestFailed(c, surface, providerName, status, err)
 
 	c.JSON(status, gin.H{"error": gin.H{"message": httpErr.Message, "type": httpErr.Type}})
+}
+
+// renderServiceErrorV2 returns errors in unified {code, success, message, data} format.
+// Used by Service and Admin endpoints, NOT by LLM proxy endpoints.
+func (h *Handler) renderServiceErrorV2(c *gin.Context, surface, providerName string, err error) {
+	code := errToCode(err)
+	httpStatus := codeToHTTPStatus(code, err)
+
+	result, errorClass := classifyMetricsError(err, codeMessages[code])
+	h.metrics.RecordError(surface, providerName, result, errorClass)
+	h.logRequestFailed(c, surface, providerName, httpStatus, err)
+
+	writeError(c, httpStatus, code, err.Error())
+}
+
+func codeToHTTPStatus(code Code, err error) int {
+	switch code {
+	case CodeInvalidAPIKey, CodeInactiveAPIKey, CodeInvalidSecret:
+		return http.StatusUnauthorized
+	case CodeInsufficientRole:
+		return http.StatusForbidden
+	case CodeQuotaExceeded, CodeBudgetExceeded, CodeRateLimited:
+		return http.StatusTooManyRequests
+	case CodeBadRequest, CodeInvalidRequestBody, CodeMissingRequiredField, CodeInvalidParameter:
+		return http.StatusBadRequest
+	case CodeServiceNotPublished, CodeServiceDisabled, CodeServiceAccessDenied:
+		return http.StatusBadRequest
+	case CodeServiceUnavailable, CodeNoHealthyProvider:
+		return http.StatusServiceUnavailable
+	case CodeUpstreamTimeout:
+		return http.StatusGatewayTimeout
+	case CodeUpstreamError:
+		return http.StatusBadGateway
+	default:
+		if err != nil {
+			msg := err.Error()
+			if strings.Contains(msg, "timeout") {
+				return http.StatusGatewayTimeout
+			}
+			if strings.Contains(msg, "429") || strings.Contains(msg, "rate_limit") {
+				return http.StatusTooManyRequests
+			}
+			if strings.Contains(msg, "400") || strings.Contains(msg, "invalid") {
+				return http.StatusBadRequest
+			}
+		}
+		return http.StatusBadGateway
+	}
 }
 
 type gatewayHTTPError struct {

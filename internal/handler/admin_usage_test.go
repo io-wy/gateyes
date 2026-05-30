@@ -21,7 +21,7 @@ func TestGetBudgets(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET budgets status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	data := decodeBodyMap(t, rec)["data"]
+	data := decodeBodyMap(t, rec)
 	if data == nil {
 		t.Fatal("expected data in response")
 	}
@@ -47,7 +47,7 @@ func TestGetUsageSummary(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET usage summary status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	data := decodeBodyMap(t, rec)["data"].(map[string]any)
+	data := decodeBodyMap(t, rec)
 	if data["summary"] == nil {
 		t.Fatal("expected summary in response")
 	}
@@ -73,7 +73,7 @@ func TestGetUsageBreakdown(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET usage breakdown status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	data := decodeBodyMap(t, rec)["data"].(map[string]any)
+	data := decodeBodyMap(t, rec)
 	if data["rows"] == nil {
 		t.Fatal("expected rows in response")
 	}
@@ -99,7 +99,7 @@ func TestGetUsageTrend(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET usage trend status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	data := decodeBodyMap(t, rec)["data"].(map[string]any)
+	data := decodeBodyMap(t, rec)
 	if data["rows"] == nil {
 		t.Fatal("expected rows in response")
 	}
@@ -112,16 +112,16 @@ func TestResetUserUsage(t *testing.T) {
 	adminToken := seedAdminToken(t, env, repository.RoleTenantAdmin, "admin-reset", "secret").APIKey + ":" + "secret"
 
 	rec := performJSONRequest(t, env, http.MethodPost, "/admin/users", adminToken, `{"name":"reset-user","email":"r@example.com"}`)
-	if rec.Code != http.StatusCreated {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("create user: %d %s", rec.Code, rec.Body.String())
 	}
-	userID := decodeBodyMap(t, rec)["data"].(map[string]any)["id"].(string)
+	userID := decodeBodyMap(t, rec)["id"].(string)
 
 	rec = performJSONRequest(t, env, http.MethodPost, "/admin/users/"+userID+"/reset", adminToken, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST reset usage status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	data := decodeBodyMap(t, rec)["data"].(map[string]any)
+	data := decodeBodyMap(t, rec)
 	if data["used"] != float64(0) {
 		t.Fatalf("expected used=0, got %v", data["used"])
 	}
@@ -134,16 +134,16 @@ func TestGetUserUsage(t *testing.T) {
 	adminToken := seedAdminToken(t, env, repository.RoleTenantAdmin, "admin-uusage", "secret").APIKey + ":" + "secret"
 
 	rec := performJSONRequest(t, env, http.MethodPost, "/admin/users", adminToken, `{"name":"usage-user","email":"u@example.com"}`)
-	if rec.Code != http.StatusCreated {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("create user: %d %s", rec.Code, rec.Body.String())
 	}
-	userID := decodeBodyMap(t, rec)["data"].(map[string]any)["id"].(string)
+	userID := decodeBodyMap(t, rec)["id"].(string)
 
 	rec = performJSONRequest(t, env, http.MethodGet, "/admin/users/"+userID+"/usage", adminToken, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET user usage status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	data := decodeBodyMap(t, rec)["data"].(map[string]any)
+	data := decodeBodyMap(t, rec)
 	if data["user"] == nil {
 		t.Fatal("expected user in response")
 	}

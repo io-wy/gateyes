@@ -78,3 +78,53 @@ func (m *AuthMiddleware) RequireRoles(roles ...string) gin.HandlerFunc {
 		c.Next()
 	}
 }
+
+// AdminAuth 验证 API Key，返回统一格式 {code, success, message, data}
+func (m *AuthMiddleware) AdminAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authHeader := ""
+		if xApiKey := c.GetHeader("X-Api-Key"); xApiKey != "" {
+			authHeader = "Bearer " + xApiKey
+		} else {
+			authHeader = c.GetHeader("Authorization")
+		}
+		key, secret := m.auth.ExtractKey(authHeader)
+		identity, err := m.auth.Authenticate(c.Request.Context(), key, secret)
+		if err != nil {
+			code := 40001
+			msg := "invalid API key"
+			status := http.StatusUnauthorized
+			if err == auth.ErrInactiveAPIKey {
+				code = 40002
+				msg = "inactive API key"
+				status = http.StatusForbidden
+			}
+			recordMiddlewareError(m.metrics, c, metricsResultAuthError, "invalid_api_key")
+			c.JSON(status, gin.H{"code": code, "success": false, "message": msg, "data": nil})
+			c.Abort()
+			return
+		}
+		SetIdentity(c, identity)
+		c.Next()
+	}
+}
+
+// AdminRequireRoles 角色校验，返回统一格式
+func (m *AuthMiddleware) AdminRequireRoles(roles ...string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		identity, ok := Identity(c)
+		if !ok {
+			recordMiddlewareError(m.metrics, c, metricsResultAuthError, "invalid_api_key")
+			c.JSON(http.StatusUnauthorized, gin.H{"code": 40001, "success": false, "message": "invalid API key", "data": nil})
+			c.Abort()
+			return
+		}
+		if !repository.HasRole(identity.Role, roles...) {
+			recordMiddlewareError(m.metrics, c, metricsResultAuthError, "forbidden")
+			c.JSON(http.StatusForbidden, gin.H{"code": 40101, "success": false, "message": "insufficient role", "data": nil})
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}

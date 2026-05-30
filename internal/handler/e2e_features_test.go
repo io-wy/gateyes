@@ -155,7 +155,7 @@ func TestE2EFeatures(t *testing.T) {
 			"callback_url":     callbackServer.URL,
 		})
 		assertStatus(t, resp, http.StatusCreated, body)
-		vkData := decodeJSONMap(t, body)["data"].(map[string]any)
+		vkData := decodeJSONMap(t, body)
 		vkToken := vkData["token"].(string)
 		vkID := vkData["id"].(string)
 		t.Logf("VK created: id=%s token=%s", vkID, vkToken)
@@ -171,7 +171,7 @@ func TestE2EFeatures(t *testing.T) {
 		// 1d. List VKs
 		resp, body = doReq(t, ts, "GET", "/admin/virtual-keys", parentToken, nil)
 		assertStatus(t, resp, http.StatusOK, body)
-		vkList := decodeJSONMap(t, body)["data"].([]any)
+		vkList := decodeJSONMap(t, body)["items"].([]any)
 		if len(vkList) == 0 {
 			t.Fatal("VK list should not be empty")
 		}
@@ -182,7 +182,7 @@ func TestE2EFeatures(t *testing.T) {
 			"name": newName,
 		})
 		assertStatus(t, resp, http.StatusOK, body)
-		if decodeJSONMap(t, body)["data"].(map[string]any)["name"] != newName {
+		if decodeJSONMap(t, body)["name"] != newName {
 			t.Fatal("VK update should change name")
 		}
 
@@ -207,7 +207,7 @@ func TestE2EFeatures(t *testing.T) {
 		// 1g. Verify budget was consumed
 		resp, body = doReq(t, ts, "GET", "/admin/virtual-keys/"+vkID, parentToken, nil)
 		assertStatus(t, resp, http.StatusOK, body)
-		vkAfter := decodeJSONMap(t, body)["data"].(map[string]any)
+		vkAfter := decodeJSONMap(t, body)
 		spent := vkAfter["spent_usd"].(float64)
 		if spent <= 0 {
 			t.Fatalf("VK spent_usd = %f, should be > 0 after request", spent)
@@ -276,11 +276,9 @@ func TestE2EFeatures(t *testing.T) {
 		// List responses and verify meta.total
 		resp, body := doReq(t, ts, "GET", "/admin/responses", parentToken, nil)
 		assertStatus(t, resp, http.StatusOK, body)
-		result := decodeJSONMap(t, body)
-		data := result["data"].([]any)
-		meta := result["meta"].(map[string]any)
-
-		total := int(meta["total"].(float64))
+		listResult := decodeJSONMap(t, body)
+		data := listResult["items"].([]any)
+		total := int(listResult["total"].(float64))
 		if total < 3 {
 			t.Fatalf("meta.total = %d, want >= 3", total)
 		}
@@ -311,7 +309,7 @@ func TestE2EFeatures(t *testing.T) {
 			"callback_url": callbackServer.URL,
 		})
 		assertStatus(t, resp, http.StatusCreated, body)
-		vkToken := decodeJSONMap(t, body)["data"].(map[string]any)["token"].(string)
+		vkToken := decodeJSONMap(t, body)["token"].(string)
 
 		// Reset counter
 		callbackReceived.Store(0)

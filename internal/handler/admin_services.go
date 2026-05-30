@@ -26,7 +26,7 @@ func (h *AdminHandler) CreateService(c *gin.Context) {
 	identity, _ := middleware.Identity(c)
 	var req CreateServiceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, CodeInvalidRequestBody, err.Error())
 		return
 	}
 	tenantID, ok := h.resolveTargetTenant(c, identity, req.TenantID)
@@ -46,23 +46,23 @@ func (h *AdminHandler) CreateService(c *gin.Context) {
 		Config:          req.Config,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	if req.AutoPublish && result.InitialVersion != nil {
 		updated, version, err := h.catalogSvc.PublishServiceVersion(c.Request.Context(), tenantID, result.Service.ID, result.InitialVersion.ID, "published")
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 			return
 		}
 		result.Service = updated
 		result.InitialVersion = version
 	}
 
-	c.JSON(http.StatusCreated, gin.H{"data": gin.H{
+	writeOK(c, gin.H{
 		"service":         serviceToResponse(*result.Service),
 		"initial_version": serviceVersionToResponse(result.InitialVersion),
-	}})
+	})
 	h.recordAudit(c, "service.create", "service", result.Service.ID, req)
 }
 
@@ -83,14 +83,14 @@ func (h *AdminHandler) ListServices(c *gin.Context) {
 		Enabled:       enabled,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	result := make([]gin.H, 0, len(services))
 	for _, item := range services {
 		result = append(result, serviceToResponse(item))
 	}
-	c.JSON(http.StatusOK, gin.H{"data": result})
+	writeOK(c, result)
 }
 
 func (h *AdminHandler) GetService(c *gin.Context) {
@@ -102,21 +102,21 @@ func (h *AdminHandler) GetService(c *gin.Context) {
 	record, err := h.store.GetService(c.Request.Context(), tenantID, c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "service not found"})
+			writeError(c, http.StatusNotFound, CodeServiceNotFound, "service not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	versions, err := h.store.ListServiceVersions(c.Request.Context(), record.TenantID, record.ID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+	writeOK(c, gin.H{
 		"service":  serviceToResponse(*record),
 		"versions": serviceVersionsToResponse(versions),
-	}})
+	})
 }
 
 type UpdateServiceRequest struct {
@@ -138,7 +138,7 @@ func (h *AdminHandler) UpdateService(c *gin.Context) {
 	}
 	var req UpdateServiceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, CodeInvalidRequestBody, err.Error())
 		return
 	}
 	record, err := h.store.UpdateService(c.Request.Context(), tenantID, c.Param("id"), repository.UpdateServiceParams{
@@ -153,14 +153,14 @@ func (h *AdminHandler) UpdateService(c *gin.Context) {
 	})
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "service not found"})
+			writeError(c, http.StatusNotFound, CodeServiceNotFound, "service not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	h.recordAudit(c, "service.update", "service", record.ID, req)
-	c.JSON(http.StatusOK, gin.H{"data": serviceToResponse(*record)})
+	writeOK(c, serviceToResponse(*record))
 }
 
 func (h *AdminHandler) ListServiceVersions(c *gin.Context) {
@@ -172,18 +172,18 @@ func (h *AdminHandler) ListServiceVersions(c *gin.Context) {
 	record, err := h.store.GetService(c.Request.Context(), tenantID, c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "service not found"})
+			writeError(c, http.StatusNotFound, CodeServiceNotFound, "service not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	versions, err := h.store.ListServiceVersions(c.Request.Context(), record.TenantID, record.ID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": serviceVersionsToResponse(versions)})
+	writeOK(c, serviceVersionsToResponse(versions))
 }
 
 func (h *AdminHandler) CreateServiceVersion(c *gin.Context) {
@@ -195,14 +195,14 @@ func (h *AdminHandler) CreateServiceVersion(c *gin.Context) {
 	version, err := h.catalogSvc.CreateServiceVersion(c.Request.Context(), tenantID, c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "service not found"})
+			writeError(c, http.StatusNotFound, CodeServiceNotFound, "service not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	h.recordAudit(c, "service_version.create", "service", c.Param("id"), gin.H{"service_id": c.Param("id"), "version_id": version.ID})
-	c.JSON(http.StatusCreated, gin.H{"data": serviceVersionToResponse(version)})
+	writeOK(c, serviceVersionToResponse(version))
 }
 
 type PublishServiceRequest struct {
@@ -218,22 +218,22 @@ func (h *AdminHandler) PublishServiceVersion(c *gin.Context) {
 	}
 	var req PublishServiceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, CodeInvalidRequestBody, err.Error())
 		return
 	}
 	record, version, err := h.catalogSvc.PublishServiceVersion(c.Request.Context(), tenantID, c.Param("id"), req.VersionID, req.Mode)
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "service/version not found"})
+			writeError(c, http.StatusNotFound, CodeServiceNotFound, "service/version not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+	writeOK(c, gin.H{
 		"service": serviceToResponse(*record),
 		"version": serviceVersionToResponse(version),
-	}})
+	})
 	h.recordAudit(c, "service.publish", "service", record.ID, req)
 }
 
@@ -246,16 +246,16 @@ func (h *AdminHandler) PromoteStagedServiceVersion(c *gin.Context) {
 	record, version, err := h.catalogSvc.PromoteStagedServiceVersion(c.Request.Context(), tenantID, c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "staged version not found"})
+			writeError(c, http.StatusNotFound, CodeServiceNotFound, "staged version not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+	writeOK(c, gin.H{
 		"service": serviceToResponse(*record),
 		"version": serviceVersionToResponse(version),
-	}})
+	})
 	h.recordAudit(c, "service.promote", "service", record.ID, gin.H{"service_id": record.ID, "version_id": version.ID})
 }
 
@@ -271,22 +271,22 @@ func (h *AdminHandler) RollbackServiceVersion(c *gin.Context) {
 	}
 	var req RollbackServiceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, CodeInvalidRequestBody, err.Error())
 		return
 	}
 	record, version, err := h.catalogSvc.RollbackServiceVersion(c.Request.Context(), tenantID, c.Param("id"), req.VersionID)
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "service/version not found"})
+			writeError(c, http.StatusNotFound, CodeServiceNotFound, "service/version not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+	writeOK(c, gin.H{
 		"service": serviceToResponse(*record),
 		"version": serviceVersionToResponse(version),
-	}})
+	})
 	h.recordAudit(c, "service.rollback", "service", record.ID, req)
 }
 
@@ -308,16 +308,16 @@ func (h *AdminHandler) CreateServiceSubscription(c *gin.Context) {
 	}
 	var req CreateServiceSubscriptionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, CodeInvalidRequestBody, err.Error())
 		return
 	}
 	record, err := h.store.GetService(c.Request.Context(), tenantID, c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "service not found"})
+			writeError(c, http.StatusNotFound, CodeServiceNotFound, "service not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	subscription, err := h.store.CreateServiceSubscription(c.Request.Context(), record.TenantID, repository.CreateServiceSubscriptionParams{
@@ -331,11 +331,11 @@ func (h *AdminHandler) CreateServiceSubscription(c *gin.Context) {
 		AllowedSurfaces:       req.AllowedSurfaces,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	h.recordAudit(c, "service_subscription.create", "service_subscription", subscription.ID, req)
-	c.JSON(http.StatusCreated, gin.H{"data": serviceSubscriptionToResponse(*subscription)})
+	writeOK(c, serviceSubscriptionToResponse(*subscription))
 }
 
 func (h *AdminHandler) ListServiceSubscriptions(c *gin.Context) {
@@ -347,10 +347,10 @@ func (h *AdminHandler) ListServiceSubscriptions(c *gin.Context) {
 	record, err := h.store.GetService(c.Request.Context(), tenantID, c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "service not found"})
+			writeError(c, http.StatusNotFound, CodeServiceNotFound, "service not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	items, err := h.store.ListServiceSubscriptions(c.Request.Context(), record.TenantID, repository.ServiceSubscriptionFilter{
@@ -358,14 +358,14 @@ func (h *AdminHandler) ListServiceSubscriptions(c *gin.Context) {
 		Status:    c.Query("status"),
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	result := make([]gin.H, 0, len(items))
 	for _, item := range items {
 		result = append(result, serviceSubscriptionToResponse(item))
 	}
-	c.JSON(http.StatusOK, gin.H{"data": result})
+	writeOK(c, result)
 }
 
 func (h *AdminHandler) GetServiceSubscription(c *gin.Context) {
@@ -377,13 +377,13 @@ func (h *AdminHandler) GetServiceSubscription(c *gin.Context) {
 	record, err := h.store.GetServiceSubscription(c.Request.Context(), tenantID, c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "subscription not found"})
+			writeError(c, http.StatusNotFound, CodeServiceNotFound, "subscription not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": serviceSubscriptionToResponse(*record)})
+	writeOK(c, serviceSubscriptionToResponse(*record))
 }
 
 type ReviewServiceSubscriptionRequest struct {
@@ -399,16 +399,16 @@ func (h *AdminHandler) ReviewServiceSubscription(c *gin.Context) {
 	}
 	var req ReviewServiceSubscriptionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, CodeInvalidRequestBody, err.Error())
 		return
 	}
 	result, err := h.catalogSvc.ReviewSubscription(c.Request.Context(), tenantID, c.Param("id"), req.Decision, req.ReviewNote)
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "subscription not found"})
+			writeError(c, http.StatusNotFound, CodeServiceNotFound, "subscription not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	payload := gin.H{
@@ -420,7 +420,7 @@ func (h *AdminHandler) ReviewServiceSubscription(c *gin.Context) {
 		payload["token"] = result.APIKey.Key + ":" + result.APISecret
 	}
 	h.recordAudit(c, "service_subscription.review", "service_subscription", result.Subscription.ID, req)
-	c.JSON(http.StatusOK, gin.H{"data": payload})
+	writeOK(c, payload)
 }
 
 func serviceToResponse(record repository.ServiceRecord) gin.H {

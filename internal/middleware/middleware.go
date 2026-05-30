@@ -43,3 +43,11 @@ func (m *Middleware) RequireRoles(roles ...string) gin.HandlerFunc {
 func (m *Middleware) GuardLLMRequest() gin.HandlerFunc {
 	return m.guard.GuardLLMRequest()
 }
+
+func (m *Middleware) AdminAuth() gin.HandlerFunc {
+	return m.auth.AdminAuth()
+}
+
+func (m *Middleware) AdminRequireRoles(roles ...string) gin.HandlerFunc {
+	return m.auth.AdminRequireRoles(roles...)
+}

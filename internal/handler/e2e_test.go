@@ -280,7 +280,7 @@ func TestGatewayE2E(t *testing.T) {
 		resp, body = doRequest(t, client, http.MethodGet, env.server.URL+"/admin/providers/openai-chat/stats", authHeaders(adminToken), nil)
 		assertStatus(t, resp, http.StatusOK, body)
 		payload = decodeJSONMap(t, body)
-		if payload["data"].(map[string]any)["name"] != "openai-chat" {
+		if payload["name"] != "openai-chat" {
 			t.Fatalf("/admin/providers/:name/stats payload = %#v, want openai-chat", payload)
 		}
 
@@ -289,9 +289,9 @@ func TestGatewayE2E(t *testing.T) {
 			"email":  "e2e@example.com",
 			"models": []string{"chat-public", "resp-public"},
 		})
-		assertStatus(t, resp, http.StatusCreated, body)
+		assertStatus(t, resp, http.StatusOK, body)
 		payload = decodeJSONMap(t, body)
-		user := payload["data"].(map[string]any)
+		user := payload
 		userToken := user["api_key"].(string) + ":" + user["api_secret"].(string)
 
 		resp, body = doRequest(t, client, http.MethodGet, env.server.URL+"/v1/models", authHeaders(userToken), nil)

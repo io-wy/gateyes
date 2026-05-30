@@ -18,7 +18,7 @@ func TestUpdateProvider(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT provider status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	data := decodeBodyMap(t, rec)["data"].(map[string]any)
+	data := decodeBodyMap(t, rec)
 	if data["model"] != "updated-model" || data["routing_weight"] != float64(9) {
 		t.Fatalf("PUT provider payload = %#v, want updated model and weight", data)
 	}
@@ -36,15 +36,15 @@ func TestUpdateTenant(t *testing.T) {
 
 	// Create a new tenant to update so we don't inactivate the seeded one
 	rec := performJSONRequest(t, env, http.MethodPost, "/admin/tenants", superToken, `{"id":"upd-ten","slug":"upd-ten","name":"Upd Tenant"}`)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("POST tenant status = %d, want %d: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST tenant status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 
 	rec = performJSONRequest(t, env, http.MethodPut, "/admin/tenants/upd-ten", superToken, `{"name":"Updated Tenant","status":"inactive"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT tenant status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	data := decodeBodyMap(t, rec)["data"].(map[string]any)
+	data := decodeBodyMap(t, rec)
 	if data["name"] != "Updated Tenant" || data["status"] != "inactive" {
 		t.Fatalf("PUT tenant payload = %#v, want updated name and status", data)
 	}
@@ -61,16 +61,16 @@ func TestUpdateProject(t *testing.T) {
 	adminToken := seedAdminToken(t, env, repository.RoleTenantAdmin, "admin-upd-proj", "secret").APIKey + ":" + "secret"
 
 	rec := performJSONRequest(t, env, http.MethodPost, "/admin/projects", adminToken, `{"slug":"upd-proj","name":"Upd Proj"}`)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("POST project status = %d, want %d: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST project status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	projectID := decodeBodyMap(t, rec)["data"].(map[string]any)["id"].(string)
+	projectID := decodeBodyMap(t, rec)["id"].(string)
 
 	rec = performJSONRequest(t, env, http.MethodPut, "/admin/projects/"+projectID, adminToken, `{"name":"Upd Proj New","budget_usd":99}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT project status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	data := decodeBodyMap(t, rec)["data"].(map[string]any)
+	data := decodeBodyMap(t, rec)
 	if data["name"] != "Upd Proj New" || data["budget_usd"] != float64(99) {
 		t.Fatalf("PUT project payload = %#v, want updated name and budget", data)
 	}
@@ -87,16 +87,16 @@ func TestUpdateUser(t *testing.T) {
 	adminToken := seedAdminToken(t, env, repository.RoleTenantAdmin, "admin-upd-user", "secret").APIKey + ":" + "secret"
 
 	rec := performJSONRequest(t, env, http.MethodPost, "/admin/users", adminToken, `{"name":"upd-user","email":"u@example.com"}`)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("POST user status = %d, want %d: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST user status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	userID := decodeBodyMap(t, rec)["data"].(map[string]any)["id"].(string)
+	userID := decodeBodyMap(t, rec)["id"].(string)
 
 	rec = performJSONRequest(t, env, http.MethodPut, "/admin/users/"+userID, adminToken, `{"quota":50,"qps":5,"status":"inactive"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT user status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	data := decodeBodyMap(t, rec)["data"].(map[string]any)
+	data := decodeBodyMap(t, rec)
 	if data["quota"] != float64(50) || data["qps"] != float64(5) || data["status"] != "inactive" {
 		t.Fatalf("PUT user payload = %#v, want updated quota, qps, status", data)
 	}
@@ -113,22 +113,22 @@ func TestUpdateAPIKey(t *testing.T) {
 	adminToken := seedAdminToken(t, env, repository.RoleTenantAdmin, "admin-upd-key", "secret").APIKey + ":" + "secret"
 
 	rec := performJSONRequest(t, env, http.MethodPost, "/admin/users", adminToken, `{"name":"key-owner","email":"k@example.com"}`)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("POST user status = %d, want %d: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST user status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	userID := decodeBodyMap(t, rec)["data"].(map[string]any)["id"].(string)
+	userID := decodeBodyMap(t, rec)["id"].(string)
 
 	rec = performJSONRequest(t, env, http.MethodPost, "/admin/keys", adminToken, `{"user_id":"`+userID+`","budget_usd":10}`)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("POST key status = %d, want %d: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST key status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	keyID := decodeBodyMap(t, rec)["data"].(map[string]any)["id"].(string)
+	keyID := decodeBodyMap(t, rec)["id"].(string)
 
 	rec = performJSONRequest(t, env, http.MethodPut, "/admin/keys/"+keyID, adminToken, `{"budget_usd":20,"rate_limit_qps":5}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PUT key status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	data := decodeBodyMap(t, rec)["data"].(map[string]any)
+	data := decodeBodyMap(t, rec)
 	if data["budget_usd"] != float64(20) || data["rate_limit_qps"] != float64(5) {
 		t.Fatalf("PUT key payload = %#v, want updated budget and qps", data)
 	}

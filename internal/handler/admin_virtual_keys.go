@@ -47,14 +47,14 @@ func (h *AdminHandler) ListVirtualKeys(c *gin.Context) {
 		Status:    c.Query("status"),
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeDatabaseError, err.Error())
 		return
 	}
 	result := make([]gin.H, 0, len(items))
 	for _, item := range items {
 		result = append(result, virtualKeyToResponse(item))
 	}
-	c.JSON(http.StatusOK, gin.H{"data": result})
+	writeList(c, result, int64(len(items)))
 }
 
 func (h *AdminHandler) GetVirtualKey(c *gin.Context) {
@@ -66,20 +66,20 @@ func (h *AdminHandler) GetVirtualKey(c *gin.Context) {
 	record, err := h.store.GetVirtualKey(c.Request.Context(), tenantID, c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "virtual key not found"})
+			writeError(c, http.StatusNotFound, CodeVirtualKeyNotFound, "virtual key not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeDatabaseError, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": virtualKeyToResponse(*record)})
+	writeOK(c, virtualKeyToResponse(*record))
 }
 
 func (h *AdminHandler) CreateVirtualKey(c *gin.Context) {
 	identity, _ := middleware.Identity(c)
 	var req CreateVirtualKeyRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, CodeInvalidRequestBody, err.Error())
 		return
 	}
 
@@ -90,12 +90,12 @@ func (h *AdminHandler) CreateVirtualKey(c *gin.Context) {
 
 	vk, err := repository.GenerateToken("vk-", 8)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	vkSecret, err := repository.GenerateToken("vs-", 16)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 
@@ -115,7 +115,7 @@ func (h *AdminHandler) CreateVirtualKey(c *gin.Context) {
 		CallbackURL:      req.CallbackURL,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeDatabaseError, err.Error())
 		return
 	}
 
@@ -123,7 +123,7 @@ func (h *AdminHandler) CreateVirtualKey(c *gin.Context) {
 	response["secret"] = vkSecret
 	response["token"] = record.Key + ":" + vkSecret
 	h.recordAudit(c, "virtual_key.create", "virtual_key", record.ID, req)
-	c.JSON(http.StatusCreated, gin.H{"data": response})
+	writeJSON(c, http.StatusCreated, CodeOK, "", response)
 }
 
 func (h *AdminHandler) UpdateVirtualKey(c *gin.Context) {
@@ -135,7 +135,7 @@ func (h *AdminHandler) UpdateVirtualKey(c *gin.Context) {
 
 	var req UpdateVirtualKeyRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, CodeInvalidRequestBody, err.Error())
 		return
 	}
 
@@ -151,14 +151,14 @@ func (h *AdminHandler) UpdateVirtualKey(c *gin.Context) {
 	})
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "virtual key not found"})
+			writeError(c, http.StatusNotFound, CodeVirtualKeyNotFound, "virtual key not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeDatabaseError, err.Error())
 		return
 	}
 	h.recordAudit(c, "virtual_key.update", "virtual_key", record.ID, req)
-	c.JSON(http.StatusOK, gin.H{"data": virtualKeyToResponse(*record)})
+	writeOK(c, virtualKeyToResponse(*record))
 }
 
 func (h *AdminHandler) DeleteVirtualKey(c *gin.Context) {
@@ -169,14 +169,14 @@ func (h *AdminHandler) DeleteVirtualKey(c *gin.Context) {
 	}
 	if err := h.store.DeleteVirtualKey(c.Request.Context(), tenantID, c.Param("id")); err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "virtual key not found"})
+			writeError(c, http.StatusNotFound, CodeVirtualKeyNotFound, "virtual key not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeDatabaseError, err.Error())
 		return
 	}
 	h.recordAudit(c, "virtual_key.delete", "virtual_key", c.Param("id"), nil)
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{"deleted": true}})
+	writeOKMsg(c, "virtual key deleted", gin.H{"deleted": true})
 }
 
 func virtualKeyToResponse(record repository.VirtualKeyRecord) gin.H {

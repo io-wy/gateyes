@@ -59,8 +59,8 @@ func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mw *mi
 	}
 
 	admin := engine.Group("/admin")
-	admin.Use(mw.Auth())
-	admin.Use(mw.RequireRoles(repository.RoleTenantAdmin, repository.RoleSuperAdmin))
+	admin.Use(mw.AdminAuth())
+	admin.Use(mw.AdminRequireRoles(repository.RoleTenantAdmin, repository.RoleSuperAdmin))
 	{
 		admin.GET("/dashboard", adminH.Dashboard)
 		admin.GET("/providers", adminH.GetProviders)
@@ -118,7 +118,7 @@ func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mw *mi
 	}
 
 	tenants := admin.Group("/tenants")
-	tenants.Use(mw.RequireRoles(repository.RoleSuperAdmin))
+	tenants.Use(mw.AdminRequireRoles(repository.RoleSuperAdmin))
 	{
 		tenants.GET("", adminH.ListTenants)
 		tenants.POST("", adminH.CreateTenant)

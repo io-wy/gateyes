@@ -40,7 +40,7 @@ func TestDeleteTenant(t *testing.T) {
 	superToken := seedAdminToken(t, env, repository.RoleSuperAdmin, "super-del-ten", "secret").APIKey + ":" + "secret"
 
 	rec := performJSONRequest(t, env, http.MethodPost, "/admin/tenants", superToken, `{"id":"del-ten","slug":"del-ten","name":"To Delete"}`)
-	if rec.Code != http.StatusCreated {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("create tenant: %d %s", rec.Code, rec.Body.String())
 	}
 
@@ -62,10 +62,10 @@ func TestDeleteProject(t *testing.T) {
 	adminToken := seedAdminToken(t, env, repository.RoleTenantAdmin, "admin-del-proj2", "secret").APIKey + ":" + "secret"
 
 	rec := performJSONRequest(t, env, http.MethodPost, "/admin/projects", adminToken, `{"slug":"del-proj2","name":"To Delete"}`)
-	if rec.Code != http.StatusCreated {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("create project: %d %s", rec.Code, rec.Body.String())
 	}
-	projectID := decodeBodyMap(t, rec)["data"].(map[string]any)["id"].(string)
+	projectID := decodeBodyMap(t, rec)["id"].(string)
 
 	rec = performJSONRequest(t, env, http.MethodDelete, "/admin/projects/"+projectID, adminToken, "")
 	if rec.Code != http.StatusOK {
@@ -85,10 +85,10 @@ func TestDeleteUser(t *testing.T) {
 	adminToken := seedAdminToken(t, env, repository.RoleTenantAdmin, "admin-del-user", "secret").APIKey + ":" + "secret"
 
 	rec := performJSONRequest(t, env, http.MethodPost, "/admin/users", adminToken, `{"name":"del-user","email":"del@example.com"}`)
-	if rec.Code != http.StatusCreated {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("create user: %d %s", rec.Code, rec.Body.String())
 	}
-	userID := decodeBodyMap(t, rec)["data"].(map[string]any)["id"].(string)
+	userID := decodeBodyMap(t, rec)["id"].(string)
 
 	rec = performJSONRequest(t, env, http.MethodDelete, "/admin/users/"+userID, adminToken, "")
 	if rec.Code != http.StatusOK {

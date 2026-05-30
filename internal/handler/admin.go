@@ -43,24 +43,24 @@ func (h *AdminHandler) SetHealthChecker(hc *provider.HealthChecker) {
 
 func (h *AdminHandler) ReloadConfig(c *gin.Context) {
 	if h.reloader == nil {
-		c.JSON(http.StatusNotImplemented, gin.H{"error": "reloader not configured"})
+		writeError(c, http.StatusNotImplemented, CodeServiceUnavailable, "reloader not configured")
 		return
 	}
 	if err := h.reloader.Reload(c.Request.Context()); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	h.recordAudit(c, "config.reload", "config", "runtime", gin.H{"status": "success"})
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{"reloaded": true}})
+	writeOK(c, gin.H{"reloaded": true})
 }
 
 func (h *AdminHandler) CheckProviders(c *gin.Context) {
 	if h.healthChecker == nil {
-		c.JSON(http.StatusNotImplemented, gin.H{"error": "health checker not configured"})
+		writeError(c, http.StatusNotImplemented, CodeServiceUnavailable, "health checker not configured")
 		return
 	}
 	if err := h.healthChecker.ForceCheck(c.Request.Context()); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	identity, _ := middleware.Identity(c)
@@ -68,7 +68,7 @@ func (h *AdminHandler) CheckProviders(c *gin.Context) {
 	if !ok {
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": h.providerResponses(c, tenantID)})
+	writeOK(c, h.providerResponses(c, tenantID))
 }
 
 func (h *AdminHandler) GetProviders(c *gin.Context) {
@@ -78,7 +78,7 @@ func (h *AdminHandler) GetProviders(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"data": h.providerResponses(c, tenantID)})
+	writeOK(c, h.providerResponses(c, tenantID))
 }
 
 func (h *AdminHandler) GetProvider(c *gin.Context) {
@@ -91,12 +91,12 @@ func (h *AdminHandler) GetProvider(c *gin.Context) {
 	providers := h.providerResponses(c, tenantID)
 	for _, item := range providers {
 		if item["name"] == c.Param("name") {
-			c.JSON(http.StatusOK, gin.H{"data": item})
+			writeOK(c, item)
 			return
 		}
 	}
 
-	c.JSON(http.StatusNotFound, gin.H{"error": "provider not found"})
+	writeError(c, http.StatusNotFound, CodeProviderNotFound, "provider not found")
 }
 
 func (h *AdminHandler) GetProviderStats(c *gin.Context) {
@@ -108,9 +108,6 @@ type CreateProviderRequest struct {
 	Type                     string            `json:"type"`
 	Vendor                   string            `json:"vendor"`
 	BaseURL                  string            `json:"base_url"`
-	GRPCTarget               string            `json:"grpc_target"`
-	GRPCUseTLS               bool              `json:"grpc_use_tls"`
-	GRPCAuthority            string            `json:"grpc_authority"`
 	Endpoint                 string            `json:"endpoint"`
 	APIKey                   string            `json:"api_key"`
 	Model                    string            `json:"model" binding:"required"`
@@ -137,7 +134,7 @@ func (h *AdminHandler) CreateProvider(c *gin.Context) {
 	identity, _ := middleware.Identity(c)
 	var req CreateProviderRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, CodeInvalidRequestBody, err.Error())
 		return
 	}
 
@@ -155,17 +152,17 @@ func (h *AdminHandler) CreateProvider(c *gin.Context) {
 	})
 	created, err := h.providerRuntimeSvc.Upsert(c.Request.Context(), record)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, CodeBadRequest, err.Error())
 		return
 	}
 	if tenantID, ok := h.scopeTenantID(c, identity); ok && tenantID != "" {
 		if err := h.appendTenantProvider(c.Request.Context(), tenantID, created.Name); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 			return
 		}
 	}
 	h.recordAudit(c, "provider.create", "provider", created.Name, providerRegistryToResponse(*created))
-	c.JSON(http.StatusCreated, gin.H{"data": providerRegistryToResponse(*created)})
+	writeOK(c, providerRegistryToResponse(*created))
 }
 
 type UpdateProviderRequest struct {
@@ -176,9 +173,6 @@ type UpdateProviderRequest struct {
 	Type                     *string           `json:"type"`
 	Vendor                   *string           `json:"vendor"`
 	BaseURL                  *string           `json:"base_url"`
-	GRPCTarget               *string           `json:"grpc_target"`
-	GRPCUseTLS               *bool             `json:"grpc_use_tls"`
-	GRPCAuthority            *string           `json:"grpc_authority"`
 	Endpoint                 *string           `json:"endpoint"`
 	APIKey                   *string           `json:"api_key"`
 	Model                    *string           `json:"model"`
@@ -202,31 +196,31 @@ type UpdateProviderRequest struct {
 func (h *AdminHandler) UpdateProvider(c *gin.Context) {
 	var req UpdateProviderRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, CodeInvalidRequestBody, err.Error())
 		return
 	}
 	if req.HealthStatus != nil && !validProviderHealthStatus(*req.HealthStatus) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid health_status"})
+		writeError(c, http.StatusBadRequest, CodeInvalidParameter, "invalid health_status")
 		return
 	}
 
 	current, err := h.store.GetProviderRegistry(c.Request.Context(), c.Param("name"))
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "provider not found"})
+			writeError(c, http.StatusNotFound, CodeProviderNotFound, "provider not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	updated := mergeProviderUpdate(*current, req)
 	record, err := h.providerRuntimeSvc.Upsert(c.Request.Context(), updated)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, CodeBadRequest, err.Error())
 		return
 	}
 	h.recordAudit(c, "provider.update", "provider", record.Name, req)
-	c.JSON(http.StatusOK, gin.H{"data": providerRegistryToResponse(*record)})
+	writeOK(c, providerRegistryToResponse(*record))
 }
 
 func (h *AdminHandler) DeleteProvider(c *gin.Context) {
@@ -234,17 +228,17 @@ func (h *AdminHandler) DeleteProvider(c *gin.Context) {
 	name := c.Param("name")
 	if err := h.providerRuntimeSvc.Delete(c.Request.Context(), name); err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "provider not found"})
+			writeError(c, http.StatusNotFound, CodeProviderNotFound, "provider not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	if tenantID, ok := h.scopeTenantID(c, identity); ok && tenantID != "" {
 		_ = h.removeTenantProvider(c.Request.Context(), tenantID, name)
 	}
 	h.recordAudit(c, "provider.delete", "provider", name, gin.H{"name": name})
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{"name": name, "deleted": true}})
+	writeOK(c, gin.H{"name": name, "deleted": true})
 }
 
 type CreateAPIKeyRequest struct {
@@ -262,7 +256,7 @@ func (h *AdminHandler) CreateAPIKey(c *gin.Context) {
 
 	var req CreateAPIKeyRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, CodeInvalidRequestBody, err.Error())
 		return
 	}
 
@@ -273,21 +267,21 @@ func (h *AdminHandler) CreateAPIKey(c *gin.Context) {
 	user, err := h.store.GetUser(c.Request.Context(), tenantID, req.UserID)
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			writeError(c, http.StatusNotFound, CodeUserNotFound, "user not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 
 	apiKey, err := repository.GenerateToken("gk-", 8)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	apiSecret, err := repository.GenerateToken("gs-", 16)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 
@@ -304,7 +298,7 @@ func (h *AdminHandler) CreateAPIKey(c *gin.Context) {
 		AllowedServices:  req.AllowedServices,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 
@@ -312,7 +306,7 @@ func (h *AdminHandler) CreateAPIKey(c *gin.Context) {
 	response["api_secret"] = apiSecret
 	response["token"] = record.Key + ":" + apiSecret
 	h.recordAudit(c, "api_key.create", "api_key", record.ID, req)
-	c.JSON(http.StatusCreated, gin.H{"data": response})
+	writeOK(c, response)
 }
 
 func (h *AdminHandler) ListAPIKeys(c *gin.Context) {
@@ -327,14 +321,14 @@ func (h *AdminHandler) ListAPIKeys(c *gin.Context) {
 		Status:    c.Query("status"),
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	result := make([]gin.H, 0, len(items))
 	for _, item := range items {
 		result = append(result, apiKeyToResponse(item))
 	}
-	c.JSON(http.StatusOK, gin.H{"data": result})
+	writeOK(c, result)
 }
 
 func (h *AdminHandler) GetAPIKey(c *gin.Context) {
@@ -346,13 +340,13 @@ func (h *AdminHandler) GetAPIKey(c *gin.Context) {
 	record, err := h.store.GetAPIKey(c.Request.Context(), tenantID, c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "api key not found"})
+			writeError(c, http.StatusNotFound, CodeAPIKeyNotFound, "api key not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": apiKeyToResponse(*record)})
+	writeOK(c, apiKeyToResponse(*record))
 }
 
 type UpdateAPIKeyRequest struct {
@@ -375,11 +369,11 @@ func (h *AdminHandler) UpdateAPIKey(c *gin.Context) {
 
 	var req UpdateAPIKeyRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, CodeInvalidRequestBody, err.Error())
 		return
 	}
 	if req.Status != nil && !validEntityStatus(*req.Status) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
+		writeError(c, http.StatusBadRequest, CodeInvalidParameter, "invalid status")
 		return
 	}
 
@@ -395,13 +389,13 @@ func (h *AdminHandler) UpdateAPIKey(c *gin.Context) {
 	})
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "api key not found"})
+			writeError(c, http.StatusNotFound, CodeAPIKeyNotFound, "api key not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": apiKeyToResponse(*record)})
+	writeOK(c, apiKeyToResponse(*record))
 }
 
 func (h *AdminHandler) RotateAPIKey(c *gin.Context) {
@@ -413,12 +407,12 @@ func (h *AdminHandler) RotateAPIKey(c *gin.Context) {
 
 	newKey, err := repository.GenerateToken("gk-", 8)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	newSecret, err := repository.GenerateToken("gs-", 16)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 
@@ -428,10 +422,10 @@ func (h *AdminHandler) RotateAPIKey(c *gin.Context) {
 	})
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "api key not found"})
+			writeError(c, http.StatusNotFound, CodeAPIKeyNotFound, "api key not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 
@@ -439,7 +433,7 @@ func (h *AdminHandler) RotateAPIKey(c *gin.Context) {
 	response["api_secret"] = newSecret
 	response["token"] = record.Key + ":" + newSecret
 	h.recordAudit(c, "api_key.rotate", "api_key", record.ID, gin.H{"api_key_id": record.ID})
-	c.JSON(http.StatusOK, gin.H{"data": response})
+	writeOK(c, response)
 }
 
 func (h *AdminHandler) RevokeAPIKey(c *gin.Context) {
@@ -457,14 +451,14 @@ func (h *AdminHandler) RevokeAPIKey(c *gin.Context) {
 	})
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "api key not found"})
+			writeError(c, http.StatusNotFound, CodeAPIKeyNotFound, "api key not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	h.recordAudit(c, "api_key.revoke", "api_key", record.ID, gin.H{"api_key_id": record.ID})
-	c.JSON(http.StatusOK, gin.H{"data": apiKeyToResponse(*record)})
+	writeOK(c, apiKeyToResponse(*record))
 }
 
 type CreateUserRequest struct {
@@ -484,7 +478,7 @@ func (h *AdminHandler) CreateUser(c *gin.Context) {
 
 	var req CreateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, CodeInvalidRequestBody, err.Error())
 		return
 	}
 
@@ -494,10 +488,10 @@ func (h *AdminHandler) CreateUser(c *gin.Context) {
 	}
 	if _, err := h.store.GetTenant(c.Request.Context(), tenantID); err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "tenant not found"})
+			writeError(c, http.StatusNotFound, CodeBadRequest, "tenant not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 
@@ -506,7 +500,7 @@ func (h *AdminHandler) CreateUser(c *gin.Context) {
 		role = repository.RoleTenantUser
 	}
 	if role == repository.RoleSuperAdmin && identity.Role != repository.RoleSuperAdmin {
-		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		writeError(c, http.StatusForbidden, CodeInsufficientRole, "forbidden")
 		return
 	}
 
@@ -517,12 +511,12 @@ func (h *AdminHandler) CreateUser(c *gin.Context) {
 
 	apiKey, err := repository.GenerateToken("gk-", 8)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	apiSecret, err := repository.GenerateToken("gs-", 16)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 
@@ -541,11 +535,11 @@ func (h *AdminHandler) CreateUser(c *gin.Context) {
 		SecretHash:   repository.HashSecret(apiSecret),
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{"data": gin.H{
+	writeOK(c, gin.H{
 		"id":             user.ID,
 		"tenant_id":      user.TenantID,
 		"tenant_slug":    user.TenantSlug,
@@ -565,7 +559,7 @@ func (h *AdminHandler) CreateUser(c *gin.Context) {
 		"models":         user.Models,
 		"status":         user.Status,
 		"created_at":     user.CreatedAt,
-	}})
+	})
 	h.recordAudit(c, "user.create", "user", user.ID, req)
 }
 
@@ -578,7 +572,7 @@ func (h *AdminHandler) ListUsers(c *gin.Context) {
 
 	users, err := h.store.ListUsers(c.Request.Context(), tenantID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 
@@ -587,7 +581,7 @@ func (h *AdminHandler) ListUsers(c *gin.Context) {
 		result = append(result, userToResponse(user))
 	}
 
-	c.JSON(http.StatusOK, gin.H{"data": result})
+	writeOK(c, result)
 }
 
 func (h *AdminHandler) GetUser(c *gin.Context) {
@@ -600,13 +594,13 @@ func (h *AdminHandler) GetUser(c *gin.Context) {
 	user, err := h.store.GetUser(c.Request.Context(), tenantID, c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			writeError(c, http.StatusNotFound, CodeUserNotFound, "user not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": userToResponse(*user)})
+	writeOK(c, userToResponse(*user))
 }
 
 type UpdateUserRequest struct {
@@ -624,11 +618,11 @@ func (h *AdminHandler) UpdateUser(c *gin.Context) {
 
 	var req UpdateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, CodeInvalidRequestBody, err.Error())
 		return
 	}
 	if req.Role != nil && *req.Role == repository.RoleSuperAdmin && identity.Role != repository.RoleSuperAdmin {
-		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		writeError(c, http.StatusForbidden, CodeInsufficientRole, "forbidden")
 		return
 	}
 
@@ -648,15 +642,15 @@ func (h *AdminHandler) UpdateUser(c *gin.Context) {
 	})
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			writeError(c, http.StatusNotFound, CodeUserNotFound, "user not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 
 	h.recordAudit(c, "user.update", "user", user.ID, req)
-	c.JSON(http.StatusOK, gin.H{"data": userToResponse(*user)})
+	writeOK(c, userToResponse(*user))
 }
 
 func (h *AdminHandler) DeleteUser(c *gin.Context) {
@@ -668,15 +662,15 @@ func (h *AdminHandler) DeleteUser(c *gin.Context) {
 
 	if err := h.store.DeleteUser(c.Request.Context(), tenantID, c.Param("id")); err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			writeError(c, http.StatusNotFound, CodeUserNotFound, "user not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 
 	h.recordAudit(c, "user.delete", "user", c.Param("id"), gin.H{"user_id": c.Param("id")})
-	c.JSON(http.StatusOK, gin.H{"message": "user deleted"})
+	writeOKMsg(c, "user deleted", nil)
 }
 
 func (h *AdminHandler) ResetUserUsage(c *gin.Context) {
@@ -689,18 +683,18 @@ func (h *AdminHandler) ResetUserUsage(c *gin.Context) {
 	user, err := h.store.ResetUserUsage(c.Request.Context(), tenantID, c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			writeError(c, http.StatusNotFound, CodeUserNotFound, "user not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+	writeOK(c, gin.H{
 		"id":        user.ID,
 		"used":      user.Used,
 		"remaining": remaining(user),
-	}})
+	})
 	h.recordAudit(c, "user.reset_usage", "user", user.ID, gin.H{"user_id": user.ID})
 }
 
@@ -715,10 +709,10 @@ func (h *AdminHandler) GetUserUsage(c *gin.Context) {
 	user, err := h.store.GetUser(c.Request.Context(), tenantID, c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			writeError(c, http.StatusNotFound, CodeUserNotFound, "user not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 
@@ -732,7 +726,7 @@ func (h *AdminHandler) GetUserUsage(c *gin.Context) {
 
 	trend, err := h.store.GetUserUsageTrend(c.Request.Context(), user.TenantID, user.ID, days)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 
@@ -742,7 +736,7 @@ func (h *AdminHandler) GetUserUsage(c *gin.Context) {
 		usagePercent = float64(user.Used) / float64(user.Quota) * 100
 	}
 
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+	writeOK(c, gin.H{
 		"user": gin.H{
 			"id":             user.ID,
 			"name":           user.Name,
@@ -755,7 +749,7 @@ func (h *AdminHandler) GetUserUsage(c *gin.Context) {
 			"key_spent_usd":  user.KeySpentUSD,
 		},
 		"trend": trend,
-	}})
+	})
 }
 
 func (h *AdminHandler) Dashboard(c *gin.Context) {
@@ -767,16 +761,16 @@ func (h *AdminHandler) Dashboard(c *gin.Context) {
 
 	userStats, err := h.store.Stats(c.Request.Context(), tenantID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	usageStats, err := h.store.GetUsageSummary(c.Request.Context(), tenantID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+	writeOK(c, gin.H{
 		"providers": gin.H{
 			"list":             h.providerResponses(c, tenantID),
 			"total_requests":   usageStats.TotalRequests,
@@ -795,20 +789,20 @@ func (h *AdminHandler) Dashboard(c *gin.Context) {
 			"usage_percent": usagePercent(userStats),
 		},
 		"uptime": time.Since(h.startedAt).String(),
-	}})
+	})
 }
 
 func (h *AdminHandler) ListTenants(c *gin.Context) {
 	tenants, err := h.store.ListTenants(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	result := make([]gin.H, 0, len(tenants))
 	for _, item := range tenants {
 		result = append(result, tenantToResponse(item))
 	}
-	c.JSON(http.StatusOK, gin.H{"data": result})
+	writeOK(c, result)
 }
 
 type CreateTenantRequest struct {
@@ -822,7 +816,7 @@ type CreateTenantRequest struct {
 func (h *AdminHandler) CreateTenant(c *gin.Context) {
 	var req CreateTenantRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, CodeInvalidRequestBody, err.Error())
 		return
 	}
 
@@ -835,38 +829,38 @@ func (h *AdminHandler) CreateTenant(c *gin.Context) {
 		Policy:    req.Policy,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	if err := h.store.ReplaceTenantProviders(c.Request.Context(), tenant.ID, providerNames(h.providerMgr.List())); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 
 	h.recordAudit(c, "tenant.create", "tenant", tenant.ID, req)
-	c.JSON(http.StatusCreated, gin.H{"data": tenantToResponse(*tenant)})
+	writeOK(c, tenantToResponse(*tenant))
 }
 
 func (h *AdminHandler) GetTenant(c *gin.Context) {
 	tenant, err := h.store.GetTenant(c.Request.Context(), c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "tenant not found"})
+			writeError(c, http.StatusNotFound, CodeBadRequest, "tenant not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	providers, err := h.store.ListTenantProviders(c.Request.Context(), tenant.ID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+	writeOK(c, gin.H{
 		"tenant":    tenantToResponse(*tenant),
 		"providers": providers,
-	}})
+	})
 }
 
 type UpdateTenantRequest struct {
@@ -880,7 +874,7 @@ type UpdateTenantRequest struct {
 func (h *AdminHandler) UpdateTenant(c *gin.Context) {
 	var req UpdateTenantRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, CodeInvalidRequestBody, err.Error())
 		return
 	}
 
@@ -893,15 +887,15 @@ func (h *AdminHandler) UpdateTenant(c *gin.Context) {
 	})
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "tenant not found"})
+			writeError(c, http.StatusNotFound, CodeBadRequest, "tenant not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 
 	h.recordAudit(c, "tenant.update", "tenant", tenant.ID, req)
-	c.JSON(http.StatusOK, gin.H{"data": tenantToResponse(*tenant)})
+	writeOK(c, tenantToResponse(*tenant))
 }
 
 type ReplaceTenantProvidersRequest struct {
@@ -911,47 +905,47 @@ type ReplaceTenantProvidersRequest struct {
 func (h *AdminHandler) ReplaceTenantProviders(c *gin.Context) {
 	var req ReplaceTenantProvidersRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, CodeInvalidRequestBody, err.Error())
 		return
 	}
 	if !h.allProvidersExist(req.Providers) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown provider in list"})
+		writeError(c, http.StatusBadRequest, CodeBadRequest, "unknown provider in list")
 		return
 	}
 
 	tenant, err := h.store.GetTenant(c.Request.Context(), c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "tenant not found"})
+			writeError(c, http.StatusNotFound, CodeBadRequest, "tenant not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 
 	if err := h.store.ReplaceTenantProviders(c.Request.Context(), tenant.ID, req.Providers); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 
 	h.recordAudit(c, "tenant.replace_providers", "tenant", tenant.ID, req)
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+	writeOK(c, gin.H{
 		"tenant_id": tenant.ID,
 		"providers": req.Providers,
-	}})
+	})
 }
 
 func (h *AdminHandler) DeleteTenant(c *gin.Context) {
 	if err := h.store.DeleteTenant(c.Request.Context(), c.Param("id")); err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "tenant not found"})
+			writeError(c, http.StatusNotFound, CodeBadRequest, "tenant not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	h.recordAudit(c, "tenant.delete", "tenant", c.Param("id"), gin.H{"tenant_id": c.Param("id")})
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{"id": c.Param("id"), "deleted": true}})
+	writeOK(c, gin.H{"id": c.Param("id"), "deleted": true})
 }
 
 func (h *AdminHandler) providerResponses(c *gin.Context, tenantID string) []gin.H {
@@ -1016,7 +1010,7 @@ func (h *AdminHandler) scopeTenantID(c *gin.Context, identity *repository.AuthId
 func (h *AdminHandler) resolveTargetTenant(c *gin.Context, identity *repository.AuthIdentity, requested string) (string, bool) {
 	if identity.Role == repository.RoleSuperAdmin {
 		if requested == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "tenant_id is required"})
+			writeError(c, http.StatusBadRequest, CodeMissingRequiredField, "tenant_id is required")
 			return "", false
 		}
 		return requested, true
@@ -1071,7 +1065,7 @@ func (h *AdminHandler) CreateProject(c *gin.Context) {
 	identity, _ := middleware.Identity(c)
 	var req CreateProjectRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, CodeInvalidRequestBody, err.Error())
 		return
 	}
 	tenantID, ok := h.resolveTargetTenant(c, identity, req.TenantID)
@@ -1087,11 +1081,11 @@ func (h *AdminHandler) CreateProject(c *gin.Context) {
 		Policy:    req.Policy,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	h.recordAudit(c, "project.create", "project", project.ID, req)
-	c.JSON(http.StatusCreated, gin.H{"data": projectToResponse(*project)})
+	writeOK(c, projectToResponse(*project))
 }
 
 func (h *AdminHandler) ListProjects(c *gin.Context) {
@@ -1102,14 +1096,14 @@ func (h *AdminHandler) ListProjects(c *gin.Context) {
 	}
 	projects, err := h.store.ListProjects(c.Request.Context(), tenantID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	result := make([]gin.H, 0, len(projects))
 	for _, item := range projects {
 		result = append(result, projectToResponse(item))
 	}
-	c.JSON(http.StatusOK, gin.H{"data": result})
+	writeOK(c, result)
 }
 
 func (h *AdminHandler) GetProject(c *gin.Context) {
@@ -1121,13 +1115,13 @@ func (h *AdminHandler) GetProject(c *gin.Context) {
 	project, err := h.store.GetProject(c.Request.Context(), tenantID, c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+			writeError(c, http.StatusNotFound, CodeProjectNotFound, "project not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": projectToResponse(*project)})
+	writeOK(c, projectToResponse(*project))
 }
 
 func (h *AdminHandler) GetProjectUsage(c *gin.Context) {
@@ -1139,10 +1133,10 @@ func (h *AdminHandler) GetProjectUsage(c *gin.Context) {
 	project, err := h.store.GetProject(c.Request.Context(), tenantID, c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+			writeError(c, http.StatusNotFound, CodeProjectNotFound, "project not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	days := 7
@@ -1153,19 +1147,19 @@ func (h *AdminHandler) GetProjectUsage(c *gin.Context) {
 	}
 	summary, err := h.store.GetProjectUsageSummary(c.Request.Context(), project.TenantID, project.ID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	trend, err := h.store.GetProjectUsageTrend(c.Request.Context(), project.TenantID, project.ID, days)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+	writeOK(c, gin.H{
 		"project": projectToResponse(*project),
 		"summary": summary,
 		"trend":   trend,
-	}})
+	})
 }
 
 type UpdateProjectRequest struct {
@@ -1184,7 +1178,7 @@ func (h *AdminHandler) UpdateProject(c *gin.Context) {
 	}
 	var req UpdateProjectRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, CodeInvalidRequestBody, err.Error())
 		return
 	}
 	project, err := h.store.UpdateProject(c.Request.Context(), tenantID, c.Param("id"), repository.UpdateProjectParams{
@@ -1196,13 +1190,13 @@ func (h *AdminHandler) UpdateProject(c *gin.Context) {
 	})
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+			writeError(c, http.StatusNotFound, CodeProjectNotFound, "project not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": projectToResponse(*project)})
+	writeOK(c, projectToResponse(*project))
 }
 
 func (h *AdminHandler) DeleteProject(c *gin.Context) {
@@ -1213,14 +1207,14 @@ func (h *AdminHandler) DeleteProject(c *gin.Context) {
 	}
 	if err := h.store.DeleteProject(c.Request.Context(), tenantID, c.Param("id")); err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+			writeError(c, http.StatusNotFound, CodeProjectNotFound, "project not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	h.recordAudit(c, "project.delete", "project", c.Param("id"), gin.H{"project_id": c.Param("id")})
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{"id": c.Param("id"), "deleted": true}})
+	writeOK(c, gin.H{"id": c.Param("id"), "deleted": true})
 }
 
 func (h *AdminHandler) ListResponses(c *gin.Context) {
@@ -1252,7 +1246,7 @@ func (h *AdminHandler) ListResponses(c *gin.Context) {
 	if raw := c.Query("start_time"); raw != "" {
 		parsed, err := time.Parse(time.RFC3339, raw)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid start_time"})
+			writeError(c, http.StatusBadRequest, CodeInvalidParameter, "invalid start_time")
 			return
 		}
 		filter.StartTime = parsed
@@ -1260,26 +1254,26 @@ func (h *AdminHandler) ListResponses(c *gin.Context) {
 	if raw := c.Query("end_time"); raw != "" {
 		parsed, err := time.Parse(time.RFC3339, raw)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid end_time"})
+			writeError(c, http.StatusBadRequest, CodeInvalidParameter, "invalid end_time")
 			return
 		}
 		filter.EndTime = parsed
 	}
 	total, err := h.store.CountResponses(c.Request.Context(), tenantID, filter)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	items, err := h.store.ListResponses(c.Request.Context(), tenantID, filter)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	result := make([]gin.H, 0, len(items))
 	for _, item := range items {
 		result = append(result, responseToResponse(item))
 	}
-	c.JSON(http.StatusOK, gin.H{"data": result, "meta": gin.H{"total": total, "limit": filter.Limit, "offset": filter.Offset}})
+	writeList(c, result, int64(total))
 }
 
 func (h *AdminHandler) GetResponseTrace(c *gin.Context) {
@@ -1291,28 +1285,28 @@ func (h *AdminHandler) GetResponseTrace(c *gin.Context) {
 	record, err := h.store.GetResponse(c.Request.Context(), tenantID, c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": "response not found"})
+			writeError(c, http.StatusNotFound, CodeResponseNotFound, "response not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
 	if len(record.RouteTraceBody) == 0 {
-		c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		writeOK(c, gin.H{
 			"response_id": record.ID,
 			"trace":       gin.H{},
-		}})
+		})
 		return
 	}
 	var trace any
 	if err := json.Unmarshal(record.RouteTraceBody, &trace); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+	writeOK(c, gin.H{
 		"response_id": record.ID,
 		"trace":       trace,
-	}})
+	})
 }
 
 func (h *AdminHandler) GetBudgets(c *gin.Context) {
@@ -1327,10 +1321,10 @@ func (h *AdminHandler) GetBudgets(c *gin.Context) {
 
 	status, err := h.store.GetBudgetStatus(c.Request.Context(), tenantID, projectID, apiKeyID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": status})
+	writeOK(c, status)
 }
 
 func (h *AdminHandler) GetUsageSummary(c *gin.Context) {
@@ -1341,13 +1335,13 @@ func (h *AdminHandler) GetUsageSummary(c *gin.Context) {
 	}
 	summary, err := h.store.GetUsageSummaryFiltered(c.Request.Context(), filter)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+	writeOK(c, gin.H{
 		"filter":  usageFilterToResponse(filter),
 		"summary": summary,
-	}})
+	})
 }
 
 func (h *AdminHandler) GetUsageBreakdown(c *gin.Context) {
@@ -1359,14 +1353,14 @@ func (h *AdminHandler) GetUsageBreakdown(c *gin.Context) {
 	dimension := c.DefaultQuery("dimension", "provider")
 	rows, err := h.store.GetUsageBreakdown(c.Request.Context(), filter, dimension)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		writeError(c, http.StatusBadRequest, CodeBadRequest, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+	writeOK(c, gin.H{
 		"filter":    usageFilterToResponse(filter),
 		"dimension": dimension,
 		"rows":      rows,
-	}})
+	})
 }
 
 func (h *AdminHandler) GetUsageTrend(c *gin.Context) {
@@ -1384,14 +1378,14 @@ func (h *AdminHandler) GetUsageTrend(c *gin.Context) {
 	}
 	rows, err := h.store.GetUsageTimeBuckets(c.Request.Context(), filter, period, limit)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+	writeOK(c, gin.H{
 		"filter": usageFilterToResponse(filter),
 		"period": period,
 		"rows":   rows,
-	}})
+	})
 }
 
 func providerLoad(stats *provider.ProviderStats) int64 {
@@ -1439,9 +1433,6 @@ func providerRegistryToResponse(record repository.ProviderRegistryRecord) gin.H 
 		response["max_tokens"] = record.RuntimeConfig.MaxTokens
 		response["price_input"] = record.RuntimeConfig.PriceInput
 		response["price_output"] = record.RuntimeConfig.PriceOutput
-		response["grpc_target"] = record.RuntimeConfig.GRPCTarget
-		response["grpc_use_tls"] = record.RuntimeConfig.GRPCUseTLS
-		response["grpc_authority"] = record.RuntimeConfig.GRPCAuthority
 		response["headers"] = record.RuntimeConfig.Headers
 		response["extra_body"] = record.RuntimeConfig.ExtraBody
 		response["has_api_key"] = record.RuntimeConfig.APIKey != ""
@@ -1467,14 +1458,11 @@ func providerConfigFromCreateRequest(req CreateProviderRequest) config.ProviderC
 		weight = 1
 	}
 	return config.ProviderConfig{
-		Name:          req.Name,
-		Type:          req.Type,
-		Vendor:        req.Vendor,
-		BaseURL:       req.BaseURL,
-		GRPCTarget:    req.GRPCTarget,
-		GRPCUseTLS:    req.GRPCUseTLS,
-		GRPCAuthority: req.GRPCAuthority,
-		Endpoint:      req.Endpoint,
+		Name:     req.Name,
+		Type:     req.Type,
+		Vendor:   req.Vendor,
+		BaseURL:  req.BaseURL,
+		Endpoint: req.Endpoint,
 		APIKey:        req.APIKey,
 		Model:         req.Model,
 		Weight:        weight,
@@ -1519,15 +1507,6 @@ func mergeProviderUpdate(current repository.ProviderRegistryRecord, req UpdatePr
 	}
 	if next.RuntimeConfig == nil {
 		next.RuntimeConfig = &repository.ProviderRuntimeConfig{Enabled: next.Enabled}
-	}
-	if req.GRPCTarget != nil {
-		next.RuntimeConfig.GRPCTarget = *req.GRPCTarget
-	}
-	if req.GRPCUseTLS != nil {
-		next.RuntimeConfig.GRPCUseTLS = *req.GRPCUseTLS
-	}
-	if req.GRPCAuthority != nil {
-		next.RuntimeConfig.GRPCAuthority = *req.GRPCAuthority
 	}
 	if req.APIKey != nil {
 		next.RuntimeConfig.APIKey = *req.APIKey
@@ -1755,7 +1734,7 @@ func (h *AdminHandler) usageFilter(c *gin.Context, identity *repository.AuthIden
 	if raw := c.Query("start_time"); raw != "" {
 		parsed, err := time.Parse(time.RFC3339, raw)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid start_time"})
+			writeError(c, http.StatusBadRequest, CodeInvalidParameter, "invalid start_time")
 			return repository.UsageFilter{}, false
 		}
 		filter.StartTime = parsed
@@ -1763,7 +1742,7 @@ func (h *AdminHandler) usageFilter(c *gin.Context, identity *repository.AuthIden
 	if raw := c.Query("end_time"); raw != "" {
 		parsed, err := time.Parse(time.RFC3339, raw)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid end_time"})
+			writeError(c, http.StatusBadRequest, CodeInvalidParameter, "invalid end_time")
 			return repository.UsageFilter{}, false
 		}
 		filter.EndTime = parsed
@@ -1795,16 +1774,16 @@ func usageFilterToResponse(filter repository.UsageFilter) gin.H {
 
 func responseToResponse(record repository.ResponseRecord) gin.H {
 	return gin.H{
-		"id":           record.ID,
-		"tenant_id":    record.TenantID,
-		"project_id":   record.ProjectID,
-		"user_id":      record.UserID,
-		"api_key_id":   record.APIKeyID,
+		"id":            record.ID,
+		"tenant_id":     record.TenantID,
+		"project_id":    record.ProjectID,
+		"user_id":       record.UserID,
+		"api_key_id":    record.APIKeyID,
 		"provider_name": record.ProviderName,
-		"model":        record.Model,
-		"status":       record.Status,
-		"created_at":   record.CreatedAt,
-		"updated_at":   record.UpdatedAt,
+		"model":         record.Model,
+		"status":        record.Status,
+		"created_at":    record.CreatedAt,
+		"updated_at":    record.UpdatedAt,
 	}
 }
 
