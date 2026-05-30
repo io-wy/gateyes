@@ -3,6 +3,7 @@ package limiter
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -10,44 +11,59 @@ import (
 	"github.com/gateyes/gateway/internal/config"
 )
 
+type bucketEntry struct {
+	bucket     *TokenBucket
+	lastAccess atomic.Int64 // UnixNano, atomic to avoid data race in getOrCreate RLock path
+}
+
 type bucketMap struct {
-	buckets map[string]*TokenBucket
+	buckets map[string]*bucketEntry
 	mu      sync.RWMutex
+	ttl     time.Duration
 }
 
 func newBucketMap() *bucketMap {
-	return &bucketMap{buckets: make(map[string]*TokenBucket)}
+	return &bucketMap{buckets: make(map[string]*bucketEntry), ttl: 10 * time.Minute}
 }
 
-func (bm *bucketMap) getOrCreate(key string, rate, burst int) *TokenBucket {
+func (bm *bucketMap) getOrCreate(key string, rate, burst int) *bucketEntry {
+	now := time.Now().UnixNano()
 	bm.mu.RLock()
-	if b, ok := bm.buckets[key]; ok {
+	if e, ok := bm.buckets[key]; ok {
 		bm.mu.RUnlock()
-		return b
+		e.lastAccess.Store(now)
+		return e
 	}
 	bm.mu.RUnlock()
 	bm.mu.Lock()
 	defer bm.mu.Unlock()
-	if b, ok := bm.buckets[key]; ok {
-		return b
+	if e, ok := bm.buckets[key]; ok {
+		e.lastAccess.Store(now)
+		return e
 	}
-	b := NewTokenBucket(rate, burst)
-	bm.buckets[key] = b
-	return b
+	e := &bucketEntry{bucket: NewTokenBucket(rate, burst)}
+	e.lastAccess.Store(now)
+	bm.buckets[key] = e
+	return e
 }
 
 func (bm *bucketMap) tryConsume(key string, n, rate, burst int) bool {
 	if rate <= 0 || burst <= 0 {
 		return true
 	}
-	return bm.getOrCreate(key, rate, burst).TryConsume(n)
+	return bm.getOrCreate(key, rate, burst).bucket.TryConsume(n)
 }
 
 func (bm *bucketMap) refillAll() {
-	bm.mu.RLock()
-	defer bm.mu.RUnlock()
-	for _, b := range bm.buckets {
-		b.TryConsume(0)
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
+	now := time.Now().UnixNano()
+	ttlNanos := bm.ttl.Nanoseconds()
+	for k, e := range bm.buckets {
+		e.bucket.TryConsume(0)
+		if bm.ttl > 0 && now-e.lastAccess.Load() > ttlNanos {
+			delete(bm.buckets, k)
+		}
 	}
 }
 

@@ -11,14 +11,24 @@ import (
 
 	"github.com/gateyes/gateway/internal/db"
 	"github.com/gateyes/gateway/internal/repository"
+	"github.com/gateyes/gateway/internal/service/eventbus"
 )
 
 type Store struct {
-	db *db.DB
+	db       *db.DB
+	eventBus *eventbus.Bus
 }
 
 func New(database *db.DB) *Store {
 	return &Store{db: database}
+}
+
+func (s *Store) SetEventBus(bus *eventbus.Bus) {
+	s.eventBus = bus
+}
+
+func (s *Store) Ping(ctx context.Context) error {
+	return s.db.Conn.PingContext(ctx)
 }
 
 func (s *Store) CreateUser(ctx context.Context, params repository.CreateUserParams) (*repository.UserRecord, error) {

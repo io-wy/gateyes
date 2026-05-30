@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/gateyes/gateway/internal/service/catalog"
+	"github.com/gateyes/gateway/internal/service/provider"
 	responseSvc "github.com/gateyes/gateway/internal/service/responses"
 )
 
@@ -147,6 +148,13 @@ func writeJSON(c *gin.Context, httpStatus int, code Code, msg string, data any) 
 			resp["data"] = v
 		}
 	}
+	// Embed OpenAI-compatible error field for progressive migration.
+	if !success {
+		resp["error"] = gin.H{
+			"message": msg,
+			"type":    codeToErrorType(code),
+		}
+	}
 	c.JSON(httpStatus, resp)
 }
 
@@ -192,6 +200,21 @@ func errToCode(err error) Code {
 	case errors.Is(err, responseSvc.ErrNoProvider):
 		return CodeNoAvailableProvider
 	default:
+		// Prefer structured UpstreamError over string matching.
+		var ue *provider.UpstreamError
+		if errors.As(err, &ue) {
+			if ue.IsTimeout() {
+				return CodeUpstreamTimeout
+			}
+			if ue.IsRateLimited() {
+				return CodeRateLimited
+			}
+			if ue.StatusCode >= http.StatusBadRequest && ue.StatusCode < http.StatusInternalServerError {
+				return CodeInvalidAPIKey
+			}
+			return CodeUpstreamError
+		}
+		// Fallback: legacy string-matching for plain errors.
 		msg := err.Error()
 		if strings.Contains(msg, "timeout") {
 			return CodeUpstreamTimeout
@@ -209,5 +232,23 @@ func errToCode(err error) Code {
 			return CodeBadRequest
 		}
 		return CodeUpstreamError
+	}
+}
+
+// codeToErrorType maps internal Code to OpenAI-compatible error type strings.
+func codeToErrorType(code Code) string {
+	switch {
+	case code >= 40001 && code < 40100:
+		return "authentication_error"
+	case code >= 40101 && code < 40400:
+		return "invalid_request_error"
+	case code >= 40601 && code < 40700:
+		return "rate_limit_error"
+	case code >= 50001 && code < 50200:
+		return "server_error"
+	case code >= 50201 && code < 50400:
+		return "server_error"
+	default:
+		return "invalid_request_error"
 	}
 }

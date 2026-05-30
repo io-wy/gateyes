@@ -144,7 +144,7 @@ func (s *Service) runStream(ctx context.Context, identity *repository.AuthIdenti
 			errCh <- err
 			return
 		case <-ctx.Done():
-			s.drainStreamForUsage(stream, upstreamErrCh, &finalResponse, &streamUsage, &streamedOutputs, &assistantText)
+			s.drainWithSemaphore(stream, upstreamErrCh, &finalResponse, &streamUsage, &streamedOutputs, &assistantText)
 			s.handleStreamCancellation(ctx, identity, exec.upstreamRequest, exec.responseID, exec.provider, exec.routeTrace, finalResponse, assistantText, streamedOutputs, streamUsage, exec.startedAt)
 			return
 		}

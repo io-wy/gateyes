@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -35,6 +36,7 @@ type Dependencies struct {
 	ProviderMgr *provider.Manager
 	ResponseSvc *responseSvc.Service
 	CatalogSvc  *catalog.Service
+	RedisPing   func(ctx context.Context) error
 }
 
 func NewHandler(deps *Dependencies) *Handler {
@@ -293,9 +295,24 @@ func (h *Handler) Health(c *gin.Context) {
 
 func (h *Handler) Ready(c *gin.Context) {
 	if len(h.deps.ProviderMgr.List()) == 0 {
-		writeError(c, http.StatusServiceUnavailable, CodeNoHealthyProvider, "")
+		writeError(c, http.StatusServiceUnavailable, CodeNoHealthyProvider, "no providers configured")
 		return
 	}
+
+	if err := h.deps.Store.Ping(c.Request.Context()); err != nil {
+		slog.Error("ready check failed: db", "error", err)
+		writeError(c, http.StatusServiceUnavailable, CodeServiceUnavailable, "database unavailable")
+		return
+	}
+
+	if h.deps.RedisPing != nil {
+		if err := h.deps.RedisPing(c.Request.Context()); err != nil {
+			slog.Error("ready check failed: redis", "error", err)
+			writeError(c, http.StatusServiceUnavailable, CodeServiceUnavailable, "redis unavailable")
+			return
+		}
+	}
+
 	writeOKMsg(c, "ready", gin.H{"status": "ready"})
 }
 
@@ -358,6 +375,23 @@ func codeToHTTPStatus(code Code, err error) int {
 	case CodeUpstreamError:
 		return http.StatusBadGateway
 	default:
+		// Prefer structured UpstreamError over string matching.
+		var ue *provider.UpstreamError
+		if errors.As(err, &ue) {
+			if ue.IsTimeout() {
+				return http.StatusGatewayTimeout
+			}
+			if ue.IsRateLimited() {
+				return http.StatusTooManyRequests
+			}
+			if ue.StatusCode >= http.StatusBadRequest && ue.StatusCode < http.StatusInternalServerError {
+				return ue.StatusCode
+			}
+			if ue.StatusCode >= http.StatusInternalServerError {
+				return http.StatusBadGateway
+			}
+		}
+		// Fallback: legacy string-matching for plain errors.
 		if err != nil {
 			msg := err.Error()
 			if strings.Contains(msg, "timeout") {
@@ -397,22 +431,45 @@ func (h *Handler) inferHTTPStatus(err error) int {
 	switch {
 	case errors.Is(err, responseSvc.ErrNoProvider):
 		return http.StatusServiceUnavailable
-	case strings.Contains(err.Error(), "timeout"):
-		return http.StatusGatewayTimeout
-	case strings.Contains(err.Error(), "401"), strings.Contains(err.Error(), "authentication"):
-		return http.StatusUnauthorized
-	case strings.Contains(err.Error(), "403"), strings.Contains(err.Error(), "forbidden"):
-		return http.StatusForbidden
-	case strings.Contains(err.Error(), "429"), strings.Contains(err.Error(), "rate_limit"):
-		return http.StatusTooManyRequests
-	case strings.Contains(err.Error(), "400"), strings.Contains(err.Error(), "invalid"):
-		return http.StatusBadRequest
 	default:
+		// Prefer structured UpstreamError over string matching.
+		var ue *provider.UpstreamError
+		if errors.As(err, &ue) {
+			if ue.IsTimeout() {
+				return http.StatusGatewayTimeout
+			}
+			if ue.IsRateLimited() {
+				return http.StatusTooManyRequests
+			}
+			if ue.StatusCode >= http.StatusBadRequest && ue.StatusCode < http.StatusInternalServerError {
+				return ue.StatusCode
+			}
+			if ue.StatusCode >= http.StatusInternalServerError {
+				return http.StatusBadGateway
+			}
+		}
+		// Fallback: legacy string-matching for plain errors that don't wrap UpstreamError.
+		msg := err.Error()
+		if strings.Contains(msg, "timeout") {
+			return http.StatusGatewayTimeout
+		}
+		if strings.Contains(msg, "401") || strings.Contains(msg, "authentication") {
+			return http.StatusUnauthorized
+		}
+		if strings.Contains(msg, "403") || strings.Contains(msg, "forbidden") {
+			return http.StatusForbidden
+		}
+		if strings.Contains(msg, "429") || strings.Contains(msg, "rate_limit") {
+			return http.StatusTooManyRequests
+		}
+		if strings.Contains(msg, "400") || strings.Contains(msg, "invalid") {
+			return http.StatusBadRequest
+		}
 		return http.StatusBadGateway
 	}
 }
 
-// SyncCircuitBreakerStates updates the circuit breaker state metrics
+// SyncCircuitBreakerStates updates metrics and persists states to Redis.
 func (h *Handler) SyncCircuitBreakerStates() {
 	states := h.responses.GetCircuitBreakerStates()
 	for key, state := range states {
@@ -422,6 +479,8 @@ func (h *Handler) SyncCircuitBreakerStates() {
 			h.metrics.SetCircuitBreakerState(parts[0], parts[1], state)
 		}
 	}
+	// Persist to Redis for cross-restart recovery.
+	h.responses.PersistCircuitBreakerState(context.Background())
 }
 
 func writeSSE(c *gin.Context, payload any) error {

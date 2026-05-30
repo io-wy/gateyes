@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gateyes/gateway/internal/repository"
@@ -18,12 +19,48 @@ var (
 	ErrForbidden       = errors.New("forbidden")
 )
 
+const defaultIdentityCacheTTL = 30 * time.Second
+
 type Auth struct {
-	store repository.Store
+	store    repository.Store
+	cache    map[string]*cachedIdentity
+	cacheMu  sync.RWMutex
+	cacheTTL time.Duration
+}
+
+type cachedIdentity struct {
+	identity *repository.AuthIdentity
+	expires  time.Time
 }
 
 func NewAuth(store repository.Store) *Auth {
-	return &Auth{store: store}
+	return &Auth{
+		store:    store,
+		cache:    make(map[string]*cachedIdentity),
+		cacheTTL: defaultIdentityCacheTTL,
+	}
+}
+
+func (a *Auth) getCached(key string) *repository.AuthIdentity {
+	a.cacheMu.RLock()
+	defer a.cacheMu.RUnlock()
+	entry, ok := a.cache[key]
+	if !ok || time.Now().After(entry.expires) {
+		return nil
+	}
+	return entry.identity
+}
+
+func (a *Auth) setCached(key string, identity *repository.AuthIdentity) {
+	a.cacheMu.Lock()
+	defer a.cacheMu.Unlock()
+	a.cache[key] = &cachedIdentity{identity: identity, expires: time.Now().Add(a.cacheTTL)}
+}
+
+func (a *Auth) invalidateCache(key string) {
+	a.cacheMu.Lock()
+	defer a.cacheMu.Unlock()
+	delete(a.cache, key)
 }
 
 func (a *Auth) Authenticate(ctx context.Context, key, secret string) (*repository.AuthIdentity, error) {
@@ -47,17 +84,36 @@ func (a *Auth) Authenticate(ctx context.Context, key, secret string) (*repositor
 }
 
 func (a *Auth) authenticateAPIKey(ctx context.Context, key, secret string) (*repository.AuthIdentity, error) {
+	// Try cache first to avoid the 4-table JOIN hot path.
+	if identity := a.getCached(key); identity != nil {
+		if !isIdentityActive(identity) {
+			return nil, ErrInactiveAPIKey
+		}
+		if !repository.VerifySecret(secret, identity.SecretHash) {
+			return nil, ErrInvalidAPIKey
+		}
+		return identity, nil
+	}
+
 	identity, err := a.store.Authenticate(ctx, key)
 	if err != nil {
 		return nil, err
 	}
-	if identity.APIStatus != repository.StatusActive || identity.UserStatus != repository.StatusActive || identity.TenantStatus != repository.StatusActive {
+	if !isIdentityActive(identity) {
 		return nil, ErrInactiveAPIKey
 	}
 	if !repository.VerifySecret(secret, identity.SecretHash) {
 		return nil, ErrInvalidAPIKey
 	}
+
+	a.setCached(key, identity)
 	return identity, nil
+}
+
+func isIdentityActive(identity *repository.AuthIdentity) bool {
+	return identity.APIStatus == repository.StatusActive &&
+		identity.UserStatus == repository.StatusActive &&
+		identity.TenantStatus == repository.StatusActive
 }
 
 func (a *Auth) authenticateVirtualKey(ctx context.Context, key, secret string) (*repository.AuthIdentity, error) {
@@ -202,25 +258,22 @@ func (a *Auth) recordUsage(
 		return err
 	}
 
-	if consumeQuota {
-		ok, err := a.store.ConsumeQuota(ctx, identity.UserID, totalTokens)
-		if err != nil {
-			return err
+	if cost > 0 || consumeQuota {
+		tokens := 0
+		if consumeQuota {
+			tokens = totalTokens
 		}
-		if !ok {
-			return ErrQuotaExceeded
-		}
-		identity.Used += totalTokens
-	}
-
-	if cost > 0 {
-		ok, err := a.store.ConsumeBudgets(ctx, identity.APIKeyID, identity.ProjectID, identity.TenantID, identity.VirtualKeyID, cost)
+		ok, err := a.store.ConsumeBudgets(ctx, identity.APIKeyID, identity.ProjectID, identity.TenantID, identity.VirtualKeyID, identity.UserID, cost, tokens)
 		if err != nil {
+			if errors.Is(err, repository.ErrQuotaExceeded) {
+				return ErrQuotaExceeded
+			}
 			return err
 		}
 		if !ok {
 			return ErrBudgetExceeded
 		}
+		identity.Used += totalTokens
 	}
 
 	return a.store.CreateUsageRecord(ctx, repository.UsageRecord{

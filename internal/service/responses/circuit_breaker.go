@@ -1,11 +1,14 @@
 package responses
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/gateyes/gateway/internal/config"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -18,6 +21,7 @@ type CircuitBreaker struct {
 	mu        sync.RWMutex
 	providers map[string]*ProviderState
 	cfg       config.CircuitBreakerConfig
+	rdb       *redis.Client
 }
 
 type ProviderState struct {
@@ -205,4 +209,72 @@ func (cb *CircuitBreaker) GetAllStates() map[string]int {
 		result[key] = stateValue
 	}
 	return result
+}
+
+// SetRedis enables state persistence across restarts.
+func (cb *CircuitBreaker) SetRedis(rdb *redis.Client) {
+	cb.rdb = rdb
+}
+
+// PersistState serializes current states to Redis with a 5-minute TTL.
+func (cb *CircuitBreaker) PersistState(ctx context.Context) {
+	if cb.rdb == nil {
+		return
+	}
+	cb.mu.RLock()
+	states := make(map[string]int, len(cb.providers))
+	for k, s := range cb.providers {
+		var v int
+		switch s.state {
+		case StateClosed:
+			v = 0
+		case StateOpen:
+			v = 1
+		case StateHalfOpen:
+			v = 2
+		}
+		states[k] = v
+	}
+	cb.mu.RUnlock()
+
+	data, _ := json.Marshal(states)
+	cb.rdb.Set(ctx, "circuit_breaker:states", data, 5*time.Minute)
+}
+
+// RestoreState loads states from Redis after restart.
+func (cb *CircuitBreaker) RestoreState(ctx context.Context) {
+	if cb.rdb == nil {
+		return
+	}
+	data, err := cb.rdb.Get(ctx, "circuit_breaker:states").Result()
+	if err != nil {
+		return
+	}
+	var states map[string]int
+	if err := json.Unmarshal([]byte(data), &states); err != nil {
+		return
+	}
+
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	for key, v := range states {
+		var stateStr string
+		switch v {
+		case 1:
+			stateStr = StateOpen
+		case 2:
+			stateStr = StateHalfOpen
+		default:
+			stateStr = StateClosed
+		}
+		if _, ok := cb.providers[key]; !ok {
+			cb.providers[key] = &ProviderState{state: stateStr}
+		} else {
+			cb.providers[key].state = stateStr
+		}
+		// Mark open states with a recent failure time so they don't immediately flip to half-open.
+		if stateStr == StateOpen {
+			cb.providers[key].lastFailure = time.Now()
+		}
+	}
 }

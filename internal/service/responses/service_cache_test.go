@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 )
 
 type mockCache struct {
+	mu   sync.RWMutex
 	data map[string]*cache.Entry
 }
 
@@ -22,16 +24,22 @@ func newMockCache() *mockCache {
 }
 
 func (m *mockCache) Get(ctx context.Context, key string) (*cache.Entry, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	entry, ok := m.data[key]
 	return entry, ok, nil
 }
 
 func (m *mockCache) Set(ctx context.Context, key string, e *cache.Entry, ttl time.Duration) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.data[key] = e
 	return nil
 }
 
 func (m *mockCache) Delete(ctx context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	delete(m.data, key)
 	return nil
 }
@@ -65,7 +73,7 @@ func TestLookupCacheReturnsHitWhenEntryExists(t *testing.T) {
 	identity := &repository.AuthIdentity{TenantID: "t1"}
 	req := &provider.ResponseRequest{Model: "m1", Input: "hello"}
 	key := svc.buildCacheKey(context.Background(), identity, req)
-	mc.data[key] = &cache.Entry{Response: []byte(`{"id":"cached"}`), Provider: "p1"}
+	_ = mc.Set(context.Background(), key, &cache.Entry{Response: []byte(`{"id":"cached"}`), Provider: "p1"}, 0)
 
 	entry, hit := svc.lookupCache(context.Background(), identity, req)
 	if !hit || entry == nil || entry.Provider != "p1" {
@@ -130,7 +138,7 @@ func TestWriteCachePersistsEntry(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	key := svc.buildCacheKey(context.Background(), identity, req)
-	got, ok := mc.data[key]
+	got, ok, _ := mc.Get(context.Background(), key)
 	if !ok || got.Provider != "p1" {
 		t.Fatalf("writeCache() did not persist entry, got=%v", got)
 	}
@@ -146,7 +154,7 @@ func TestWriteCacheSkipsNilEntry(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	key := svc.buildCacheKey(context.Background(), identity, req)
-	if _, ok := mc.data[key]; ok {
+	if _, ok, _ := mc.Get(context.Background(), key); ok {
 		t.Fatal("writeCache() should skip nil entry")
 	}
 }

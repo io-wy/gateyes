@@ -20,7 +20,10 @@ const (
 	BudgetPolicyGrace      = "grace"
 )
 
-var ErrNotFound = errors.New("not found")
+var (
+	ErrNotFound      = errors.New("not found")
+	ErrQuotaExceeded = errors.New("quota exceeded")
+)
 
 type Store interface {
 	UserStore
@@ -34,6 +37,7 @@ type Store interface {
 	ServiceStore
 	AuditLogStore
 	VirtualKeyStore
+	Ping(ctx context.Context) error
 }
 
 type UserStore interface {
@@ -65,9 +69,13 @@ type IdentityStore interface {
 	CheckTenantBudget(ctx context.Context, tenantID string, estimatedCost float64) (*BudgetCheckResult, error)
 	CheckVirtualKeyBudget(ctx context.Context, virtualKeyID string, estimatedCost float64) (*BudgetCheckResult, error)
 	ConsumeVirtualKeyBudget(ctx context.Context, virtualKeyID string, cost float64) (bool, error)
-	ConsumeBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, cost float64) (bool, error)
+	ConsumeBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID, userID string, cost float64, tokens int) (bool, error)
 	GetBudgetStatus(ctx context.Context, tenantID, projectID, apiKeyID string) ([]BudgetStatus, error)
 	EnsureBootstrapKey(ctx context.Context, params BootstrapAPIKeyParams) error
+	// Budget pre-authorization (reserve → commit/release) to eliminate Check-Then-Act race.
+	ReserveBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, amount float64) (bool, error)
+	CommitBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, amount float64) error
+	ReleaseBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, amount float64) error
 }
 
 type UsageStore interface {
@@ -146,6 +154,7 @@ type ResponseFilter struct {
 	EndTime      time.Time
 	Limit        int
 	Offset       int
+	IncludeBody  bool // when false, ListResponses omits request/response/route_trace_body
 }
 
 type ProjectStore interface {

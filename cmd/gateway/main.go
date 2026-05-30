@@ -191,6 +191,7 @@ func main() {
 		HandlerTimeout: time.Duration(cfg.Persistence.HandlerTimeoutSeconds) * time.Second,
 	})
 	persistBus.Start(context.Background())
+	store.SetEventBus(persistBus)
 
 	guardrails := buildGuardrails(cfg.Guardrails)
 
@@ -223,6 +224,10 @@ func main() {
 		Guardrails:  guardrails,
 		PricingFeed: pricingFeed,
 	})
+	if redisClient != nil {
+		responsesService.SetRedis(redisClient)
+		responsesService.RestoreCircuitBreakerState(context.Background())
+	}
 	catalogSvc := catalog.New(&catalog.Dependencies{
 		Store:     store,
 		Auth:      httpMiddleware.AuthService(),
@@ -232,6 +237,13 @@ func main() {
 		Responses: responsesService,
 	})
 
+	redisPing := func(ctx context.Context) error {
+		if redisClient == nil {
+			return nil
+		}
+		return redisClient.Ping(ctx).Err()
+	}
+
 	h := handler.NewHandler(&handler.Dependencies{
 		Config:      cfg,
 		Store:       store,
@@ -239,6 +251,7 @@ func main() {
 		ProviderMgr: providerMgr,
 		ResponseSvc: responsesService,
 		CatalogSvc:  catalogSvc,
+		RedisPing:   redisPing,
 	})
 
 	adminHandler := handler.NewAdminHandler(store, providerMgr, catalogSvc, reloader)

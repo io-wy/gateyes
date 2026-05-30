@@ -60,8 +60,17 @@ func (f *fakeIdentityStore) CheckVirtualKeyBudget(ctx context.Context, virtualKe
 func (f *fakeIdentityStore) ConsumeVirtualKeyBudget(ctx context.Context, virtualKeyID string, cost float64) (bool, error) {
 	return true, nil
 }
-func (f *fakeIdentityStore) ConsumeBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, cost float64) (bool, error) {
+func (f *fakeIdentityStore) ConsumeBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID, userID string, cost float64, tokens int) (bool, error) {
 	return true, nil
+}
+func (f *fakeIdentityStore) ReserveBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, amount float64) (bool, error) {
+	return true, nil
+}
+func (f *fakeIdentityStore) CommitBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, amount float64) error {
+	return nil
+}
+func (f *fakeIdentityStore) ReleaseBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, amount float64) error {
+	return nil
 }
 func (f *fakeIdentityStore) EnsureBootstrapKey(ctx context.Context, params repository.BootstrapAPIKeyParams) error {
 	if f.err != nil {

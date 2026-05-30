@@ -15,6 +15,7 @@ import (
 	"github.com/gateyes/gateway/internal/service/pricing"
 	"github.com/gateyes/gateway/internal/service/provider"
 	"github.com/gateyes/gateway/internal/service/router"
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -63,6 +64,7 @@ type Service struct {
 	guardrails     *guardrail.Manager
 	pricingFeed    *pricing.Feed
 	sfg            singleflight.Group
+	drainSem       chan struct{}
 }
 
 type CreateResult struct {
@@ -110,6 +112,47 @@ func New(deps *Dependencies) *Service {
 		eventBus:       deps.EventBus,
 		guardrails:     deps.Guardrails,
 		pricingFeed:    deps.PricingFeed,
+		drainSem:       make(chan struct{}, 100),
+	}
+}
+
+// SetRedis enables Redis-backed features (circuit breaker persistence).
+func (s *Service) SetRedis(rdb *redis.Client) {
+	if s.circuitBreaker != nil {
+		s.circuitBreaker.SetRedis(rdb)
+	}
+}
+
+// RestoreCircuitBreakerState loads circuit breaker states from Redis after restart.
+func (s *Service) RestoreCircuitBreakerState(ctx context.Context) {
+	if s.circuitBreaker != nil {
+		s.circuitBreaker.RestoreState(ctx)
+	}
+}
+
+// PersistCircuitBreakerState saves circuit breaker states to Redis.
+func (s *Service) PersistCircuitBreakerState(ctx context.Context) {
+	if s.circuitBreaker != nil {
+		s.circuitBreaker.PersistState(ctx)
+	}
+}
+
+// drainWithSemaphore limits the number of concurrent stream drain goroutines
+// to prevent memory exhaustion during mass client disconnections.
+func (s *Service) drainWithSemaphore(
+	stream <-chan provider.ResponseEvent,
+	upstreamErrCh <-chan error,
+	finalResponse **provider.Response,
+	streamUsage **provider.Usage,
+	streamedOutputs *[]provider.ResponseOutput,
+	assistantText *string,
+) {
+	select {
+	case s.drainSem <- struct{}{}:
+		s.drainStreamForUsage(stream, upstreamErrCh, finalResponse, streamUsage, streamedOutputs, assistantText)
+		<-s.drainSem
+	default:
+		// semaphore full: skip drain to avoid goroutine explosion
 	}
 }
 

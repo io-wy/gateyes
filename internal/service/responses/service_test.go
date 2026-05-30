@@ -131,8 +131,9 @@ func TestCreateStreamPersistsCompletedResponse(t *testing.T) {
 
 	var responseBody string
 	if err := env.database.Conn.QueryRowContext(context.Background(), `
-SELECT response_body
-FROM responses
+SELECT COALESCE(rd.response_body, '')
+FROM responses r
+LEFT JOIN response_details rd ON rd.response_id = r.id
 LIMIT 1`).Scan(&responseBody); err != nil {
 		t.Fatalf("query response body: %v", err)
 	}
@@ -742,8 +743,9 @@ func waitForResponseRecord(t *testing.T, conn *sql.DB, timeout time.Duration) re
 	for {
 		var record responseSnapshot
 		err := conn.QueryRowContext(context.Background(), `
-SELECT status, response_body
-FROM responses
+SELECT r.status, COALESCE(rd.response_body, '')
+FROM responses r
+LEFT JOIN response_details rd ON rd.response_id = r.id
 LIMIT 1`).Scan(&record.Status, &record.ResponseBody)
 		if err == nil && record.Status != "" && record.Status != "in_progress" {
 			return record

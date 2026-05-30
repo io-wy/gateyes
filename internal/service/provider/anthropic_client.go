@@ -99,6 +99,10 @@ func (p *anthropicProvider) newRequest(ctx context.Context, params map[string]an
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-api-key", p.cfg.APIKey)
 	httpReq.Header.Set("anthropic-version", anthropicVersion)
+	if tc, ok := traceContextFromContext(ctx); ok {
+		httpReq.Header.Set("X-Request-ID", tc.RequestID)
+		httpReq.Header.Set("traceparent", tc.Traceparent)
+	}
 	if stream {
 		httpReq.Header.Set("Accept", "text/event-stream")
 	}

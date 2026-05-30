@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/gateyes/gateway/internal/service/provider"
 	"github.com/gateyes/gateway/internal/trace"
 )
 
@@ -34,7 +35,11 @@ func Correlation() gin.HandlerFunc {
 		c.Writer.Header().Set(RequestIDHeader, requestID)
 		c.Writer.Header().Set(TraceparentHeader, traceparent)
 
-		ctx := trace.StartSpan(c.Request.Context(), traceID, "http_request")
+		ctx := provider.ContextWithTraceContext(c.Request.Context(), &provider.TraceContext{
+			RequestID:   requestID,
+			Traceparent: traceparent,
+		})
+		ctx = trace.StartSpan(ctx, traceID, "http_request")
 		c.Request = c.Request.WithContext(ctx)
 		c.Next()
 		trace.FinishSpan(c.Request.Context(), map[string]string{

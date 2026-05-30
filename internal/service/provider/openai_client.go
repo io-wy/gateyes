@@ -83,6 +83,10 @@ func (p *openAIProvider) newRequest(ctx context.Context, req *ResponseRequest, s
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
+	if tc, ok := traceContextFromContext(ctx); ok {
+		httpReq.Header.Set("X-Request-ID", tc.RequestID)
+		httpReq.Header.Set("traceparent", tc.Traceparent)
+	}
 	applyProviderProfile(p.cfg, payload, httpReq.Header)
 
 	body, _ = json.Marshal(payload)
@@ -154,6 +158,10 @@ func (p *openAIProvider) CreateEmbedding(ctx context.Context, req *EmbeddingRequ
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
+	if tc, ok := traceContextFromContext(ctx); ok {
+		httpReq.Header.Set("X-Request-ID", tc.RequestID)
+		httpReq.Header.Set("traceparent", tc.Traceparent)
+	}
 	applyProviderProfile(p.cfg, payload, httpReq.Header)
 
 	body, _ = json.Marshal(payload)

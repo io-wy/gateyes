@@ -395,10 +395,27 @@ func (f *fakeIdentityStore) ConsumeVirtualKeyBudget(ctx context.Context, virtual
 	}
 	return f.consumeVirtualKeyBudgetOK, nil
 }
-func (f *fakeIdentityStore) ConsumeBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, cost float64) (bool, error) {
+func (f *fakeIdentityStore) ConsumeBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID, userID string, cost float64, tokens int) (bool, error) {
+	if tokens > 0 {
+		f.consumedUserID = userID
+		f.consumedTokens = tokens
+		if !f.consumeOK {
+			return false, repository.ErrQuotaExceeded
+		}
+	}
 	return f.consumeBudgetsOK, nil
 }
+func (f *fakeIdentityStore) ReserveBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, amount float64) (bool, error) {
+	return true, nil
+}
+func (f *fakeIdentityStore) CommitBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, amount float64) error {
+	return nil
+}
+func (f *fakeIdentityStore) ReleaseBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, amount float64) error {
+	return nil
+}
 func (f *fakeIdentityStore) DeleteResponsesOlderThan(ctx context.Context, before time.Time) (int64, error) { return 0, nil }
+func (f *fakeIdentityStore) Ping(ctx context.Context) error { return nil }
 
 
 func baseIdentity() *repository.AuthIdentity {

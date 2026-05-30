@@ -100,7 +100,7 @@ func (m *AuthMiddleware) AdminAuth() gin.HandlerFunc {
 				status = http.StatusForbidden
 			}
 			recordMiddlewareError(m.metrics, c, metricsResultAuthError, "invalid_api_key")
-			c.JSON(status, gin.H{"code": code, "success": false, "message": msg, "data": nil})
+			c.JSON(status, adminErrorResponse(code, msg))
 			c.Abort()
 			return
 		}
@@ -115,16 +115,40 @@ func (m *AuthMiddleware) AdminRequireRoles(roles ...string) gin.HandlerFunc {
 		identity, ok := Identity(c)
 		if !ok {
 			recordMiddlewareError(m.metrics, c, metricsResultAuthError, "invalid_api_key")
-			c.JSON(http.StatusUnauthorized, gin.H{"code": 40001, "success": false, "message": "invalid API key", "data": nil})
+			c.JSON(http.StatusUnauthorized, adminErrorResponse(40001, "invalid API key"))
 			c.Abort()
 			return
 		}
 		if !repository.HasRole(identity.Role, roles...) {
 			recordMiddlewareError(m.metrics, c, metricsResultAuthError, "forbidden")
-			c.JSON(http.StatusForbidden, gin.H{"code": 40101, "success": false, "message": "insufficient role", "data": nil})
+			c.JSON(http.StatusForbidden, adminErrorResponse(40101, "insufficient role"))
 			c.Abort()
 			return
 		}
 		c.Next()
+	}
+}
+
+// adminErrorResponse returns a unified error response with an embedded
+// OpenAI-compatible error field for progressive client migration.
+func adminErrorResponse(code int, msg string) gin.H {
+	errType := "invalid_request_error"
+	switch {
+	case code >= 40001 && code < 40100:
+		errType = "authentication_error"
+	case code >= 40601 && code < 40700:
+		errType = "rate_limit_error"
+	case code >= 50001 && code < 50400:
+		errType = "server_error"
+	}
+	return gin.H{
+		"code":    code,
+		"success": false,
+		"message": msg,
+		"data":    nil,
+		"error": gin.H{
+			"message": msg,
+			"type":    errType,
+		},
 	}
 }

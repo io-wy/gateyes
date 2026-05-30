@@ -136,8 +136,17 @@ func (m *mockStore) CheckVirtualKeyBudget(ctx context.Context, virtualKeyID stri
 func (m *mockStore) ConsumeVirtualKeyBudget(ctx context.Context, virtualKeyID string, cost float64) (bool, error) {
 	return true, nil
 }
-func (m *mockStore) ConsumeBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, cost float64) (bool, error) {
+func (m *mockStore) ConsumeBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID, userID string, cost float64, tokens int) (bool, error) {
 	return true, nil
+}
+func (m *mockStore) ReserveBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, amount float64) (bool, error) {
+	return true, nil
+}
+func (m *mockStore) CommitBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, amount float64) error {
+	return nil
+}
+func (m *mockStore) ReleaseBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, amount float64) error {
+	return nil
 }
 func (m *mockStore) GetBudgetStatus(ctx context.Context, tenantID, projectID, apiKeyID string) ([]repository.BudgetStatus, error) {
 	return nil, nil
@@ -216,6 +225,7 @@ func (m *mockStore) UpdateVirtualKey(ctx context.Context, tenantID string, idOrK
 	return nil, nil
 }
 func (m *mockStore) DeleteVirtualKey(ctx context.Context, tenantID string, idOrKey string) error { return nil }
+func (m *mockStore) Ping(ctx context.Context) error { return nil }
 func (m *mockStore) AuthenticateVirtualKey(ctx context.Context, key string) (*repository.VirtualKeyRecord, error) {
 	return nil, nil
 }

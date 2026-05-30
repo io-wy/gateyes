@@ -180,8 +180,8 @@ WHERE id = ?
 	return rowsAffected > 0, nil
 }
 
-func (s *Store) ConsumeBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, cost float64) (bool, error) {
-	if cost <= 0 {
+func (s *Store) ConsumeBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID, userID string, cost float64, tokens int) (bool, error) {
+	if cost <= 0 && tokens <= 0 {
 		return true, nil
 	}
 
@@ -192,6 +192,27 @@ func (s *Store) ConsumeBudgets(ctx context.Context, apiKeyID, projectID, tenantI
 	defer tx.Rollback()
 
 	now := time.Now().UTC()
+
+	// Consume quota in the same transaction to ensure consistency.
+	if tokens > 0 && userID != "" {
+		result, err := tx.ExecContext(ctx, s.db.Rebind(`
+			UPDATE users
+			SET used = used + ?, updated_at = ?
+			WHERE id = ?
+			  AND (quota <= 0 OR used + ? <= quota)`),
+			tokens, now, userID, tokens,
+		)
+		if err != nil {
+			return false, fmt.Errorf("consume quota: %w", err)
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return false, fmt.Errorf("consume quota rows: %w", err)
+		}
+		if rows == 0 {
+			return false, repository.ErrQuotaExceeded
+		}
+	}
 
 	if virtualKeyID != "" {
 		result, err := tx.ExecContext(ctx, s.db.Rebind(`
@@ -277,6 +298,139 @@ func (s *Store) ConsumeBudgets(ctx context.Context, apiKeyID, projectID, tenantI
 		return false, fmt.Errorf("commit budget tx: %w", err)
 	}
 	return true, nil
+}
+
+// ReserveBudgets pre-authorizes budget across all scopes in a single transaction.
+// Returns true if all scopes have sufficient available budget (budget - reserved - spent >= amount).
+func (s *Store) ReserveBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, amount float64) (bool, error) {
+	if amount <= 0 {
+		return true, nil
+	}
+	tx, err := s.db.Conn.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin reserve tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC()
+	scopes := []struct {
+		id    string
+		table string
+	}{
+		{virtualKeyID, "virtual_keys"},
+		{apiKeyID, "api_keys"},
+		{projectID, "projects"},
+		{tenantID, "tenants"},
+	}
+
+	for _, sc := range scopes {
+		if sc.id == "" {
+			continue
+		}
+		result, err := tx.ExecContext(ctx, s.db.Rebind(fmt.Sprintf(`
+			UPDATE %s
+			SET reserved_usd = reserved_usd + ?, updated_at = ?
+			WHERE id = ?
+			  AND (budget_usd <= 0 OR reserved_usd + ? <= budget_usd)
+		`, sc.table)), amount, now, sc.id, amount)
+		if err != nil {
+			return false, fmt.Errorf("reserve %s budget: %w", sc.table, err)
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return false, fmt.Errorf("reserve %s budget rows: %w", sc.table, err)
+		}
+		if rows == 0 {
+			return false, nil
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit reserve tx: %w", err)
+	}
+	return true, nil
+}
+
+// CommitBudgets converts reserved budget to spent budget (reserve → spent).
+func (s *Store) CommitBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, amount float64) error {
+	if amount <= 0 {
+		return nil
+	}
+	tx, err := s.db.Conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin commit tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC()
+	scopes := []struct {
+		id    string
+		table string
+	}{
+		{virtualKeyID, "virtual_keys"},
+		{apiKeyID, "api_keys"},
+		{projectID, "projects"},
+		{tenantID, "tenants"},
+	}
+
+	for _, sc := range scopes {
+		if sc.id == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, s.db.Rebind(fmt.Sprintf(`
+			UPDATE %s
+			SET reserved_usd = reserved_usd - ?, spent_usd = spent_usd + ?, updated_at = ?
+			WHERE id = ?
+		`, sc.table)), amount, amount, now, sc.id); err != nil {
+			return fmt.Errorf("commit %s budget: %w", sc.table, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit commit tx: %w", err)
+	}
+	return nil
+}
+
+// ReleaseBudgets releases pre-authorized budget without consuming it.
+func (s *Store) ReleaseBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, amount float64) error {
+	if amount <= 0 {
+		return nil
+	}
+	tx, err := s.db.Conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin release tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC()
+	scopes := []struct {
+		id    string
+		table string
+	}{
+		{virtualKeyID, "virtual_keys"},
+		{apiKeyID, "api_keys"},
+		{projectID, "projects"},
+		{tenantID, "tenants"},
+	}
+
+	for _, sc := range scopes {
+		if sc.id == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, s.db.Rebind(fmt.Sprintf(`
+			UPDATE %s
+			SET reserved_usd = reserved_usd - ?, updated_at = ?
+			WHERE id = ?
+		`, sc.table)), amount, now, sc.id); err != nil {
+			return fmt.Errorf("release %s budget: %w", sc.table, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit release tx: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) ConsumeProjectBudget(ctx context.Context, projectID string, cost float64) (bool, error) {

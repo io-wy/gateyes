@@ -15,9 +15,14 @@ import (
 //
 // This is the implementation of the legacy "sticky" strategy, migrated
 // from the strategy layer into the Affinity pipeline.
+type sessionEntry struct {
+	providerName string
+	createdAt    time.Time
+}
+
 type SessionAffinity struct {
 	mu       sync.RWMutex
-	sessions map[string]string // sessionID → providerName
+	sessions map[string]sessionEntry // sessionID → entry
 	ttl      time.Duration
 }
 
@@ -25,7 +30,7 @@ type SessionAffinity struct {
 // ttl <= 0 means entries never expire.
 func NewSessionAffinity(ttl time.Duration) *SessionAffinity {
 	return &SessionAffinity{
-		sessions: make(map[string]string),
+		sessions: make(map[string]sessionEntry),
 		ttl:      ttl,
 	}
 }
@@ -38,15 +43,26 @@ func (s *SessionAffinity) Pin(candidates []provider.Provider, ctx RouteContext) 
 		return candidates
 	}
 
-	s.mu.RLock()
-	name, ok := s.sessions[ctx.SessionID]
-	s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
+	if len(s.sessions) > 10000 {
+		s.cleanupLocked()
+	}
+
+	entry, ok := s.sessions[ctx.SessionID]
+	if ok && s.ttl > 0 && time.Since(entry.createdAt) > s.ttl {
+		delete(s.sessions, ctx.SessionID)
+		ok = false
+	}
+
+	var name string
 	if !ok {
 		name = pickByHash(candidates, ctx.SessionID)
-		s.mu.Lock()
-		s.sessions[ctx.SessionID] = name
-		s.mu.Unlock()
+		entry = sessionEntry{providerName: name, createdAt: time.Now()}
+		s.sessions[ctx.SessionID] = entry
+	} else {
+		name = entry.providerName
 	}
 
 	for i, p := range candidates {
@@ -61,15 +77,26 @@ func (s *SessionAffinity) Pin(candidates []provider.Provider, ctx RouteContext) 
 	return candidates
 }
 
-// Promote updates the session mapping. This is a no-op for SessionAffinity
-// because the mapping is already established in Pin.
+// Promote updates the session mapping.
 func (s *SessionAffinity) Promote(ctx RouteContext, providerName string) {
 	if ctx.SessionID == "" {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.sessions[ctx.SessionID] = providerName
+	s.sessions[ctx.SessionID] = sessionEntry{providerName: providerName, createdAt: time.Now()}
+}
+
+func (s *SessionAffinity) cleanupLocked() {
+	if s.ttl <= 0 {
+		return
+	}
+	now := time.Now()
+	for k, v := range s.sessions {
+		if now.Sub(v.createdAt) > s.ttl {
+			delete(s.sessions, k)
+		}
+	}
 }
 
 // pickByHash selects a provider using weighted consistent hashing.

@@ -19,6 +19,8 @@ package eventbus
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,6 +39,7 @@ type Bus struct {
 	timeout   time.Duration
 	dropped   atomic.Int64
 	processed atomic.Int64
+	panics    atomic.Int64
 
 	startOnce sync.Once
 	stopOnce  sync.Once
@@ -123,8 +126,13 @@ func (b *Bus) invoke(h Handler) {
 	hCtx, cancel := context.WithTimeout(context.Background(), b.timeout)
 	defer cancel()
 	defer func() {
-		// Don't let a panicking handler kill the worker.
-		_ = recover()
+		if r := recover(); r != nil {
+			slog.Error("eventbus handler panic",
+				"recover", r,
+				"stack", string(debug.Stack()),
+			)
+			b.panics.Add(1)
+		}
 	}()
 	h(hCtx)
 	b.processed.Add(1)
@@ -188,3 +196,6 @@ func (b *Bus) Dropped() int64 { return b.dropped.Load() }
 // Processed returns the cumulative number of handlers that ran to completion
 // (including those that panicked, since panics are recovered).
 func (b *Bus) Processed() int64 { return b.processed.Load() }
+
+// Panics returns the cumulative number of handlers that panicked.
+func (b *Bus) Panics() int64 { return b.panics.Load() }

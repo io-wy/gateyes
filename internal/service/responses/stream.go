@@ -425,7 +425,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 					errCh <- err
 					return
 				case <-ctx.Done():
-					s.drainStreamForUsage(stream, upstreamErrCh, &finalResponse, &streamUsage, &streamedOutputs, &assistantText)
+					s.drainWithSemaphore(stream, upstreamErrCh, &finalResponse, &streamUsage, &streamedOutputs, &assistantText)
 					streamCancel()
 					s.handleStreamCancellation(ctx, identity, req, responseID, p, trace, finalResponse, assistantText, streamedOutputs, streamUsage, startedAt)
 					s.providerMgr.Stats.DecrementLoad(providerName)
