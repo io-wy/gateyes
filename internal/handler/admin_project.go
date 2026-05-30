@@ -166,18 +166,17 @@ func (h *AdminHandler) DeleteProject(c *gin.Context) {
 
 func projectToResponse(project repository.ProjectRecord) gin.H {
 	return gin.H{
-		"id":          project.ID,
-		"tenant_id":   project.TenantID,
-		"tenant_slug": project.TenantSlug,
-		"slug":        project.Slug,
-		"name":        project.Name,
-		"status":      project.Status,
+		"id":            project.ID,
+		"tenant_id":     project.TenantID,
+		"tenant_slug":   project.TenantSlug,
+		"slug":          project.Slug,
+		"name":          project.Name,
+		"status":        project.Status,
 		"budget_usd":    project.BudgetUSD,
 		"spent_usd":     project.SpentUSD,
 		"budget_policy": project.BudgetPolicy,
 		"policy":        project.Policy,
-		"created_at":  project.CreatedAt,
-		"updated_at":  project.UpdatedAt,
+		"created_at":    project.CreatedAt,
+		"updated_at":    project.UpdatedAt,
 	}
 }
-

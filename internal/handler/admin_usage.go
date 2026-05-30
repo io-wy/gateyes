@@ -188,4 +188,3 @@ func usageFilterToResponse(filter repository.UsageFilter) gin.H {
 		"end_time":   zeroTimeOrValue(filter.EndTime),
 	}
 }
-

@@ -343,21 +343,21 @@ func providerConfigFromCreateRequest(req CreateProviderRequest) config.ProviderC
 		weight = 1
 	}
 	return config.ProviderConfig{
-		Name:     req.Name,
-		Type:     req.Type,
-		Vendor:   req.Vendor,
-		BaseURL:  req.BaseURL,
-		Endpoint: req.Endpoint,
-		APIKey:        req.APIKey,
-		Model:         req.Model,
-		Weight:        weight,
-		PriceInput:    req.PriceInput,
-		PriceOutput:   req.PriceOutput,
-		MaxTokens:     req.MaxTokens,
-		Timeout:       req.Timeout,
-		Enabled:       req.Enabled,
-		Headers:       req.Headers,
-		ExtraBody:     req.ExtraBody,
+		Name:        req.Name,
+		Type:        req.Type,
+		Vendor:      req.Vendor,
+		BaseURL:     req.BaseURL,
+		Endpoint:    req.Endpoint,
+		APIKey:      req.APIKey,
+		Model:       req.Model,
+		Weight:      weight,
+		PriceInput:  req.PriceInput,
+		PriceOutput: req.PriceOutput,
+		MaxTokens:   req.MaxTokens,
+		Timeout:     req.Timeout,
+		Enabled:     req.Enabled,
+		Headers:     req.Headers,
+		ExtraBody:   req.ExtraBody,
 	}
 }
 
@@ -458,4 +458,3 @@ func applyProviderCapabilityOverrides(record *repository.ProviderRegistryRecord,
 		record.SupportsEmbeddings = *overrides.SupportsEmbeddings
 	}
 }
-

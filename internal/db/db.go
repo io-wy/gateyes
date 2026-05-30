@@ -134,6 +134,9 @@ func (d *DB) Migrate(ctx context.Context) error {
 		if d.driver == "mysql" {
 			migrationSQL = mysqlCompatSQL(migrationSQL)
 		}
+		if d.driver == "sqlite" {
+			migrationSQL = sqliteCompatSQL(migrationSQL)
+		}
 
 		tx, err := d.Conn.BeginTx(ctx, nil)
 		if err != nil {
@@ -169,6 +172,25 @@ func (d *DB) isApplied(ctx context.Context, version string) (bool, error) {
 // mysqlCompatSQL adapts PostgreSQL/SQLite migration SQL for MySQL compatibility.
 // Currently a minimal pass-through; extend as needed for MySQL-specific syntax.
 func mysqlCompatSQL(sql string) string {
+	return sql
+}
+
+// sqliteCompatSQL adapts PostgreSQL-specific migration SQL for SQLite compatibility.
+func sqliteCompatSQL(sql string) string {
+	// SQLite supports INSERT OR IGNORE but not INSERT ... ON CONFLICT DO NOTHING
+	// with INSERT INTO ... SELECT. Rewrite the pattern used in migration 024.
+	if strings.Contains(sql, "ON CONFLICT") && strings.Contains(sql, "INSERT INTO") {
+		sql = strings.Replace(sql, "INSERT INTO", "INSERT OR IGNORE INTO", 1)
+		// Strip the ON CONFLICT clause (everything from ON CONFLICT to the semicolon or end of line)
+		idx := strings.Index(sql, "ON CONFLICT")
+		if idx >= 0 {
+			end := idx
+			for end < len(sql) && sql[end] != ';' && sql[end] != '\n' {
+				end++
+			}
+			sql = sql[:idx] + sql[end:]
+		}
+	}
 	return sql
 }
 

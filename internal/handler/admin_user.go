@@ -323,4 +323,3 @@ func usagePercent(stats *repository.UserStats) float64 {
 	}
 	return float64(stats.TotalUsed) / float64(stats.TotalQuota) * 100
 }
-

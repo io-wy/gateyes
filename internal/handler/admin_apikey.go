@@ -260,4 +260,3 @@ func apiKeyToResponse(record repository.APIKeyRecord) gin.H {
 	}
 	return response
 }
-

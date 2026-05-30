@@ -206,16 +206,15 @@ func (h *AdminHandler) removeTenantProvider(ctx context.Context, tenantID, name 
 
 func tenantToResponse(tenant repository.TenantRecord) gin.H {
 	return gin.H{
-		"id":         tenant.ID,
-		"slug":       tenant.Slug,
-		"name":       tenant.Name,
-		"status":     tenant.Status,
+		"id":            tenant.ID,
+		"slug":          tenant.Slug,
+		"name":          tenant.Name,
+		"status":        tenant.Status,
 		"budget_usd":    tenant.BudgetUSD,
 		"spent_usd":     tenant.SpentUSD,
 		"budget_policy": tenant.BudgetPolicy,
 		"policy":        tenant.Policy,
-		"created_at": tenant.CreatedAt,
-		"updated_at": tenant.UpdatedAt,
+		"created_at":    tenant.CreatedAt,
+		"updated_at":    tenant.UpdatedAt,
 	}
 }
-

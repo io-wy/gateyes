@@ -116,4 +116,3 @@ func responseToResponse(record repository.ResponseRecord) gin.H {
 		"updated_at":    record.UpdatedAt,
 	}
 }
-
