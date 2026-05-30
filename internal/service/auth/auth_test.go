@@ -23,6 +23,7 @@ type fakeIdentityStore struct {
 	consumeTenantBudgetErr      error
 	consumeVirtualKeyBudgetOK   bool
 	consumeVirtualKeyBudgetErr  error
+	consumeBudgetsOK            bool
 	usageErr                    error
 	touchedAPIKeyID             string
 	consumedUserID              string
@@ -394,6 +395,11 @@ func (f *fakeIdentityStore) ConsumeVirtualKeyBudget(ctx context.Context, virtual
 	}
 	return f.consumeVirtualKeyBudgetOK, nil
 }
+func (f *fakeIdentityStore) ConsumeBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, cost float64) (bool, error) {
+	return f.consumeBudgetsOK, nil
+}
+func (f *fakeIdentityStore) DeleteResponsesOlderThan(ctx context.Context, before time.Time) (int64, error) { return 0, nil }
+
 
 func baseIdentity() *repository.AuthIdentity {
 	return &repository.AuthIdentity{
@@ -485,11 +491,9 @@ func TestTouchCheckModelHasQuotaRequireRoleAndExtractKey(t *testing.T) {
 func TestRecordUsageSuccessAndQuotaExceeded(t *testing.T) {
 	identity := baseIdentity()
 	store := &fakeIdentityStore{
-		identity:               identity,
-		consumeOK:              true,
-		consumeKeyBudgetOK:     true,
-		consumeProjectBudgetOK: true,
-		consumeTenantBudgetOK:  true,
+		identity:          identity,
+		consumeOK:         true,
+		consumeBudgetsOK:  true,
 	}
 	service := NewAuth(store)
 
@@ -511,10 +515,9 @@ func TestRecordUsageSuccessAndQuotaExceeded(t *testing.T) {
 	}
 
 	quotaStore := &fakeIdentityStore{
-		identity:              baseIdentity(),
-		consumeOK:             false,
-		consumeKeyBudgetOK:    true,
-		consumeTenantBudgetOK: true,
+		identity:          baseIdentity(),
+		consumeOK:         false,
+		consumeBudgetsOK:  true,
 	}
 	quotaService := NewAuth(quotaStore)
 	if err := quotaService.RecordUsage(context.Background(), quotaStore.identity, "openai", "gpt-1", 1, 1, 2, 0.1, 10, "success", ""); !errors.Is(err, ErrQuotaExceeded) {
@@ -527,39 +530,13 @@ func TestRecordUsageSuccessAndQuotaExceeded(t *testing.T) {
 	projectIdentity := baseIdentity()
 	projectIdentity.ProjectID = "proj-1"
 	budgetStore := &fakeIdentityStore{
-		identity:               projectIdentity,
-		consumeOK:              true,
-		consumeKeyBudgetOK:     false,
-		consumeProjectBudgetOK: true,
-		consumeTenantBudgetOK:  true,
+		identity:          projectIdentity,
+		consumeOK:         true,
+		consumeBudgetsOK:  false,
 	}
 	budgetService := NewAuth(budgetStore)
 	if err := budgetService.RecordUsage(context.Background(), projectIdentity, "openai", "gpt-1", 1, 1, 2, 0.5, 10, "success", ""); !errors.Is(err, ErrBudgetExceeded) {
-		t.Fatalf("RecordUsage(key budget exceeded) error = %v, want %v", err, ErrBudgetExceeded)
-	}
-
-	projectBudgetStore := &fakeIdentityStore{
-		identity:               projectIdentity,
-		consumeOK:              true,
-		consumeKeyBudgetOK:     true,
-		consumeProjectBudgetOK: false,
-		consumeTenantBudgetOK:  true,
-	}
-	projectBudgetService := NewAuth(projectBudgetStore)
-	if err := projectBudgetService.RecordUsage(context.Background(), projectIdentity, "openai", "gpt-1", 1, 1, 2, 0.5, 10, "success", ""); !errors.Is(err, ErrBudgetExceeded) {
-		t.Fatalf("RecordUsage(project budget exceeded) error = %v, want %v", err, ErrBudgetExceeded)
-	}
-
-	tenantBudgetStore := &fakeIdentityStore{
-		identity:               projectIdentity,
-		consumeOK:              true,
-		consumeKeyBudgetOK:     true,
-		consumeProjectBudgetOK: true,
-		consumeTenantBudgetOK:  false,
-	}
-	tenantBudgetService := NewAuth(tenantBudgetStore)
-	if err := tenantBudgetService.RecordUsage(context.Background(), projectIdentity, "openai", "gpt-1", 1, 1, 2, 0.5, 10, "success", ""); !errors.Is(err, ErrBudgetExceeded) {
-		t.Fatalf("RecordUsage(tenant budget exceeded) error = %v, want %v", err, ErrBudgetExceeded)
+		t.Fatalf("RecordUsage(budget exceeded) error = %v, want %v", err, ErrBudgetExceeded)
 	}
 }
 
@@ -668,11 +645,9 @@ func TestRecordUsage_VirtualKeyBudgetExceeded(t *testing.T) {
 	identity.VirtualKeySpentUSD = 90.0
 
 	store := &fakeIdentityStore{
-		identity:                     identity,
-		consumeOK:                    true,
-		consumeKeyBudgetOK:           true,
-		consumeTenantBudgetOK:        true,
-		consumeVirtualKeyBudgetOK:    false,
+		identity:          identity,
+		consumeOK:         true,
+		consumeBudgetsOK:  false,
 	}
 	service := NewAuth(store)
 

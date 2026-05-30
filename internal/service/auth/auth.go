@@ -214,32 +214,7 @@ func (a *Auth) recordUsage(
 	}
 
 	if cost > 0 {
-		if identity.VirtualKeyID != "" {
-			ok, err := a.store.ConsumeVirtualKeyBudget(ctx, identity.VirtualKeyID, cost)
-			if err != nil {
-				return err
-			}
-			if !ok {
-				return ErrBudgetExceeded
-			}
-		}
-		ok, err := a.store.ConsumeAPIKeyBudget(ctx, identity.APIKeyID, cost)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return ErrBudgetExceeded
-		}
-		if identity.ProjectID != "" {
-			ok, err = a.store.ConsumeProjectBudget(ctx, identity.ProjectID, cost)
-			if err != nil {
-				return err
-			}
-			if !ok {
-				return ErrBudgetExceeded
-			}
-		}
-		ok, err = a.store.ConsumeTenantBudget(ctx, identity.TenantID, cost)
+		ok, err := a.store.ConsumeBudgets(ctx, identity.APIKeyID, identity.ProjectID, identity.TenantID, identity.VirtualKeyID, cost)
 		if err != nil {
 			return err
 		}
