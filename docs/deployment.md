@@ -164,8 +164,6 @@ spec:
                   number: 8080
 ```
 
-完整注解兼容列表和迁移指南见 [Ingress Controller 文档](./ingress.md)。
-
 ## 6. Production notes
 
 1. Prefer Postgres/MySQL in staging/prod

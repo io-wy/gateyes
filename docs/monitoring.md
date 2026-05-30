@@ -209,13 +209,13 @@ sum by (provider, token_type) (
 
 完整基线文件：
 
-- [`docs/prometheus-alerts.yml`](./prometheus-alerts.yml)
-- [`docs/grafana-dashboard.json`](./grafana-dashboard.json)
+- [`assets/prometheus-alerts.yml`](./assets/prometheus-alerts.yml)
+- [`assets/grafana-dashboard.json`](./assets/grafana-dashboard.json)
 
 最小样例文件：
 
-- [`docs/prometheus-alerts.example.yml`](./prometheus-alerts.example.yml)
-- [`docs/grafana-dashboard.example.json`](./grafana-dashboard.example.json)
+- [`assets/prometheus-alerts.example.yml`](./assets/prometheus-alerts.example.yml)
+- [`assets/grafana-dashboard.example.json`](./assets/grafana-dashboard.example.json)
 
 这些文件都按默认 namespace `gateway` 编写。
 
