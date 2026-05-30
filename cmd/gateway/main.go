@@ -274,6 +274,31 @@ func main() {
 		}
 	}()
 
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		// Run once on startup as well
+		slog.Info("starting response TTL cleanup (30-day retention)")
+		if deleted, err := store.DeleteResponsesOlderThan(ctx, time.Now().UTC().AddDate(0, 0, -30)); err != nil {
+			slog.Error("response TTL cleanup failed", "error", err)
+		} else if deleted > 0 {
+			slog.Info("response TTL cleanup completed", "deleted", deleted)
+		}
+		for {
+			select {
+			case <-ticker.C:
+				slog.Info("running response TTL cleanup (30-day retention)")
+				if deleted, err := store.DeleteResponsesOlderThan(ctx, time.Now().UTC().AddDate(0, 0, -30)); err != nil {
+					slog.Error("response TTL cleanup failed", "error", err)
+				} else if deleted > 0 {
+					slog.Info("response TTL cleanup completed", "deleted", deleted)
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	healthChecker.Start(ctx)
 
 	<-ctx.Done()
