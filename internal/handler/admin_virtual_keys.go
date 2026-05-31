@@ -11,16 +11,16 @@ import (
 )
 
 type CreateVirtualKeyRequest struct {
-	UserID           string    `json:"user_id" binding:"required"`
-	APIKeyID         string    `json:"api_key_id" binding:"required"`
-	ProjectID        string    `json:"project_id"`
-	Name             string    `json:"name"`
-	BudgetUSD        float64   `json:"budget_usd"`
-	BudgetPolicy     string    `json:"budget_policy"`
-	RateLimitQPS     int       `json:"rate_limit_qps"`
-	AllowedModels    []string  `json:"allowed_models"`
-	AllowedProviders []string  `json:"allowed_providers"`
-	CallbackURL      string    `json:"callback_url"`
+	UserID           string   `json:"user_id" binding:"required"`
+	APIKeyID         string   `json:"api_key_id" binding:"required"`
+	ProjectID        string   `json:"project_id"`
+	Name             string   `json:"name"`
+	BudgetUSD        float64  `json:"budget_usd"`
+	BudgetPolicy     string   `json:"budget_policy"`
+	RateLimitQPS     int      `json:"rate_limit_qps"`
+	AllowedModels    []string `json:"allowed_models"`
+	AllowedProviders []string `json:"allowed_providers"`
+	CallbackURL      string   `json:"callback_url"`
 }
 
 type UpdateVirtualKeyRequest struct {

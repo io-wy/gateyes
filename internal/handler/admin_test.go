@@ -932,7 +932,7 @@ func TestAdminDeleteProjectCascade(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id": "chatcmpl-del", "object": "chat.completion", "created": 1, "model": "provider-model",
 			"choices": []map[string]any{{"index": 0, "message": map[string]any{"role": "assistant", "content": "hi"}, "finish_reason": "stop"}},
-			"usage": map[string]any{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+			"usage":   map[string]any{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
 		})
 	}))
 	defer upstream.Close()
