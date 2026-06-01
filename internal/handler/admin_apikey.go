@@ -27,18 +27,18 @@ func (h *AdminHandler) CreateAPIKey(c *gin.Context) {
 			writeError(c, http.StatusNotFound, CodeUserNotFound, "user not found")
 			return
 		}
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 
 	apiKey, err := repository.GenerateToken("gk-", 8)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	apiSecret, err := repository.GenerateToken("gs-", 16)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 
@@ -55,7 +55,7 @@ func (h *AdminHandler) CreateAPIKey(c *gin.Context) {
 		AllowedServices:  req.AllowedServices,
 	})
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 
@@ -67,18 +67,14 @@ func (h *AdminHandler) CreateAPIKey(c *gin.Context) {
 }
 
 func (h *AdminHandler) ListAPIKeys(c *gin.Context) {
-	identity, _ := middleware.Identity(c)
-	tenantID, ok := h.scopeTenantID(c, identity)
-	if !ok {
-		return
-	}
+	tenantID := h.adminTenantID(c)
 	items, err := h.store.ListAPIKeys(c.Request.Context(), tenantID, repository.APIKeyFilter{
 		UserID:    c.Query("user_id"),
 		ProjectID: c.Query("project_id"),
 		Status:    c.Query("status"),
 	})
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	result := make([]gin.H, 0, len(items))
@@ -89,18 +85,14 @@ func (h *AdminHandler) ListAPIKeys(c *gin.Context) {
 }
 
 func (h *AdminHandler) GetAPIKey(c *gin.Context) {
-	identity, _ := middleware.Identity(c)
-	tenantID, ok := h.scopeTenantID(c, identity)
-	if !ok {
-		return
-	}
+	tenantID := h.adminTenantID(c)
 	record, err := h.store.GetAPIKey(c.Request.Context(), tenantID, c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
 			writeError(c, http.StatusNotFound, CodeAPIKeyNotFound, "api key not found")
 			return
 		}
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	writeOK(c, apiKeyToResponse(*record))
@@ -118,11 +110,7 @@ type UpdateAPIKeyRequest struct {
 }
 
 func (h *AdminHandler) UpdateAPIKey(c *gin.Context) {
-	identity, _ := middleware.Identity(c)
-	tenantID, ok := h.scopeTenantID(c, identity)
-	if !ok {
-		return
-	}
+	tenantID := h.adminTenantID(c)
 
 	var req UpdateAPIKeyRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -149,27 +137,23 @@ func (h *AdminHandler) UpdateAPIKey(c *gin.Context) {
 			writeError(c, http.StatusNotFound, CodeAPIKeyNotFound, "api key not found")
 			return
 		}
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	writeOK(c, apiKeyToResponse(*record))
 }
 
 func (h *AdminHandler) RotateAPIKey(c *gin.Context) {
-	identity, _ := middleware.Identity(c)
-	tenantID, ok := h.scopeTenantID(c, identity)
-	if !ok {
-		return
-	}
+	tenantID := h.adminTenantID(c)
 
 	newKey, err := repository.GenerateToken("gk-", 8)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	newSecret, err := repository.GenerateToken("gs-", 16)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 
@@ -182,7 +166,7 @@ func (h *AdminHandler) RotateAPIKey(c *gin.Context) {
 			writeError(c, http.StatusNotFound, CodeAPIKeyNotFound, "api key not found")
 			return
 		}
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 
@@ -194,11 +178,7 @@ func (h *AdminHandler) RotateAPIKey(c *gin.Context) {
 }
 
 func (h *AdminHandler) RevokeAPIKey(c *gin.Context) {
-	identity, _ := middleware.Identity(c)
-	tenantID, ok := h.scopeTenantID(c, identity)
-	if !ok {
-		return
-	}
+	tenantID := h.adminTenantID(c)
 
 	status := repository.StatusRevoked
 	now := time.Now().UTC()
@@ -211,7 +191,7 @@ func (h *AdminHandler) RevokeAPIKey(c *gin.Context) {
 			writeError(c, http.StatusNotFound, CodeAPIKeyNotFound, "api key not found")
 			return
 		}
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	h.recordAudit(c, "api_key.revoke", "api_key", record.ID, gin.H{"api_key_id": record.ID})

@@ -1,13 +1,16 @@
 package handler
 
 import (
+	"net/http"
+	"time"
+
+	"github.com/gin-gonic/gin"
+
 	"github.com/gateyes/gateway/internal/config"
+	"github.com/gateyes/gateway/internal/middleware"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/catalog"
 	"github.com/gateyes/gateway/internal/service/provider"
-	"github.com/gin-gonic/gin"
-	"net/http"
-	"time"
 )
 
 type AdminHandler struct {
@@ -48,6 +51,14 @@ func (h *AdminHandler) ReloadConfig(c *gin.Context) {
 	writeOK(c, gin.H{"reloaded": true})
 }
 
+func (h *AdminHandler) adminTenantID(c *gin.Context) string {
+	identity, _ := middleware.Identity(c)
+	if identity.Role == repository.RoleSuperAdmin {
+		return c.Query("tenant_id")
+	}
+	return identity.TenantID
+}
+
 func (h *AdminHandler) scopeTenantID(c *gin.Context, identity *repository.AuthIdentity) (string, bool) {
 	if identity.Role == repository.RoleSuperAdmin {
 		return c.Query("tenant_id"), true
@@ -71,6 +82,27 @@ func scopedTenant(identity *repository.AuthIdentity) string {
 		return ""
 	}
 	return identity.TenantID
+}
+
+func (h *AdminHandler) requireAdminIdentity(c *gin.Context) (*repository.AuthIdentity, string, bool) {
+	identity, _ := middleware.Identity(c)
+	tenantID, ok := h.scopeTenantID(c, identity)
+	if !ok {
+		return nil, "", false
+	}
+	return identity, tenantID, true
+}
+
+func (h *AdminHandler) handleNotFound(c *gin.Context, err error, code Code, msg string) bool {
+	if err == repository.ErrNotFound {
+		writeError(c, http.StatusNotFound, code, msg)
+		return true
+	}
+	return false
+}
+
+func writeInternalError(c *gin.Context, err error) {
+	writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 }
 
 func providerNames(items []provider.Provider) []string {

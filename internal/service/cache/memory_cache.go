@@ -75,7 +75,13 @@ func (c *MemoryCache) Get(ctx context.Context, key string) (*Entry, bool, error)
 	}
 	c.list.MoveToFront(el)
 	c.stats.Hits++
-	cp := *en.value // shallow copy: callers should not mutate.
+	cp := *en.value
+	if cp.Response != nil {
+		cp.Response = append([]byte(nil), cp.Response...)
+	}
+	if cp.StreamRaw != nil {
+		cp.StreamRaw = append([]byte(nil), cp.StreamRaw...)
+	}
 	return &cp, true, nil
 }
 

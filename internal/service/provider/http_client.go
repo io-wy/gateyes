@@ -33,6 +33,8 @@ func newProviderHTTPClient(timeoutSeconds int) *http.Client {
 	client := &http.Client{Transport: transport}
 	if timeoutSeconds > 0 {
 		client.Timeout = time.Duration(timeoutSeconds) * time.Second
+	} else {
+		client.Timeout = 120 * time.Second
 	}
 	return client
 }

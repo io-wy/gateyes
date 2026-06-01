@@ -200,6 +200,7 @@ type AlertService struct {
 	// Backward compatibility: legacy notifiedUsers map for quota alerts
 	mu            sync.RWMutex
 	notifiedUsers map[string]time.Time
+	sendSem       chan struct{}
 }
 
 func NewAlertService(cfg config.AlertConfig, store repository.Store) *AlertService {
@@ -209,6 +210,7 @@ func NewAlertService(cfg config.AlertConfig, store repository.Store) *AlertServi
 		channels:      buildChannels(cfg),
 		aggregator:    NewAlertAggregator(time.Duration(cfg.DedupWindowSeconds) * time.Second),
 		notifiedUsers: make(map[string]time.Time),
+		sendSem:       make(chan struct{}, 20),
 	}
 	if !cfg.Enabled {
 		s.channels = nil
@@ -274,13 +276,19 @@ func (s *AlertService) send(ctx context.Context, alert Alert, routeLabels map[st
 		if !ch.Match(routeLabels) {
 			continue
 		}
-		go func(c Channel) {
-			sendCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			if err := c.Send(sendCtx, alert); err != nil {
-				// Swallow: alert delivery failure should not break business flow
-			}
-		}(ch)
+		select {
+		case s.sendSem <- struct{}{}:
+			go func(c Channel) {
+				defer func() { <-s.sendSem }()
+				sendCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if err := c.Send(sendCtx, alert); err != nil {
+					// Swallow: alert delivery failure should not break business flow
+				}
+			}(ch)
+		default:
+			// Semaphore full; drop alert to prevent goroutine explosion.
+		}
 	}
 }
 

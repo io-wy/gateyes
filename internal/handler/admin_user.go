@@ -26,7 +26,7 @@ func (h *AdminHandler) CreateUser(c *gin.Context) {
 			writeError(c, http.StatusNotFound, CodeBadRequest, "tenant not found")
 			return
 		}
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 
@@ -46,12 +46,12 @@ func (h *AdminHandler) CreateUser(c *gin.Context) {
 
 	apiKey, err := repository.GenerateToken("gk-", 8)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	apiSecret, err := repository.GenerateToken("gs-", 16)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 
@@ -70,7 +70,7 @@ func (h *AdminHandler) CreateUser(c *gin.Context) {
 		SecretHash:   repository.HashSecret(apiSecret),
 	})
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 
@@ -99,15 +99,11 @@ func (h *AdminHandler) CreateUser(c *gin.Context) {
 }
 
 func (h *AdminHandler) ListUsers(c *gin.Context) {
-	identity, _ := middleware.Identity(c)
-	tenantID, ok := h.scopeTenantID(c, identity)
-	if !ok {
-		return
-	}
+	tenantID := h.adminTenantID(c)
 
 	users, err := h.store.ListUsers(c.Request.Context(), tenantID)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 
@@ -132,7 +128,7 @@ func (h *AdminHandler) GetUser(c *gin.Context) {
 			writeError(c, http.StatusNotFound, CodeUserNotFound, "user not found")
 			return
 		}
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	writeOK(c, userToResponse(*user))
@@ -180,7 +176,7 @@ func (h *AdminHandler) UpdateUser(c *gin.Context) {
 			writeError(c, http.StatusNotFound, CodeUserNotFound, "user not found")
 			return
 		}
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 
@@ -200,7 +196,7 @@ func (h *AdminHandler) DeleteUser(c *gin.Context) {
 			writeError(c, http.StatusNotFound, CodeUserNotFound, "user not found")
 			return
 		}
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 
@@ -221,7 +217,7 @@ func (h *AdminHandler) ResetUserUsage(c *gin.Context) {
 			writeError(c, http.StatusNotFound, CodeUserNotFound, "user not found")
 			return
 		}
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 
@@ -247,7 +243,7 @@ func (h *AdminHandler) GetUserUsage(c *gin.Context) {
 			writeError(c, http.StatusNotFound, CodeUserNotFound, "user not found")
 			return
 		}
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 
@@ -261,7 +257,7 @@ func (h *AdminHandler) GetUserUsage(c *gin.Context) {
 
 	trend, err := h.store.GetUserUsageTrend(c.Request.Context(), user.TenantID, user.ID, days)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 

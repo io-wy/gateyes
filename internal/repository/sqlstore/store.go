@@ -2,21 +2,32 @@ package sqlstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/gateyes/gateway/internal/db"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/eventbus"
 )
 
+const budgetCacheTTL = 5 * time.Second
+
+type budgetCacheValue struct {
+	BudgetUSD float64 `json:"budget"`
+	SpentUSD  float64 `json:"spent"`
+	Policy    string  `json:"policy"`
+}
+
 type Store struct {
 	db       *db.DB
 	eventBus *eventbus.Bus
+	rdb      *redis.Client
 }
 
 func New(database *db.DB) *Store {
@@ -25,6 +36,44 @@ func New(database *db.DB) *Store {
 
 func (s *Store) SetEventBus(bus *eventbus.Bus) {
 	s.eventBus = bus
+}
+
+func (s *Store) SetRedis(rdb *redis.Client) {
+	s.rdb = rdb
+}
+
+func budgetCacheKey(scope, id string) string {
+	return fmt.Sprintf("budget:%s:%s", scope, id)
+}
+
+func (s *Store) budgetCacheGet(ctx context.Context, scope, id string) (*budgetCacheValue, bool) {
+	if s.rdb == nil {
+		return nil, false
+	}
+	data, err := s.rdb.Get(ctx, budgetCacheKey(scope, id)).Result()
+	if err != nil {
+		return nil, false
+	}
+	var v budgetCacheValue
+	if err := json.Unmarshal([]byte(data), &v); err != nil {
+		return nil, false
+	}
+	return &v, true
+}
+
+func (s *Store) budgetCacheSet(ctx context.Context, scope, id string, v *budgetCacheValue) {
+	if s.rdb == nil || v == nil {
+		return
+	}
+	data, _ := json.Marshal(v)
+	s.rdb.Set(ctx, budgetCacheKey(scope, id), data, budgetCacheTTL)
+}
+
+func (s *Store) budgetCacheDelete(ctx context.Context, scope, id string) {
+	if s.rdb == nil {
+		return
+	}
+	s.rdb.Del(ctx, budgetCacheKey(scope, id))
 }
 
 func (s *Store) Ping(ctx context.Context) error {

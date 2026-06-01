@@ -2,20 +2,17 @@ package handler
 
 import (
 	"encoding/json"
-	"github.com/gateyes/gateway/internal/middleware"
-	"github.com/gateyes/gateway/internal/repository"
-	"github.com/gin-gonic/gin"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/gin-gonic/gin"
+
+	"github.com/gateyes/gateway/internal/repository"
 )
 
 func (h *AdminHandler) ListResponses(c *gin.Context) {
-	identity, _ := middleware.Identity(c)
-	tenantID, ok := h.scopeTenantID(c, identity)
-	if !ok {
-		return
-	}
+	tenantID := h.adminTenantID(c)
 	filter := repository.ResponseFilter{
 		ProviderName: c.Query("provider_name"),
 		Model:        c.Query("model"),
@@ -54,12 +51,12 @@ func (h *AdminHandler) ListResponses(c *gin.Context) {
 	}
 	total, err := h.store.CountResponses(c.Request.Context(), tenantID, filter)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	items, err := h.store.ListResponses(c.Request.Context(), tenantID, filter)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	result := make([]gin.H, 0, len(items))
@@ -70,18 +67,14 @@ func (h *AdminHandler) ListResponses(c *gin.Context) {
 }
 
 func (h *AdminHandler) GetResponseTrace(c *gin.Context) {
-	identity, _ := middleware.Identity(c)
-	tenantID, ok := h.scopeTenantID(c, identity)
-	if !ok {
-		return
-	}
+	tenantID := h.adminTenantID(c)
 	record, err := h.store.GetResponse(c.Request.Context(), tenantID, c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
 			writeError(c, http.StatusNotFound, CodeResponseNotFound, "response not found")
 			return
 		}
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	if len(record.RouteTraceBody) == 0 {
@@ -93,7 +86,7 @@ func (h *AdminHandler) GetResponseTrace(c *gin.Context) {
 	}
 	var trace any
 	if err := json.Unmarshal(record.RouteTraceBody, &trace); err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	writeOK(c, gin.H{

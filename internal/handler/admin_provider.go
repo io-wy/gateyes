@@ -15,33 +15,21 @@ func (h *AdminHandler) CheckProviders(c *gin.Context) {
 		return
 	}
 	if err := h.healthChecker.ForceCheck(c.Request.Context()); err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
-	identity, _ := middleware.Identity(c)
-	tenantID, ok := h.scopeTenantID(c, identity)
-	if !ok {
-		return
-	}
+	tenantID := h.adminTenantID(c)
 	writeOK(c, h.providerResponses(c, tenantID))
 }
 
 func (h *AdminHandler) GetProviders(c *gin.Context) {
-	identity, _ := middleware.Identity(c)
-	tenantID, ok := h.scopeTenantID(c, identity)
-	if !ok {
-		return
-	}
+	tenantID := h.adminTenantID(c)
 
 	writeOK(c, h.providerResponses(c, tenantID))
 }
 
 func (h *AdminHandler) GetProvider(c *gin.Context) {
-	identity, _ := middleware.Identity(c)
-	tenantID, ok := h.scopeTenantID(c, identity)
-	if !ok {
-		return
-	}
+	tenantID := h.adminTenantID(c)
 
 	providers := h.providerResponses(c, tenantID)
 	for _, item := range providers {
@@ -112,7 +100,7 @@ func (h *AdminHandler) CreateProvider(c *gin.Context) {
 	}
 	if tenantID, ok := h.scopeTenantID(c, identity); ok && tenantID != "" {
 		if err := h.appendTenantProvider(c.Request.Context(), tenantID, created.Name); err != nil {
-			writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+			writeInternalError(c, err)
 			return
 		}
 	}
@@ -165,7 +153,7 @@ func (h *AdminHandler) UpdateProvider(c *gin.Context) {
 			writeError(c, http.StatusNotFound, CodeProviderNotFound, "provider not found")
 			return
 		}
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	updated := mergeProviderUpdate(*current, req)
@@ -186,7 +174,7 @@ func (h *AdminHandler) DeleteProvider(c *gin.Context) {
 			writeError(c, http.StatusNotFound, CodeProviderNotFound, "provider not found")
 			return
 		}
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	if tenantID, ok := h.scopeTenantID(c, identity); ok && tenantID != "" {

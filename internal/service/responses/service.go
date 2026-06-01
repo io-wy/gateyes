@@ -65,6 +65,7 @@ type Service struct {
 	pricingFeed    *pricing.Feed
 	sfg            singleflight.Group
 	drainSem       chan struct{}
+	persistSem     chan struct{}
 }
 
 type CreateResult struct {
@@ -113,6 +114,7 @@ func New(deps *Dependencies) *Service {
 		guardrails:     deps.Guardrails,
 		pricingFeed:    deps.PricingFeed,
 		drainSem:       make(chan struct{}, 100),
+		persistSem:     make(chan struct{}, 50),
 	}
 }
 

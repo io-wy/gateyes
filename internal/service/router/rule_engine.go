@@ -2,10 +2,25 @@ package router
 
 import (
 	"regexp"
+	"sync"
 
 	"github.com/gateyes/gateway/internal/config"
 	"github.com/gateyes/gateway/internal/service/provider"
 )
+
+var regexCache sync.Map // map[string]*regexp.Regexp
+
+func cachedRegexp(pattern string) *regexp.Regexp {
+	if re, ok := regexCache.Load(pattern); ok {
+		return re.(*regexp.Regexp)
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil
+	}
+	regexCache.Store(pattern, re)
+	return re
+}
 
 func (r *Router) applyRuleEngineLocked(candidates []provider.Provider, ctx RouteContext) []provider.Provider {
 	filtered, _ := r.applyRuleEngineTraceLocked(candidates, ctx)
@@ -72,8 +87,8 @@ func matchAnyRegex(patterns []string, input string) bool {
 		return false
 	}
 	for _, pattern := range patterns {
-		matched, err := regexp.MatchString(pattern, input)
-		if err == nil && matched {
+		re := cachedRegexp(pattern)
+		if re != nil && re.MatchString(input) {
 			return true
 		}
 	}

@@ -28,7 +28,7 @@ func (h *AdminHandler) CreateProject(c *gin.Context) {
 		Policy:    req.Policy,
 	})
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	h.recordAudit(c, "project.create", "project", project.ID, req)
@@ -36,14 +36,10 @@ func (h *AdminHandler) CreateProject(c *gin.Context) {
 }
 
 func (h *AdminHandler) ListProjects(c *gin.Context) {
-	identity, _ := middleware.Identity(c)
-	tenantID, ok := h.scopeTenantID(c, identity)
-	if !ok {
-		return
-	}
+	tenantID := h.adminTenantID(c)
 	projects, err := h.store.ListProjects(c.Request.Context(), tenantID)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	result := make([]gin.H, 0, len(projects))
@@ -54,36 +50,28 @@ func (h *AdminHandler) ListProjects(c *gin.Context) {
 }
 
 func (h *AdminHandler) GetProject(c *gin.Context) {
-	identity, _ := middleware.Identity(c)
-	tenantID, ok := h.scopeTenantID(c, identity)
-	if !ok {
-		return
-	}
+	tenantID := h.adminTenantID(c)
 	project, err := h.store.GetProject(c.Request.Context(), tenantID, c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
 			writeError(c, http.StatusNotFound, CodeProjectNotFound, "project not found")
 			return
 		}
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	writeOK(c, projectToResponse(*project))
 }
 
 func (h *AdminHandler) GetProjectUsage(c *gin.Context) {
-	identity, _ := middleware.Identity(c)
-	tenantID, ok := h.scopeTenantID(c, identity)
-	if !ok {
-		return
-	}
+	tenantID := h.adminTenantID(c)
 	project, err := h.store.GetProject(c.Request.Context(), tenantID, c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
 			writeError(c, http.StatusNotFound, CodeProjectNotFound, "project not found")
 			return
 		}
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	days := 7
@@ -94,12 +82,12 @@ func (h *AdminHandler) GetProjectUsage(c *gin.Context) {
 	}
 	summary, err := h.store.GetProjectUsageSummary(c.Request.Context(), project.TenantID, project.ID)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	trend, err := h.store.GetProjectUsageTrend(c.Request.Context(), project.TenantID, project.ID, days)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	writeOK(c, gin.H{
@@ -118,11 +106,7 @@ type UpdateProjectRequest struct {
 }
 
 func (h *AdminHandler) UpdateProject(c *gin.Context) {
-	identity, _ := middleware.Identity(c)
-	tenantID, ok := h.scopeTenantID(c, identity)
-	if !ok {
-		return
-	}
+	tenantID := h.adminTenantID(c)
 	var req UpdateProjectRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		writeError(c, http.StatusBadRequest, CodeInvalidRequestBody, err.Error())
@@ -140,24 +124,20 @@ func (h *AdminHandler) UpdateProject(c *gin.Context) {
 			writeError(c, http.StatusNotFound, CodeProjectNotFound, "project not found")
 			return
 		}
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	writeOK(c, projectToResponse(*project))
 }
 
 func (h *AdminHandler) DeleteProject(c *gin.Context) {
-	identity, _ := middleware.Identity(c)
-	tenantID, ok := h.scopeTenantID(c, identity)
-	if !ok {
-		return
-	}
+	tenantID := h.adminTenantID(c)
 	if err := h.store.DeleteProject(c.Request.Context(), tenantID, c.Param("id")); err != nil {
 		if err == repository.ErrNotFound {
 			writeError(c, http.StatusNotFound, CodeProjectNotFound, "project not found")
 			return
 		}
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	h.recordAudit(c, "project.delete", "project", c.Param("id"), gin.H{"project_id": c.Param("id")})

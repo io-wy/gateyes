@@ -132,9 +132,25 @@ WHERE id = ?
 	return rowsAffected > 0, nil
 }
 
+func buildBudgetCheckResult(v *budgetCacheValue, estimatedCost float64, scope string) *repository.BudgetCheckResult {
+	if v.BudgetUSD <= 0 {
+		return &repository.BudgetCheckResult{Allowed: true, Policy: v.Policy, Scope: scope}
+	}
+	remaining := v.BudgetUSD - v.SpentUSD - estimatedCost
+	return &repository.BudgetCheckResult{
+		Allowed:   remaining >= 0,
+		Scope:     scope,
+		Policy:    v.Policy,
+		Remaining: remaining,
+	}
+}
+
 func (s *Store) CheckVirtualKeyBudget(ctx context.Context, virtualKeyID string, estimatedCost float64) (*repository.BudgetCheckResult, error) {
 	if virtualKeyID == "" {
 		return &repository.BudgetCheckResult{Allowed: true}, nil
+	}
+	if cached, ok := s.budgetCacheGet(ctx, "virtual_key", virtualKeyID); ok {
+		return buildBudgetCheckResult(cached, estimatedCost, "virtual_key"), nil
 	}
 	var budgetUSD, spentUSD float64
 	var policy string
@@ -147,16 +163,12 @@ SELECT budget_usd, spent_usd, budget_policy FROM virtual_keys WHERE id = ?`), vi
 		}
 		return nil, fmt.Errorf("check virtual key budget: %w", err)
 	}
-	if budgetUSD <= 0 {
-		return &repository.BudgetCheckResult{Allowed: true, Policy: policy}, nil
-	}
-	remaining := budgetUSD - spentUSD - estimatedCost
-	return &repository.BudgetCheckResult{
-		Allowed:   remaining >= 0,
-		Scope:     "virtual_key",
-		Policy:    policy,
-		Remaining: remaining,
-	}, nil
+	s.budgetCacheSet(ctx, "virtual_key", virtualKeyID, &budgetCacheValue{
+		BudgetUSD: budgetUSD, SpentUSD: spentUSD, Policy: policy,
+	})
+	return buildBudgetCheckResult(&budgetCacheValue{
+		BudgetUSD: budgetUSD, SpentUSD: spentUSD, Policy: policy,
+	}, estimatedCost, "virtual_key"), nil
 }
 
 func (s *Store) ConsumeVirtualKeyBudget(ctx context.Context, virtualKeyID string, cost float64) (bool, error) {
@@ -297,7 +309,29 @@ func (s *Store) ConsumeBudgets(ctx context.Context, apiKeyID, projectID, tenantI
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("commit budget tx: %w", err)
 	}
+	// Invalidate cached budget snapshots so subsequent checks read fresh values.
+	if virtualKeyID != "" {
+		s.budgetCacheDelete(ctx, "virtual_key", virtualKeyID)
+	}
+	if apiKeyID != "" {
+		s.budgetCacheDelete(ctx, "api_key", apiKeyID)
+	}
+	if projectID != "" {
+		s.budgetCacheDelete(ctx, "project", projectID)
+	}
+	if tenantID != "" {
+		s.budgetCacheDelete(ctx, "tenant", tenantID)
+	}
 	return true, nil
+}
+
+func budgetScopes(apiKeyID, projectID, tenantID, virtualKeyID string) []struct{ id, table string } {
+	return []struct{ id, table string }{
+		{virtualKeyID, "virtual_keys"},
+		{apiKeyID, "api_keys"},
+		{projectID, "projects"},
+		{tenantID, "tenants"},
+	}
 }
 
 // ReserveBudgets pre-authorizes budget across all scopes in a single transaction.
@@ -313,17 +347,7 @@ func (s *Store) ReserveBudgets(ctx context.Context, apiKeyID, projectID, tenantI
 	defer tx.Rollback()
 
 	now := time.Now().UTC()
-	scopes := []struct {
-		id    string
-		table string
-	}{
-		{virtualKeyID, "virtual_keys"},
-		{apiKeyID, "api_keys"},
-		{projectID, "projects"},
-		{tenantID, "tenants"},
-	}
-
-	for _, sc := range scopes {
+	for _, sc := range budgetScopes(apiKeyID, projectID, tenantID, virtualKeyID) {
 		if sc.id == "" {
 			continue
 		}
@@ -363,17 +387,7 @@ func (s *Store) CommitBudgets(ctx context.Context, apiKeyID, projectID, tenantID
 	defer tx.Rollback()
 
 	now := time.Now().UTC()
-	scopes := []struct {
-		id    string
-		table string
-	}{
-		{virtualKeyID, "virtual_keys"},
-		{apiKeyID, "api_keys"},
-		{projectID, "projects"},
-		{tenantID, "tenants"},
-	}
-
-	for _, sc := range scopes {
+	for _, sc := range budgetScopes(apiKeyID, projectID, tenantID, virtualKeyID) {
 		if sc.id == "" {
 			continue
 		}
@@ -404,17 +418,7 @@ func (s *Store) ReleaseBudgets(ctx context.Context, apiKeyID, projectID, tenantI
 	defer tx.Rollback()
 
 	now := time.Now().UTC()
-	scopes := []struct {
-		id    string
-		table string
-	}{
-		{virtualKeyID, "virtual_keys"},
-		{apiKeyID, "api_keys"},
-		{projectID, "projects"},
-		{tenantID, "tenants"},
-	}
-
-	for _, sc := range scopes {
+	for _, sc := range budgetScopes(apiKeyID, projectID, tenantID, virtualKeyID) {
 		if sc.id == "" {
 			continue
 		}
@@ -471,6 +475,9 @@ WHERE id = ?
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("consume tenant budget rows affected: %w", err)
+	}
+	if rowsAffected > 0 {
+		s.budgetCacheDelete(ctx, "tenant", tenantID)
 	}
 	return rowsAffected > 0, nil
 }
@@ -580,6 +587,12 @@ func defaultRole(role string) string {
 }
 
 func (s *Store) CheckAPIKeyBudget(ctx context.Context, apiKeyID string, estimatedCost float64) (*repository.BudgetCheckResult, error) {
+	if apiKeyID == "" {
+		return &repository.BudgetCheckResult{Allowed: true, Scope: "api_key", Policy: repository.BudgetPolicyHardReject}, nil
+	}
+	if cached, ok := s.budgetCacheGet(ctx, "api_key", apiKeyID); ok {
+		return buildBudgetCheckResult(cached, estimatedCost, "api_key"), nil
+	}
 	return s.checkBudget(ctx, "api_keys", apiKeyID, estimatedCost)
 }
 
@@ -587,24 +600,54 @@ func (s *Store) CheckProjectBudget(ctx context.Context, projectID string, estima
 	if projectID == "" {
 		return &repository.BudgetCheckResult{Allowed: true, Scope: "project", Policy: repository.BudgetPolicyHardReject}, nil
 	}
+	if cached, ok := s.budgetCacheGet(ctx, "project", projectID); ok {
+		return buildBudgetCheckResult(cached, estimatedCost, "project"), nil
+	}
 	return s.checkBudget(ctx, "projects", projectID, estimatedCost)
 }
 
 func (s *Store) CheckTenantBudget(ctx context.Context, tenantID string, estimatedCost float64) (*repository.BudgetCheckResult, error) {
+	if cached, ok := s.budgetCacheGet(ctx, "tenant", tenantID); ok {
+		return buildBudgetCheckResult(cached, estimatedCost, "tenant"), nil
+	}
 	return s.checkBudget(ctx, "tenants", tenantID, estimatedCost)
 }
 
 func (s *Store) checkBudget(ctx context.Context, table, id string, estimatedCost float64) (*repository.BudgetCheckResult, error) {
+	var query string
+	switch table {
+	case "api_keys":
+		query = "SELECT budget_usd, spent_usd, budget_policy FROM api_keys WHERE id = ?"
+	case "projects":
+		query = "SELECT budget_usd, spent_usd, budget_policy FROM projects WHERE id = ?"
+	case "tenants":
+		query = "SELECT budget_usd, spent_usd, budget_policy FROM tenants WHERE id = ?"
+	default:
+		return nil, fmt.Errorf("unsupported budget table: %s", table)
+	}
+
 	var budget, spent float64
 	var policy string
-	if err := s.db.Conn.QueryRowContext(ctx, s.db.Rebind(
-		fmt.Sprintf(`SELECT budget_usd, spent_usd, budget_policy FROM %s WHERE id = ?`, table)), id,
-	).Scan(&budget, &spent, &policy); err != nil {
+	if err := s.db.Conn.QueryRowContext(ctx, s.db.Rebind(query), id).Scan(&budget, &spent, &policy); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return &repository.BudgetCheckResult{Allowed: true, Scope: table, Policy: policy}, nil
 		}
 		return nil, fmt.Errorf("check %s budget: %w", table, err)
 	}
+	scope := table
+	switch scope {
+	case "api_keys":
+		scope = "api_key"
+	case "projects":
+		scope = "project"
+	case "tenants":
+		scope = "tenant"
+	case "virtual_keys":
+		scope = "virtual_key"
+	}
+	s.budgetCacheSet(ctx, scope, id, &budgetCacheValue{
+		BudgetUSD: budget, SpentUSD: spent, Policy: policy,
+	})
 	if budget <= 0 {
 		return &repository.BudgetCheckResult{Allowed: true, Scope: table, Policy: policy, Remaining: -1}, nil
 	}

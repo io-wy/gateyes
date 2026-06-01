@@ -13,11 +13,7 @@ import (
 )
 
 func (h *AdminHandler) ListAuditLogs(c *gin.Context) {
-	identity, _ := middleware.Identity(c)
-	tenantID, ok := h.scopeTenantID(c, identity)
-	if !ok {
-		return
-	}
+	tenantID := h.adminTenantID(c)
 	filter := repository.AuditLogFilter{
 		Action:       c.Query("action"),
 		ResourceType: c.Query("resource_type"),

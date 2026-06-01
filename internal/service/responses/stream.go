@@ -451,3 +451,57 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 	})
 	errCh <- ErrNoProvider
 }
+
+func (s *Service) prepare(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*execution, error) {
+	selected, err := s.selectProvider(ctx, identity, sessionID, req)
+	if err != nil {
+		return nil, err
+	}
+	if selected == nil {
+		return nil, ErrNoProvider
+	}
+	return s.prepareWithProvider(ctx, identity, req, sessionID, selected)
+}
+
+func (s *Service) prepareWithProvider(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string, selected provider.Provider) (*execution, error) {
+	responseID := uuid.NewString()
+	requestBody, _ := json.Marshal(req)
+	if err := s.store.CreateResponse(ctx, repository.ResponseRecord{
+		ID:           responseID,
+		TenantID:     identity.TenantID,
+		ProjectID:    identity.ProjectID,
+		UserID:       identity.UserID,
+		APIKeyID:     identity.APIKeyID,
+		ProviderName: selected.Name(),
+		Model:        req.Model,
+		Status:       "in_progress",
+		RequestBody:  requestBody,
+	}); err != nil {
+		return nil, err
+	}
+
+	upstreamReq := &provider.ResponseRequest{
+		Model:             req.Model,
+		PreferredProvider: req.PreferredProvider,
+		Surface:           req.Surface,
+		Input:             req.InputMessages(),
+		Messages:          req.InputMessages(),
+		Stream:            req.Stream,
+		MaxOutputTokens:   req.MaxOutputTokens,
+		MaxTokens:         req.MaxTokens,
+		Tools:             req.Tools,
+		OutputFormat:      cloneOutputFormat(req.OutputFormat),
+		Options:           provider.CloneRequestOptions(req.Options),
+	}
+
+	return &execution{
+		provider:              selected,
+		requestedModel:        req.Model,
+		upstreamRequest:       upstreamReq,
+		responseID:            responseID,
+		tenantID:              identity.TenantID,
+		requestBody:           requestBody,
+		startedAt:             time.Now(),
+		estimatedPromptTokens: req.EstimatePromptTokens(),
+	}, nil
+}

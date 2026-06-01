@@ -76,8 +76,7 @@ func (p *openAIProvider) parseFallbackResponse(body []byte, requestedModel strin
 func (p *openAIProvider) newRequest(ctx context.Context, req *ResponseRequest, stream bool) (*http.Request, error) {
 	path, payload := p.requestPathAndPayload(req, stream)
 
-	body, _ := json.Marshal(payload)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, joinOpenAIPath(p.cfg.BaseURL, path), bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, joinOpenAIPath(p.cfg.BaseURL, path), nil)
 	if err != nil {
 		return nil, newProviderConfigError("provider.openai.new_request", err.Error())
 	}
@@ -89,7 +88,7 @@ func (p *openAIProvider) newRequest(ctx context.Context, req *ResponseRequest, s
 	}
 	applyProviderProfile(p.cfg, payload, httpReq.Header)
 
-	body, _ = json.Marshal(payload)
+	body, _ := json.Marshal(payload)
 	httpReq.Body = io.NopCloser(bytes.NewReader(body))
 	httpReq.ContentLength = int64(len(body))
 	return httpReq, nil

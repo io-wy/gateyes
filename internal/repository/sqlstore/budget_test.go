@@ -4,6 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
+
 	"github.com/gateyes/gateway/internal/repository"
 )
 
@@ -323,5 +326,71 @@ func TestConsumeQuota(t *testing.T) {
 	}
 	if ok {
 		t.Fatalf("expected second consume to fail")
+	}
+}
+
+func TestBudgetCacheRedis(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	store := newTestStore(t)
+	store.SetRedis(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
+	ctx := context.Background()
+
+	tenant, err := store.EnsureTenant(ctx, repository.EnsureTenantParams{
+		ID:        "tenant-cache",
+		Slug:      "tenant-cache",
+		Name:      "Cache Tenant",
+		Status:    repository.StatusActive,
+		BudgetUSD: 100,
+	})
+	if err != nil {
+		t.Fatalf("ensure tenant: %v", err)
+	}
+
+	// 1st check hits DB and writes cache
+	r1, err := store.CheckTenantBudget(ctx, tenant.ID, 10)
+	if err != nil {
+		t.Fatalf("first check: %v", err)
+	}
+	if !r1.Allowed || r1.Remaining != 90 {
+		t.Fatalf("first check: want allowed=90, got allowed=%v remaining=%f", r1.Allowed, r1.Remaining)
+	}
+
+	// Verify cache exists
+	cacheKey := "budget:tenant:" + tenant.ID
+	if !mr.Exists(cacheKey) {
+		t.Fatalf("expected cache key %q to exist after first check", cacheKey)
+	}
+
+	// Modify DB directly (bypass cache) to simulate another writer
+	if _, err := store.db.Conn.ExecContext(ctx, store.db.Rebind(
+		"UPDATE tenants SET spent_usd = 50 WHERE id = ?"), tenant.ID); err != nil {
+		t.Fatalf("direct update: %v", err)
+	}
+
+	// 2nd check hits cache (stale value)
+	r2, err := store.CheckTenantBudget(ctx, tenant.ID, 10)
+	if err != nil {
+		t.Fatalf("second check: %v", err)
+	}
+	if r2.Remaining != 90 {
+		t.Fatalf("second check should read stale cache: want 90, got %f", r2.Remaining)
+	}
+
+	// Consume invalidates cache
+	ok, err := store.ConsumeTenantBudget(ctx, tenant.ID, 5)
+	if err != nil || !ok {
+		t.Fatalf("consume: (%v,%v)", ok, err)
+	}
+
+	// 3rd check hits DB (cache invalidated)
+	r3, err := store.CheckTenantBudget(ctx, tenant.ID, 10)
+	if err != nil {
+		t.Fatalf("third check: %v", err)
+	}
+	// DB has spent=55 (50 direct + 5 consume), budget=100, estimated=10 => remaining=35
+	if r3.Remaining != 35 {
+		t.Fatalf("third check after invalidate: want 35, got %f", r3.Remaining)
 	}
 }

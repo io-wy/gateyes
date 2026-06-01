@@ -35,11 +35,7 @@ type UpdateVirtualKeyRequest struct {
 }
 
 func (h *AdminHandler) ListVirtualKeys(c *gin.Context) {
-	identity, _ := middleware.Identity(c)
-	tenantID, ok := h.scopeTenantID(c, identity)
-	if !ok {
-		return
-	}
+	tenantID := h.adminTenantID(c)
 	items, err := h.store.ListVirtualKeys(c.Request.Context(), tenantID, repository.VirtualKeyFilter{
 		UserID:    c.Query("user_id"),
 		ProjectID: c.Query("project_id"),
@@ -58,11 +54,7 @@ func (h *AdminHandler) ListVirtualKeys(c *gin.Context) {
 }
 
 func (h *AdminHandler) GetVirtualKey(c *gin.Context) {
-	identity, _ := middleware.Identity(c)
-	tenantID, ok := h.scopeTenantID(c, identity)
-	if !ok {
-		return
-	}
+	tenantID := h.adminTenantID(c)
 	record, err := h.store.GetVirtualKey(c.Request.Context(), tenantID, c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
@@ -90,12 +82,12 @@ func (h *AdminHandler) CreateVirtualKey(c *gin.Context) {
 
 	vk, err := repository.GenerateToken("vk-", 8)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	vkSecret, err := repository.GenerateToken("vs-", 16)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 
@@ -127,11 +119,7 @@ func (h *AdminHandler) CreateVirtualKey(c *gin.Context) {
 }
 
 func (h *AdminHandler) UpdateVirtualKey(c *gin.Context) {
-	identity, _ := middleware.Identity(c)
-	tenantID, ok := h.scopeTenantID(c, identity)
-	if !ok {
-		return
-	}
+	tenantID := h.adminTenantID(c)
 
 	var req UpdateVirtualKeyRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -162,11 +150,7 @@ func (h *AdminHandler) UpdateVirtualKey(c *gin.Context) {
 }
 
 func (h *AdminHandler) DeleteVirtualKey(c *gin.Context) {
-	identity, _ := middleware.Identity(c)
-	tenantID, ok := h.scopeTenantID(c, identity)
-	if !ok {
-		return
-	}
+	tenantID := h.adminTenantID(c)
 	if err := h.store.DeleteVirtualKey(c.Request.Context(), tenantID, c.Param("id")); err != nil {
 		if err == repository.ErrNotFound {
 			writeError(c, http.StatusNotFound, CodeVirtualKeyNotFound, "virtual key not found")

@@ -10,20 +10,16 @@ import (
 )
 
 func (h *AdminHandler) Dashboard(c *gin.Context) {
-	identity, _ := middleware.Identity(c)
-	tenantID, ok := h.scopeTenantID(c, identity)
-	if !ok {
-		return
-	}
+	tenantID := h.adminTenantID(c)
 
 	userStats, err := h.store.Stats(c.Request.Context(), tenantID)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	usageStats, err := h.store.GetUsageSummary(c.Request.Context(), tenantID)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 
@@ -50,18 +46,14 @@ func (h *AdminHandler) Dashboard(c *gin.Context) {
 }
 
 func (h *AdminHandler) GetBudgets(c *gin.Context) {
-	identity, _ := middleware.Identity(c)
-	tenantID, ok := h.scopeTenantID(c, identity)
-	if !ok {
-		return
-	}
+	tenantID := h.adminTenantID(c)
 
 	apiKeyID := c.Query("api_key_id")
 	projectID := c.Query("project_id")
 
 	status, err := h.store.GetBudgetStatus(c.Request.Context(), tenantID, projectID, apiKeyID)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	writeOK(c, status)
@@ -75,7 +67,7 @@ func (h *AdminHandler) GetUsageSummary(c *gin.Context) {
 	}
 	summary, err := h.store.GetUsageSummaryFiltered(c.Request.Context(), filter)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	writeOK(c, gin.H{
@@ -118,7 +110,7 @@ func (h *AdminHandler) GetUsageTrend(c *gin.Context) {
 	}
 	rows, err := h.store.GetUsageTimeBuckets(c.Request.Context(), filter, period, limit)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	writeOK(c, gin.H{

@@ -272,17 +272,30 @@ func TestRunStreamSuccess(t *testing.T) {
 		providers:   []string{"test-openai"},
 	})
 
-	exec, _ := env.service.prepareWithProvider(context.Background(), env.identity, &provider.ResponseRequest{
+	stream, err := env.service.CreateStream(context.Background(), env.identity, &provider.ResponseRequest{
 		Model: "public-model", Input: "hi", Stream: true,
-	}, "s1", env.providerMgr.List()[0])
-
-	out := make(chan provider.ResponseEvent, 8)
-	errCh := make(chan error, 1)
-	env.service.runStream(context.Background(), env.identity, exec, out, errCh)
+	}, "s1")
+	if err != nil {
+		t.Fatalf("CreateStream() error: %v", err)
+	}
 
 	var types []string
-	for e := range out {
-		types = append(types, e.Type)
+	done := false
+	for !done {
+		select {
+		case e, ok := <-stream.Events:
+			if !ok {
+				done = true
+				break
+			}
+			types = append(types, e.Type)
+		case err, ok := <-stream.Errors:
+			if !ok || err != nil {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+			}
+		}
 	}
 	if len(types) < 2 || types[0] != provider.EventResponseStarted {
 		t.Fatalf("unexpected events: %v", types)
@@ -301,18 +314,29 @@ func TestRunStreamUpstreamError(t *testing.T) {
 		providers:   []string{"test-openai"},
 	})
 
-	exec, _ := env.service.prepareWithProvider(context.Background(), env.identity, &provider.ResponseRequest{
+	stream, err := env.service.CreateStream(context.Background(), env.identity, &provider.ResponseRequest{
 		Model: "public-model", Input: "hi", Stream: true,
-	}, "s1", env.providerMgr.List()[0])
-
-	out := make(chan provider.ResponseEvent, 4)
-	errCh := make(chan error, 1)
-	env.service.runStream(context.Background(), env.identity, exec, out, errCh)
+	}, "s1")
+	if err != nil {
+		t.Fatalf("CreateStream() error: %v", err)
+	}
 
 	var streamErr error
-	for err := range errCh {
-		if err != nil {
-			streamErr = err
+	done := false
+	for !done {
+		select {
+		case _, ok := <-stream.Events:
+			if !ok {
+				done = true
+			}
+		case err, ok := <-stream.Errors:
+			if !ok {
+				done = true
+				break
+			}
+			if err != nil {
+				streamErr = err
+			}
 		}
 	}
 	if streamErr == nil {

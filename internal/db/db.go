@@ -178,18 +178,18 @@ func mysqlCompatSQL(sql string) string {
 // sqliteCompatSQL adapts PostgreSQL-specific migration SQL for SQLite compatibility.
 func sqliteCompatSQL(sql string) string {
 	// SQLite supports INSERT OR IGNORE but not INSERT ... ON CONFLICT DO NOTHING
-	// with INSERT INTO ... SELECT. Rewrite the pattern used in migration 024.
-	if strings.Contains(sql, "ON CONFLICT") && strings.Contains(sql, "INSERT INTO") {
+	// with INSERT INTO ... SELECT. Rewrite all occurrences.
+	for strings.Contains(sql, "ON CONFLICT") && strings.Contains(sql, "INSERT INTO") {
 		sql = strings.Replace(sql, "INSERT INTO", "INSERT OR IGNORE INTO", 1)
-		// Strip the ON CONFLICT clause (everything from ON CONFLICT to the semicolon or end of line)
 		idx := strings.Index(sql, "ON CONFLICT")
-		if idx >= 0 {
-			end := idx
-			for end < len(sql) && sql[end] != ';' && sql[end] != '\n' {
-				end++
-			}
-			sql = sql[:idx] + sql[end:]
+		if idx < 0 {
+			break
 		}
+		end := idx
+		for end < len(sql) && sql[end] != ';' && sql[end] != '\n' {
+			end++
+		}
+		sql = sql[:idx] + sql[end:]
 	}
 	return sql
 }

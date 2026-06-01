@@ -10,7 +10,7 @@ import (
 func (h *AdminHandler) ListTenants(c *gin.Context) {
 	tenants, err := h.store.ListTenants(c.Request.Context())
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	result := make([]gin.H, 0, len(tenants))
@@ -44,11 +44,11 @@ func (h *AdminHandler) CreateTenant(c *gin.Context) {
 		Policy:    req.Policy,
 	})
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	if err := h.store.ReplaceTenantProviders(c.Request.Context(), tenant.ID, providerNames(h.providerMgr.List())); err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 
@@ -63,12 +63,12 @@ func (h *AdminHandler) GetTenant(c *gin.Context) {
 			writeError(c, http.StatusNotFound, CodeBadRequest, "tenant not found")
 			return
 		}
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	providers, err := h.store.ListTenantProviders(c.Request.Context(), tenant.ID)
 	if err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 
@@ -105,7 +105,7 @@ func (h *AdminHandler) UpdateTenant(c *gin.Context) {
 			writeError(c, http.StatusNotFound, CodeBadRequest, "tenant not found")
 			return
 		}
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 
@@ -134,12 +134,12 @@ func (h *AdminHandler) ReplaceTenantProviders(c *gin.Context) {
 			writeError(c, http.StatusNotFound, CodeBadRequest, "tenant not found")
 			return
 		}
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 
 	if err := h.store.ReplaceTenantProviders(c.Request.Context(), tenant.ID, req.Providers); err != nil {
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 
@@ -156,7 +156,7 @@ func (h *AdminHandler) DeleteTenant(c *gin.Context) {
 			writeError(c, http.StatusNotFound, CodeBadRequest, "tenant not found")
 			return
 		}
-		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
+		writeInternalError(c, err)
 		return
 	}
 	h.recordAudit(c, "tenant.delete", "tenant", c.Param("id"), gin.H{"tenant_id": c.Param("id")})

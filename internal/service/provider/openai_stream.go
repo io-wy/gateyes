@@ -4,10 +4,13 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 )
+
+const maxPendingDataSize = 10 * 1024 * 1024 // 10MB
 
 func (p *openAIProvider) StreamResponse(ctx context.Context, req *ResponseRequest) (<-chan ResponseEvent, <-chan error) {
 	result := make(chan ResponseEvent)
@@ -84,6 +87,10 @@ func (p *openAIProvider) StreamResponse(ctx context.Context, req *ResponseReques
 				} else {
 					pendingData = data
 				}
+				if len(pendingData) > maxPendingDataSize {
+					errCh <- newProviderTransportError("provider.openai.stream_response", fmt.Errorf("pending data exceeded %d bytes", maxPendingDataSize))
+					return
+				}
 				continue
 			}
 			if line == "" && pendingData != "" {
@@ -125,13 +132,13 @@ func parseSSELine(data, format, requestedModel string) (*ResponseEvent, error) {
 	if format == "chat" || strings.Contains(data, `"choices"`) {
 		event, err := parseChatCompletionEvent(data, requestedModel)
 		if err != nil {
-			return nil, nil
+			return nil, fmt.Errorf("parse chat completion event: %w", err)
 		}
 		return event, nil
 	}
 	event, err := parseOpenAIStreamEvent(data, requestedModel)
 	if err != nil {
-		return nil, nil
+		return nil, fmt.Errorf("parse openai stream event: %w", err)
 	}
 	return event, nil
 }

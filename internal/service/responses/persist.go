@@ -42,11 +42,20 @@ func (s *Service) publishOrInline(h func(ctx context.Context)) {
 		if s.eventBus.Publish(h) {
 			return
 		}
-		go func() {
+		select {
+		case s.persistSem <- struct{}{}:
+			go func() {
+				defer func() { <-s.persistSem }()
+				ctx, cancel := context.WithTimeout(context.Background(), terminalPersistenceTimeout)
+				defer cancel()
+				h(ctx)
+			}()
+		default:
+			// Semaphore full; run synchronously to avoid goroutine explosion.
 			ctx, cancel := context.WithTimeout(context.Background(), terminalPersistenceTimeout)
 			defer cancel()
 			h(ctx)
-		}()
+		}
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), terminalPersistenceTimeout)

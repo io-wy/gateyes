@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -93,10 +94,8 @@ func (h *Handler) Chat(c *gin.Context) {
 		return
 	}
 
-	identity, ok := middleware.Identity(c)
+	identity, ok := h.requireIdentity(c, metricsSurfaceChatCompletions)
 	if !ok {
-		h.metrics.RecordError(metricsSurfaceChatCompletions, "", metricsResultAuthError, "invalid_api_key")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"message": "invalid API key", "type": "invalid_request_error"}})
 		return
 	}
 
@@ -140,10 +139,8 @@ func (h *Handler) AnthropicMessages(c *gin.Context) {
 		return
 	}
 
-	identity, ok := middleware.Identity(c)
+	identity, ok := h.requireIdentity(c, metricsSurfaceMessages)
 	if !ok {
-		h.metrics.RecordError(metricsSurfaceMessages, "", metricsResultAuthError, "invalid_api_key")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"message": "invalid API key", "type": "invalid_request_error"}})
 		return
 	}
 
@@ -188,10 +185,10 @@ func (h *Handler) Models(c *gin.Context) {
 	providers := h.deps.ProviderMgr.ListByNames(providerNames)
 	models := make([]map[string]any, 0, len(providers))
 	for _, p := range providers {
-		if len(identity.APIKeyProviders) > 0 && !stringInSlice(identity.APIKeyProviders, p.Name()) {
+		if len(identity.APIKeyProviders) > 0 && !slices.Contains(identity.APIKeyProviders, p.Name()) {
 			continue
 		}
-		if len(identity.APIKeyModels) > 0 && !stringInSlice(identity.APIKeyModels, p.Model()) {
+		if len(identity.APIKeyModels) > 0 && !slices.Contains(identity.APIKeyModels, p.Model()) {
 			continue
 		}
 		record, hasRegistry := h.deps.ProviderMgr.Registry(p.Name())
@@ -208,15 +205,15 @@ func (h *Handler) Models(c *gin.Context) {
 				"chat":              hasRegistry && record.SupportsChat,
 				"responses":         hasRegistry && record.SupportsResponses,
 				"messages":          hasRegistry && record.SupportsMessages,
-				"stream":            !hasRegistry || record.SupportsStream,
-				"tools":             !hasRegistry || record.SupportsTools,
-				"images":            !hasRegistry || record.SupportsImages,
-				"structured_output": !hasRegistry || record.SupportsStructuredOutput,
+				"stream":            registryBool(hasRegistry, record.SupportsStream),
+				"tools":             registryBool(hasRegistry, record.SupportsTools),
+				"images":            registryBool(hasRegistry, record.SupportsImages),
+				"structured_output": registryBool(hasRegistry, record.SupportsStructuredOutput),
 				"long_context":      hasRegistry && record.SupportsLongContext,
 				"embeddings":        hasRegistry && record.SupportsEmbeddings,
 			},
 			"health_status":  registryString(hasRegistry, record.HealthStatus, "unknown"),
-			"enabled":        !hasRegistry || record.Enabled,
+			"enabled":        registryBool(hasRegistry, record.Enabled),
 			"drain":          hasRegistry && record.Drain,
 			"routing_weight": registryInt(hasRegistry, record.RoutingWeight),
 		})
@@ -235,10 +232,8 @@ func (h *Handler) Embeddings(c *gin.Context) {
 		return
 	}
 
-	identity, ok := middleware.Identity(c)
+	identity, ok := h.requireIdentity(c, metricsSurfaceEmbeddings)
 	if !ok {
-		h.metrics.RecordError(metricsSurfaceEmbeddings, "", metricsResultAuthError, "invalid_api_key")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"message": "invalid API key", "type": "invalid_request_error"}})
 		return
 	}
 
@@ -256,13 +251,13 @@ func (h *Handler) Embeddings(c *gin.Context) {
 			continue
 		}
 		record, hasRegistry := h.deps.ProviderMgr.Registry(name)
-		if !hasRegistry || !record.SupportsEmbeddings {
+		if !registryBool(hasRegistry, record.SupportsEmbeddings) {
 			continue
 		}
-		if len(identity.APIKeyProviders) > 0 && !stringInSlice(identity.APIKeyProviders, p.Name()) {
+		if len(identity.APIKeyProviders) > 0 && !slices.Contains(identity.APIKeyProviders, p.Name()) {
 			continue
 		}
-		if len(identity.APIKeyModels) > 0 && !stringInSlice(identity.APIKeyModels, p.Model()) {
+		if len(identity.APIKeyModels) > 0 && !slices.Contains(identity.APIKeyModels, p.Model()) {
 			continue
 		}
 		selected = p
@@ -287,6 +282,16 @@ func (h *Handler) Embeddings(c *gin.Context) {
 
 func (h *Handler) Metrics(c *gin.Context) {
 	h.metrics.Handler().ServeHTTP(c.Writer, c.Request)
+}
+
+func (h *Handler) requireIdentity(c *gin.Context, surface string) (*repository.AuthIdentity, bool) {
+	identity, ok := middleware.Identity(c)
+	if !ok {
+		h.metrics.RecordError(surface, "", metricsResultAuthError, "invalid_api_key")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"message": "invalid API key", "type": "invalid_request_error"}})
+		return nil, false
+	}
+	return identity, true
 }
 
 func (h *Handler) Health(c *gin.Context) {
@@ -324,11 +329,21 @@ func (h *Handler) observeResponseWithUpstream(surface, providerName string, usag
 	h.metrics.RecordSuccess(surface, providerName, usage, latency, &upstreamLatency, retries, fallback)
 }
 
+func isCatalogClientError(err error) bool {
+	return errors.Is(err, catalog.ErrServiceNotPublished) ||
+		errors.Is(err, catalog.ErrServiceDisabled) ||
+		errors.Is(err, catalog.ErrServiceSurfaceDenied) ||
+		errors.Is(err, catalog.ErrPromptTemplateMissing) ||
+		errors.Is(err, catalog.ErrPromptVariableMissing) ||
+		errors.Is(err, catalog.ErrPolicyViolation) ||
+		errors.Is(err, catalog.ErrRateLimited) ||
+		errors.Is(err, catalog.ErrServiceAccessDenied)
+}
+
 func (h *Handler) renderServiceError(c *gin.Context, surface, providerName string, err error) {
 	wrapped := responseSvc.WrapError(err)
 	httpErr := gatewayHTTPError{Status: wrapped.Status, Message: wrapped.Message, Type: wrapped.Type}
-	switch {
-	case errors.Is(err, catalog.ErrServiceNotPublished), errors.Is(err, catalog.ErrServiceDisabled), errors.Is(err, catalog.ErrServiceSurfaceDenied), errors.Is(err, catalog.ErrPromptTemplateMissing), errors.Is(err, catalog.ErrPromptVariableMissing), errors.Is(err, catalog.ErrPolicyViolation), errors.Is(err, catalog.ErrRateLimited), errors.Is(err, catalog.ErrServiceAccessDenied):
+	if isCatalogClientError(err) {
 		httpErr = h.wrapCatalogError(err)
 	}
 	status := httpErr.Status
@@ -549,14 +564,6 @@ func queryBool(c *gin.Context, key string) (bool, bool) {
 	return value, true
 }
 
-func stringInSlice(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
-}
 
 func registryString(ok bool, value, fallback string) string {
 	if !ok || value == "" {
@@ -570,4 +577,8 @@ func registryInt(ok bool, value int) int {
 		return 0
 	}
 	return value
+}
+
+func registryBool(hasRegistry bool, value bool) bool {
+	return !hasRegistry || value
 }

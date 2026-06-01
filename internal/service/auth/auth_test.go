@@ -518,9 +518,8 @@ func TestRecordUsageSuccessAndQuotaExceeded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RecordUsage(success) error: %v", err)
 	}
-	if got, want := identity.Used, 9; got != want {
-		t.Fatalf("RecordUsage(success) updated Used = %d, want %d", got, want)
-	}
+	// identity.Used is no longer mutated here (was a data race).
+	// Quota tracking is done atomically in ConsumeBudgets at the DB level.
 	if got, want := store.consumedUserID, "user-1"; got != want {
 		t.Fatalf("RecordUsage(success) consumed user = %q, want %q", got, want)
 	}

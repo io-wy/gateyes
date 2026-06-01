@@ -55,6 +55,15 @@ func (a *Auth) setCached(key string, identity *repository.AuthIdentity) {
 	a.cacheMu.Lock()
 	defer a.cacheMu.Unlock()
 	a.cache[key] = &cachedIdentity{identity: identity, expires: time.Now().Add(a.cacheTTL)}
+	// Sampling cleanup: evict expired entries ~1/64 of the time.
+	if len(a.cache)%64 == 0 {
+		now := time.Now()
+		for k, v := range a.cache {
+			if now.After(v.expires) {
+				delete(a.cache, k)
+			}
+		}
+	}
 }
 
 func (a *Auth) invalidateCache(key string) {
@@ -83,14 +92,21 @@ func (a *Auth) Authenticate(ctx context.Context, key, secret string) (*repositor
 	return nil, err
 }
 
+func verifyIdentity(identity *repository.AuthIdentity, secret string) error {
+	if !isIdentityActive(identity) {
+		return ErrInactiveAPIKey
+	}
+	if !repository.VerifySecret(secret, identity.SecretHash) {
+		return ErrInvalidAPIKey
+	}
+	return nil
+}
+
 func (a *Auth) authenticateAPIKey(ctx context.Context, key, secret string) (*repository.AuthIdentity, error) {
 	// Try cache first to avoid the 4-table JOIN hot path.
 	if identity := a.getCached(key); identity != nil {
-		if !isIdentityActive(identity) {
-			return nil, ErrInactiveAPIKey
-		}
-		if !repository.VerifySecret(secret, identity.SecretHash) {
-			return nil, ErrInvalidAPIKey
+		if err := verifyIdentity(identity, secret); err != nil {
+			return nil, err
 		}
 		return identity, nil
 	}
@@ -99,11 +115,8 @@ func (a *Auth) authenticateAPIKey(ctx context.Context, key, secret string) (*rep
 	if err != nil {
 		return nil, err
 	}
-	if !isIdentityActive(identity) {
-		return nil, ErrInactiveAPIKey
-	}
-	if !repository.VerifySecret(secret, identity.SecretHash) {
-		return nil, ErrInvalidAPIKey
+	if err := verifyIdentity(identity, secret); err != nil {
+		return nil, err
 	}
 
 	a.setCached(key, identity)
@@ -129,7 +142,7 @@ func (a *Auth) authenticateVirtualKey(ctx context.Context, key, secret string) (
 	if err != nil {
 		return nil, ErrInvalidAPIKey
 	}
-	if parent.APIStatus != repository.StatusActive || parent.UserStatus != repository.StatusActive || parent.TenantStatus != repository.StatusActive {
+	if !isIdentityActive(parent) {
 		return nil, ErrInactiveAPIKey
 	}
 
@@ -273,7 +286,6 @@ func (a *Auth) recordUsage(
 		if !ok {
 			return ErrBudgetExceeded
 		}
-		identity.Used += totalTokens
 	}
 
 	return a.store.CreateUsageRecord(ctx, repository.UsageRecord{
