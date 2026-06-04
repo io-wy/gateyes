@@ -6,12 +6,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/gateyes/gateway/internal/testutil"
+
 	"github.com/gateyes/gateway/internal/config"
-	"github.com/gateyes/gateway/internal/db"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/repository/sqlstore"
 	"github.com/gateyes/gateway/internal/service/auth"
@@ -32,21 +32,7 @@ func newCatalogTestEnv(t *testing.T, providers []config.ProviderConfig) *catalog
 	t.Helper()
 
 	ctx := context.Background()
-	database, err := db.Open(config.DatabaseConfig{
-		Driver:                 "sqlite",
-		DSN:                    filepath.Join(t.TempDir(), "catalog.db"),
-		AutoMigrate:            true,
-		MaxOpenConns:           1,
-		MaxIdleConns:           1,
-		ConnMaxLifetimeSeconds: 60,
-	})
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = database.Close() })
-	if err := database.Migrate(ctx); err != nil {
-		t.Fatalf("migrate db: %v", err)
-	}
+	database := testutil.OpenTestDB(t)
 
 	store := sqlstore.New(database)
 	tenant, err := store.EnsureTenant(ctx, repository.EnsureTenantParams{
@@ -129,6 +115,7 @@ func newCatalogTestEnv(t *testing.T, providers []config.ProviderConfig) *catalog
 
 func TestCreatePublishAndInvokePromptUsesPublishedSnapshotAndPreferredProvider(t *testing.T) {
 	alpha := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id":      "chat-alpha",
 			"object":  "chat.completion",
@@ -140,6 +127,7 @@ func TestCreatePublishAndInvokePromptUsesPublishedSnapshotAndPreferredProvider(t
 	}))
 	defer alpha.Close()
 	beta := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		messages, _ := json.Marshal(body["messages"])
@@ -212,6 +200,7 @@ func TestCreatePublishAndInvokePromptUsesPublishedSnapshotAndPreferredProvider(t
 
 func TestPromptInvocationAndResponsesPoliciesBlockInvalidContent(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id":      "chat-policy",
 			"object":  "chat.completion",
@@ -279,6 +268,7 @@ func TestInheritedPoliciesMergeAcrossTenantProjectAndService(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		rawMessages, _ := json.Marshal(body["messages"])
 		capturedMessages = string(rawMessages)
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id":      "chat-inherited",
 			"object":  "chat.completion",
@@ -472,6 +462,7 @@ func TestMergeServicePoliciesConservativelyCombinesLayers(t *testing.T) {
 
 func TestReviewSubscriptionApprovesScopedKey(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id":      "chat-subscription",
 			"object":  "chat.completion",

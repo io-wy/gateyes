@@ -8,10 +8,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gateyes/gateway/internal/testutil"
 
 	"github.com/gateyes/gateway/internal/config"
 	"github.com/gateyes/gateway/internal/db"
@@ -215,12 +216,15 @@ func TestCreateStreamFallsBackToNonStreamResponseWhenStreamHasNoRenderablePayloa
 		if r.URL.Path != "/responses" {
 			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
 		}
-		if r.Header.Get("Accept") == "text/event-stream" {
+		var reqBody map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&reqBody)
+		if reqBody["stream"] == true {
 			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_up\",\"created_at\":1700000000,\"model\":\"provider-model\",\"status\":\"completed\",\"output\":null,\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n")
 			_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 			return
 		}
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id":         "resp_up",
 			"created_at": 1700000000,
@@ -416,16 +420,19 @@ func TestCreateStreamReturnsOutputBudgetTooLowWhenLowBudgetProducesNoVisibleOutp
 
 func TestCreateStreamRecoversChatPayloadFromFinishOnlyStream(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/chat/completions" {
+		if r.URL.Path != "/chat/completions" {
 			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
 		}
-		if r.Header.Get("Accept") == "text/event-stream" {
+		var reqBody map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&reqBody)
+		if reqBody["stream"] == true {
 			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = fmt.Fprint(w, "data: {\"id\":\"chat-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"provider-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n")
 			_, _ = fmt.Fprint(w, "data: {\"id\":\"chat-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"provider-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5,\"total_tokens\":8}}\n\n")
 			_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 			return
 		}
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id":      "chat-1",
 			"object":  "chat.completion",
@@ -625,23 +632,7 @@ func newResponsesTestEnv(t *testing.T, cfg responsesTestEnvConfig) *responsesTes
 	t.Helper()
 
 	ctx := context.Background()
-	database, err := db.Open(config.DatabaseConfig{
-		Driver:                 "sqlite",
-		DSN:                    filepath.Join(t.TempDir(), "responses.db"),
-		AutoMigrate:            true,
-		MaxOpenConns:           1,
-		MaxIdleConns:           1,
-		ConnMaxLifetimeSeconds: 60,
-	})
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = database.Close()
-	})
-	if err := database.Migrate(ctx); err != nil {
-		t.Fatalf("migrate db: %v", err)
-	}
+	database := testutil.OpenTestDB(t)
 
 	store := sqlstore.New(database)
 	tenant, err := store.EnsureTenant(ctx, repository.EnsureTenantParams{

@@ -182,3 +182,11 @@ admin:
   defaultTenant: default
   bootstrapKey: admin-key-001
   bootstrapSecret: admin-secret-001
+
+# WASM plugin system
+# Place .wasm files in the directory; gateway loads them on startup.
+plugins:
+  enabled: false
+  directory: "./plugins"
+  autoReload: true
+  reloadIntervalSeconds: 30

@@ -35,7 +35,7 @@ func TestExtractRequestMetaRejectsInvalidJSON(t *testing.T) {
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/guarded", strings.NewReader(`{invalid`))
 
-	if _, err := extractRequestMeta(c); err == nil {
+	if _, _, err := extractRequestMeta(c); err == nil {
 		t.Fatal("extractRequestMeta(invalid JSON) error = nil, want non-nil")
 	}
 }

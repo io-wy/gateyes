@@ -183,7 +183,7 @@ func main() {
 		}
 	}
 
-	httpMiddleware := middleware.New(store, limiterSvc, budgetSvc, alertSvc, metrics)
+	httpMiddleware := middleware.New(cfg, store, limiterSvc, budgetSvc, alertSvc, metrics)
 
 	persistBus := eventbus.New(eventbus.Options{
 		Buffer:         cfg.Persistence.BusBuffer,
@@ -333,6 +333,9 @@ func main() {
 		slog.Warn("persistence event bus dropped events during run", "count", dropped)
 	}
 	providerMgr.CloseIdleConnections()
+	if pm := httpMiddleware.PluginManager(); pm != nil {
+		pm.Close()
+	}
 }
 
 func initTracer(cfg config.TracingConfig) func() {

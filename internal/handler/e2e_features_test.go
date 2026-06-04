@@ -7,17 +7,17 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/gateyes/gateway/internal/testutil"
+
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/gateyes/gateway/internal/config"
-	"github.com/gateyes/gateway/internal/db"
 	"github.com/gateyes/gateway/internal/middleware"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/repository/sqlstore"
@@ -53,21 +53,7 @@ func TestE2EFeatures(t *testing.T) {
 	t.Cleanup(callbackServer.Close)
 
 	ctx := context.Background()
-	database, err := db.Open(config.DatabaseConfig{
-		Driver:                 "sqlite",
-		DSN:                    filepath.Join(t.TempDir(), "features-e2e.db"),
-		AutoMigrate:            true,
-		MaxOpenConns:           4,
-		MaxIdleConns:           4,
-		ConnMaxLifetimeSeconds: 60,
-	})
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = database.Close() })
-	if err := database.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	database := testutil.OpenTestDB(t)
 
 	store := sqlstore.New(database)
 	tenant, err := store.EnsureTenant(ctx, repository.EnsureTenantParams{
@@ -112,7 +98,7 @@ func TestE2EFeatures(t *testing.T) {
 	t.Cleanup(limiterSvc.Stop)
 	budgetSvc := budget.New(store)
 	alertSvc := alert.NewAlertService(config.AlertConfig{Enabled: false}, store)
-	mw := middleware.New(store, limiterSvc, budgetSvc, alertSvc, metrics)
+	mw := middleware.New(nil, store, limiterSvc, budgetSvc, alertSvc, metrics)
 	responseService := responseSvc.New(&responseSvc.Dependencies{
 		Config: cfgObj, Store: store, Auth: mw.AuthService(),
 		ProviderMgr: providerMgr, Router: routerSvc, Alert: alertSvc, Limiter: limiterSvc,
@@ -145,14 +131,14 @@ func TestE2EFeatures(t *testing.T) {
 		// 1b. Create virtual key with budget, rate limit, models, callback
 		resp, body = doReq(t, ts, "POST", "/admin/virtual-keys", parentToken, map[string]any{
 			"user_id":           "user-1",
-			"api_key_id":       apiKeyID,
-			"name":             "e2e-vk",
-			"budget_usd":       5.0,
-			"budget_policy":    "hard_reject",
-			"rate_limit_qps":   100,
-			"allowed_models":   []string{"feat-model"},
+			"api_key_id":        apiKeyID,
+			"name":              "e2e-vk",
+			"budget_usd":        5.0,
+			"budget_policy":     "hard_reject",
+			"rate_limit_qps":    100,
+			"allowed_models":    []string{"feat-model"},
 			"allowed_providers": []string{"openai-feat"},
-			"callback_url":     callbackServer.URL,
+			"callback_url":      callbackServer.URL,
 		})
 		assertStatus(t, resp, http.StatusCreated, body)
 		vkData := decodeJSONMap(t, body)
@@ -216,7 +202,7 @@ func TestE2EFeatures(t *testing.T) {
 
 		// 1h. Test VK model restriction — use disallowed model
 		resp, body = doReq(t, ts, "POST", "/v1/chat/completions", vkToken, map[string]any{
-			"model": "forbidden-model",
+			"model":    "forbidden-model",
 			"messages": []map[string]any{{"role": "user", "content": "should fail"}},
 		})
 		if resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusBadRequest {
@@ -230,7 +216,7 @@ func TestE2EFeatures(t *testing.T) {
 
 		// 1j. Verify VK deleted — token should no longer work
 		resp, body = doReq(t, ts, "POST", "/v1/chat/completions", vkToken, map[string]any{
-			"model": "feat-model",
+			"model":    "feat-model",
 			"messages": []map[string]any{{"role": "user", "content": "should fail"}},
 		})
 		if resp.StatusCode != http.StatusUnauthorized {
@@ -241,8 +227,8 @@ func TestE2EFeatures(t *testing.T) {
 	t.Run("Feature2_AccurateTokenCounting", func(t *testing.T) {
 		// Make a request and verify provider-returned usage is stored
 		resp, body := doReq(t, ts, "POST", "/v1/chat/completions", parentToken, map[string]any{
-			"model": "feat-model",
-			"messages": []map[string]any{{"role": "user", "content": "count tokens"}},
+			"model":      "feat-model",
+			"messages":   []map[string]any{{"role": "user", "content": "count tokens"}},
 			"max_tokens": 64,
 		})
 		assertStatus(t, resp, http.StatusOK, body)
@@ -266,8 +252,8 @@ func TestE2EFeatures(t *testing.T) {
 		// Make multiple requests to create responses
 		for i := 0; i < 3; i++ {
 			resp, body := doReq(t, ts, "POST", "/v1/chat/completions", parentToken, map[string]any{
-				"model": "feat-model",
-				"messages": []map[string]any{{"role": "user", "content": fmt.Sprintf("request %d", i)}},
+				"model":      "feat-model",
+				"messages":   []map[string]any{{"role": "user", "content": fmt.Sprintf("request %d", i)}},
 				"max_tokens": 64,
 			})
 			assertStatus(t, resp, http.StatusOK, body)
@@ -302,7 +288,7 @@ func TestE2EFeatures(t *testing.T) {
 		apiKeyID := keys[0].(map[string]any)["id"].(string)
 
 		resp, body = doReq(t, ts, "POST", "/admin/virtual-keys", parentToken, map[string]any{
-			"user_id":       "cb-user",
+			"user_id":      "cb-user",
 			"api_key_id":   apiKeyID,
 			"name":         "callback-vk",
 			"budget_usd":   100.0,
@@ -316,8 +302,8 @@ func TestE2EFeatures(t *testing.T) {
 
 		// Make request via VK
 		resp, body = doReq(t, ts, "POST", "/v1/chat/completions", vkToken, map[string]any{
-			"model": "feat-model",
-			"messages": []map[string]any{{"role": "user", "content": "trigger callback"}},
+			"model":      "feat-model",
+			"messages":   []map[string]any{{"role": "user", "content": "trigger callback"}},
 			"max_tokens": 64,
 		})
 		assertStatus(t, resp, http.StatusOK, body)
@@ -353,7 +339,7 @@ func TestE2EFeatures(t *testing.T) {
 			GlobalQPS: 10000, GlobalTPM: 100000, GlobalTokenBurst: 100000,
 			PerUserRequestBurst: 100,
 			TenantTPM:           600, TenantTPMBurst: 3,
-			ProviderTPM:         600, ProviderTPMBurst: 3,
+			ProviderTPM: 600, ProviderTPMBurst: 3,
 			QueueSize: 128,
 		})
 		rl.SetRedis(rdb)
@@ -434,7 +420,8 @@ func newFeatureUpstream(t *testing.T) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/chat/completions":
+		case "/chat/completions":
+			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"id":      "feat-chat-1",
 				"object":  "chat.completion",

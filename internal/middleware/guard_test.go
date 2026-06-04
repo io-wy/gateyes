@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/gateyes/gateway/internal/config"
+	"github.com/gateyes/gateway/internal/filter"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/alert"
 	"github.com/gateyes/gateway/internal/service/budget"
@@ -49,7 +50,10 @@ func newGuardMiddlewareWithBudget(t *testing.T, policy string) (*GuardMiddleware
 	}}
 	budgetSvc := budget.New(store)
 	alertSvc := &fakeAlertService{}
-	return NewGuardMiddleware(nil, nil, budgetSvc, nil, nil), alertSvc
+	pipeline := filter.NewPipeline([]filter.Filter{
+		filter.NewBudgetFilter(budgetSvc, alertSvc),
+	})
+	return NewGuardMiddleware(pipeline, nil), alertSvc
 }
 
 func newGuardMiddlewareWithBudgetAndAlert(t *testing.T, policy string) (*GuardMiddleware, *fakeAlertService) {
@@ -60,7 +64,10 @@ func newGuardMiddlewareWithBudgetAndAlert(t *testing.T, policy string) (*GuardMi
 	}}
 	budgetSvc := budget.New(store)
 	alertSvc := &fakeAlertService{}
-	return NewGuardMiddleware(nil, nil, budgetSvc, nil, nil), alertSvc
+	pipeline := filter.NewPipeline([]filter.Filter{
+		filter.NewBudgetFilter(budgetSvc, alertSvc),
+	})
+	return NewGuardMiddleware(pipeline, nil), alertSvc
 }
 
 func TestGuardMiddleware_BudgetHardReject(t *testing.T) {
@@ -90,7 +97,10 @@ func TestGuardMiddleware_BudgetSoftAlert(t *testing.T) {
 	}}
 	budgetSvc := budget.New(store)
 	alertSvc := &fakeAlertService{}
-	mw := NewGuardMiddleware(nil, nil, budgetSvc, nil, nil)
+	pipeline := filter.NewPipeline([]filter.Filter{
+		filter.NewBudgetFilter(budgetSvc, alertSvc),
+	})
+	mw := NewGuardMiddleware(pipeline, nil)
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)

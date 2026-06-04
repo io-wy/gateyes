@@ -7,19 +7,19 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gateyes/gateway/internal/testutil"
+
 	"github.com/gin-gonic/gin"
 
 	"github.com/gateyes/gateway/internal/config"
-	"github.com/gateyes/gateway/internal/db"
 	"github.com/gateyes/gateway/internal/middleware"
 	"github.com/gateyes/gateway/internal/repository"
-	"github.com/gateyes/gateway/internal/service/budget"
 	"github.com/gateyes/gateway/internal/repository/sqlstore"
+	"github.com/gateyes/gateway/internal/service/budget"
 	"github.com/gateyes/gateway/internal/service/catalog"
 	"github.com/gateyes/gateway/internal/service/limiter"
 	"github.com/gateyes/gateway/internal/service/provider"
@@ -31,6 +31,7 @@ func TestResponsesEndpointReturnsJSON(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id":      "chatcmpl-upstream",
 			"object":  "chat.completion",
@@ -96,6 +97,7 @@ func TestModelsEndpointSupportsCapabilityFiltersAndKeyScope(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	}))
 	defer upstream.Close()
@@ -177,6 +179,7 @@ func TestServiceRuntimeEndpointsWorkThroughCatalog(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id":      "chat-service",
 			"object":  "chat.completion",
@@ -266,6 +269,7 @@ func TestChatEndpointReturnsCompatibilityJSON(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id":      "chatcmpl-upstream",
 			"object":  "chat.completion",
@@ -378,23 +382,7 @@ func newHandlerTestEnv(t *testing.T, cfg handlerTestEnvConfig) *handlerTestEnv {
 	t.Helper()
 
 	ctx := context.Background()
-	database, err := db.Open(config.DatabaseConfig{
-		Driver:                 "sqlite",
-		DSN:                    filepath.Join(t.TempDir(), "handler.db"),
-		AutoMigrate:            true,
-		MaxOpenConns:           4,
-		MaxIdleConns:           4,
-		ConnMaxLifetimeSeconds: 60,
-	})
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = database.Close()
-	})
-	if err := database.Migrate(ctx); err != nil {
-		t.Fatalf("migrate db: %v", err)
-	}
+	database := testutil.OpenTestDB(t)
 
 	store := sqlstore.New(database)
 	tenant, err := store.EnsureTenant(ctx, repository.EnsureTenantParams{
@@ -492,7 +480,7 @@ func newHandlerTestEnv(t *testing.T, cfg handlerTestEnvConfig) *handlerTestEnv {
 	})
 	t.Cleanup(limiterSvc.Stop)
 	budgetSvc := budget.New(store)
-	mw := middleware.New(store, limiterSvc, budgetSvc, nil, metrics)
+	mw := middleware.New(nil, store, limiterSvc, budgetSvc, nil, metrics)
 	responseService := responseSvc.New(&responseSvc.Dependencies{
 		Config:      cfgObj,
 		Store:       store,

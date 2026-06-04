@@ -6,13 +6,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gateyes/gateway/internal/testutil"
+
 	"github.com/gateyes/gateway/internal/config"
-	"github.com/gateyes/gateway/internal/db"
 	"github.com/gateyes/gateway/internal/middleware"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/repository/sqlstore"
@@ -347,21 +347,7 @@ func newLiveGatewayEnv(t *testing.T) *gatewayE2EEnv {
 	}
 
 	ctx := context.Background()
-	database, err := db.Open(config.DatabaseConfig{
-		Driver:                 "sqlite",
-		DSN:                    filepath.Join(t.TempDir(), "gateway-live.db"),
-		AutoMigrate:            true,
-		MaxOpenConns:           4,
-		MaxIdleConns:           4,
-		ConnMaxLifetimeSeconds: 60,
-	})
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = database.Close() })
-	if err := database.Migrate(ctx); err != nil {
-		t.Fatalf("migrate db: %v", err)
-	}
+	database := testutil.OpenTestDB(t)
 
 	store := sqlstore.New(database)
 	tenant, err := store.EnsureTenant(ctx, repository.EnsureTenantParams{
@@ -407,7 +393,7 @@ func newLiveGatewayEnv(t *testing.T) *gatewayE2EEnv {
 
 	metrics := NewMetrics(cfgObj.Metrics.Namespace)
 	budgetSvc := budget.New(store)
-	mw := middleware.New(store, limiterSvc, budgetSvc, nil, metrics)
+	mw := middleware.New(nil, store, limiterSvc, budgetSvc, nil, metrics)
 	responseService := responseSvc.New(&responseSvc.Dependencies{
 		Config:      cfgObj,
 		Store:       store,

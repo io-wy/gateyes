@@ -91,6 +91,7 @@ func assertSuccess(t *testing.T, rec *httptest.ResponseRecorder) map[string]any 
 func TestAdminUserLifecycleAndDashboardEndpoints(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id":      "chatcmpl-upstream",
 			"object":  "chat.completion",
@@ -426,6 +427,7 @@ func TestSuperAdminTenantRoutesAndPublicEndpoints(t *testing.T) {
 func TestAdminFailureBranches(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	}))
 	defer upstream.Close()
@@ -489,6 +491,7 @@ func TestAdminFailureBranches(t *testing.T) {
 func TestAdminAPIKeysUsageAndRouteTraceEndpoints(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id":      "chatcmpl-upstream",
 			"object":  "chat.completion",
@@ -639,6 +642,7 @@ func TestAdminAPIKeysUsageAndRouteTraceEndpoints(t *testing.T) {
 func TestAdminServiceLifecycleAndSubscriptionReviewEndpoints(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id":      "chat-service-admin",
 			"object":  "chat.completion",
@@ -745,6 +749,7 @@ func TestHandlerUtilityFunctions(t *testing.T) {
 func TestAdminVirtualKeyLifecycle(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id":      "chatcmpl-upstream",
 			"object":  "chat.completion",
@@ -850,6 +855,7 @@ func TestAdminVirtualKey_CreateValidation(t *testing.T) {
 func TestAdminDeleteTenantCascade(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id":      "chatcmpl-del",
 			"object":  "chat.completion",
@@ -929,6 +935,7 @@ func TestAdminDeleteTenantCascade(t *testing.T) {
 func TestAdminDeleteProjectCascade(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id": "chatcmpl-del", "object": "chat.completion", "created": 1, "model": "provider-model",
 			"choices": []map[string]any{{"index": 0, "message": map[string]any{"role": "assistant", "content": "hi"}, "finish_reason": "stop"}},

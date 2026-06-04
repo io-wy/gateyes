@@ -4,10 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/alicebob/miniredis/v2"
-	"github.com/redis/go-redis/v9"
-
 	"github.com/gateyes/gateway/internal/repository"
+	"github.com/gateyes/gateway/internal/testutil"
 )
 
 func TestCheckAPIKeyBudget(t *testing.T) {
@@ -330,11 +328,11 @@ func TestConsumeQuota(t *testing.T) {
 }
 
 func TestBudgetCacheRedis(t *testing.T) {
-	mr := miniredis.RunT(t)
-	defer mr.Close()
+	rdb := testutil.NewRedisClient(t)
+	defer rdb.Close()
 
 	store := newTestStore(t)
-	store.SetRedis(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
+	store.SetRedis(rdb)
 	ctx := context.Background()
 
 	tenant, err := store.EnsureTenant(ctx, repository.EnsureTenantParams{
@@ -359,8 +357,9 @@ func TestBudgetCacheRedis(t *testing.T) {
 
 	// Verify cache exists
 	cacheKey := "budget:tenant:" + tenant.ID
-	if !mr.Exists(cacheKey) {
-		t.Fatalf("expected cache key %q to exist after first check", cacheKey)
+	_, err = rdb.Get(ctx, cacheKey).Result()
+	if err != nil {
+		t.Fatalf("expected cache key %q to exist after first check: %v", cacheKey, err)
 	}
 
 	// Modify DB directly (bypass cache) to simulate another writer

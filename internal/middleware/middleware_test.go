@@ -6,14 +6,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gateyes/gateway/internal/testutil"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/gateyes/gateway/internal/config"
-	"github.com/gateyes/gateway/internal/db"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/repository/sqlstore"
 	"github.com/gateyes/gateway/internal/service/limiter"
@@ -258,23 +258,7 @@ func newTestMiddleware(
 	t.Helper()
 
 	ctx := context.Background()
-	database, err := db.Open(config.DatabaseConfig{
-		Driver:                 "sqlite",
-		DSN:                    filepath.Join(t.TempDir(), "middleware.db"),
-		AutoMigrate:            true,
-		MaxOpenConns:           1,
-		MaxIdleConns:           1,
-		ConnMaxLifetimeSeconds: 60,
-	})
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = database.Close()
-	})
-	if err := database.Migrate(ctx); err != nil {
-		t.Fatalf("migrate db: %v", err)
-	}
+	database := testutil.OpenTestDB(t)
 
 	store := sqlstore.New(database)
 	tenant, err := store.EnsureTenant(ctx, repository.EnsureTenantParams{
@@ -306,7 +290,7 @@ func newTestMiddleware(
 		t.Cleanup(limiterSvc.Stop)
 	}
 
-	return New(store, limiterSvc, nil, nil, nil)
+	return New(nil, store, limiterSvc, nil, nil, nil)
 }
 
 func TestMiddlewareMetricsContracts(t *testing.T) {
@@ -387,23 +371,7 @@ func newTestMiddlewareWithMetrics(
 	t.Helper()
 
 	ctx := context.Background()
-	database, err := db.Open(config.DatabaseConfig{
-		Driver:                 "sqlite",
-		DSN:                    filepath.Join(t.TempDir(), "middleware-metrics.db"),
-		AutoMigrate:            true,
-		MaxOpenConns:           1,
-		MaxIdleConns:           1,
-		ConnMaxLifetimeSeconds: 60,
-	})
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = database.Close()
-	})
-	if err := database.Migrate(ctx); err != nil {
-		t.Fatalf("migrate db: %v", err)
-	}
+	database := testutil.OpenTestDB(t)
 
 	store := sqlstore.New(database)
 	tenant, err := store.EnsureTenant(ctx, repository.EnsureTenantParams{
@@ -435,5 +403,5 @@ func newTestMiddlewareWithMetrics(
 		t.Cleanup(limiterSvc.Stop)
 	}
 
-	return New(store, limiterSvc, nil, nil, metrics)
+	return New(nil, store, limiterSvc, nil, nil, metrics)
 }

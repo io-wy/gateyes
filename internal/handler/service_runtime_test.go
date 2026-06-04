@@ -17,6 +17,7 @@ func setupServiceRuntimeEnv(t *testing.T) (*handlerTestEnv, func()) {
 	t.Helper()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id":      "chatcmpl-upstream",
 			"object":  "chat.completion",
@@ -282,7 +283,7 @@ func TestServiceResponses_Stream(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	env := newHandlerTestEnv(t, handlerTestEnvConfig{upstreamURL: upstream.URL, endpoint: "chat"})
+	env := newHandlerTestEnv(t, handlerTestEnvConfig{upstreamURL: upstream.URL, endpoint: "responses"})
 	setupGreetingService(t, env)
 
 	rec := httptest.NewRecorder()

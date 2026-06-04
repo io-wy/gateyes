@@ -2,12 +2,11 @@ package sqlstore
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/gateyes/gateway/internal/config"
-	"github.com/gateyes/gateway/internal/db"
+	"github.com/gateyes/gateway/internal/testutil"
+
 	"github.com/gateyes/gateway/internal/repository"
 )
 
@@ -222,14 +221,14 @@ func TestProviderRegistryPersistsRuntimeConfig(t *testing.T) {
 		HealthStatus:  "healthy",
 		RoutingWeight: 4,
 		RuntimeConfig: &repository.ProviderRuntimeConfig{
-			APIKey:        "runtime-secret",
-			PriceInput:    0.1,
-			PriceOutput:   0.2,
-			MaxTokens:     256,
-			Timeout:       5,
-			Enabled:       true,
-			Headers:       map[string]string{"X-Test": "yes"},
-			ExtraBody:     map[string]any{"reasoning_effort": "medium"},
+			APIKey:      "runtime-secret",
+			PriceInput:  0.1,
+			PriceOutput: 0.2,
+			MaxTokens:   256,
+			Timeout:     5,
+			Enabled:     true,
+			Headers:     map[string]string{"X-Test": "yes"},
+			ExtraBody:   map[string]any{"reasoning_effort": "medium"},
 		},
 	}
 	if err := store.UpsertProviderRegistry(ctx, record); err != nil {
@@ -437,23 +436,7 @@ func TestResponsesAndUsagePersistence(t *testing.T) {
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 
-	database, err := db.Open(config.DatabaseConfig{
-		Driver:                 "sqlite",
-		DSN:                    filepath.Join(t.TempDir(), "sqlstore.db"),
-		AutoMigrate:            true,
-		MaxOpenConns:           4,
-		MaxIdleConns:           4,
-		ConnMaxLifetimeSeconds: 60,
-	})
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = database.Close()
-	})
-	if err := database.Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate db: %v", err)
-	}
+	database := testutil.OpenTestDB(t)
 
 	return New(database)
 }

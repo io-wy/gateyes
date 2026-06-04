@@ -8,15 +8,15 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gateyes/gateway/internal/testutil"
+
 	"github.com/gin-gonic/gin"
 
 	"github.com/gateyes/gateway/internal/config"
-	"github.com/gateyes/gateway/internal/db"
 	"github.com/gateyes/gateway/internal/middleware"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/repository/sqlstore"
@@ -417,21 +417,7 @@ func newGatewayE2EEnv(t *testing.T) *gatewayE2EEnv {
 	t.Cleanup(upstream.Close)
 
 	ctx := context.Background()
-	database, err := db.Open(config.DatabaseConfig{
-		Driver:                 "sqlite",
-		DSN:                    filepath.Join(t.TempDir(), "gateway-e2e.db"),
-		AutoMigrate:            true,
-		MaxOpenConns:           4,
-		MaxIdleConns:           4,
-		ConnMaxLifetimeSeconds: 60,
-	})
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = database.Close() })
-	if err := database.Migrate(ctx); err != nil {
-		t.Fatalf("migrate db: %v", err)
-	}
+	database := testutil.OpenTestDB(t)
 
 	store := sqlstore.New(database)
 	tenant, err := store.EnsureTenant(ctx, repository.EnsureTenantParams{
@@ -488,7 +474,7 @@ func newGatewayE2EEnv(t *testing.T) *gatewayE2EEnv {
 	})
 	t.Cleanup(limiterSvc.Stop)
 	budgetSvc := budget.New(store)
-	mw := middleware.New(store, limiterSvc, budgetSvc, nil, metrics)
+	mw := middleware.New(nil, store, limiterSvc, budgetSvc, nil, metrics)
 	responseService := responseSvc.New(&responseSvc.Dependencies{
 		Config:      cfgObj,
 		Store:       store,
@@ -551,6 +537,7 @@ func newGatewayE2EUpstream(t *testing.T) *httptest.Server {
 				_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 				return
 			}
+			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"id":         "up-resp",
 				"created_at": 1,
@@ -568,7 +555,7 @@ func newGatewayE2EUpstream(t *testing.T) *httptest.Server {
 				}},
 				"usage": map[string]any{"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
 			})
-		case "/v1/chat/completions":
+		case "/chat/completions":
 			if got := r.Header.Get("Authorization"); got != "Bearer upstream-key" {
 				t.Fatalf("chat auth = %q, want Bearer upstream-key", got)
 			}
@@ -580,6 +567,7 @@ func newGatewayE2EUpstream(t *testing.T) *httptest.Server {
 				return
 			}
 			if hasTools {
+				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(map[string]any{
 					"id":      "chat-tool-1",
 					"object":  "chat.completion",
@@ -609,6 +597,7 @@ func newGatewayE2EUpstream(t *testing.T) *httptest.Server {
 			if bytes.Contains(body, []byte("What is my name?")) {
 				content = "Your name is Alice."
 			}
+			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"id":      "chat-text-1",
 				"object":  "chat.completion",
@@ -655,6 +644,7 @@ func newGatewayE2EUpstream(t *testing.T) *httptest.Server {
 					"input": map[string]any{"city": "Shanghai"},
 				})
 			}
+			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"id":            "anth-msg-1",
 				"type":          "message",

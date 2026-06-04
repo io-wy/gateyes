@@ -31,6 +31,17 @@ type Config struct {
 	Providers      []ProviderConfig     `yaml:"providers"`
 	APIKeys        []APIKeyConfig       `yaml:"apiKeys"`
 	Admin          AdminConfig          `yaml:"admin"`
+	Plugins        PluginsConfig        `yaml:"plugins"`
+}
+
+// PluginsConfig configures the WASM plugin system.
+type PluginsConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	Directory  string `yaml:"directory"`
+	AutoReload bool   `yaml:"autoReload"`
+	// ReloadIntervalSeconds is the polling interval for auto-reload.
+	// Default is 30.
+	ReloadIntervalSeconds int `yaml:"reloadIntervalSeconds"`
 }
 
 // GuardrailConfig defines a single pre-/post-call validator. Currently
@@ -406,8 +417,8 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Server.ListenAddr) == "" {
 		return fmt.Errorf("server.listenAddr is required")
 	}
-	if !containsString([]string{"postgres", ""}, c.Database.Driver) {
-		return fmt.Errorf("unsupported database.driver (only postgres is supported): %s", c.Database.Driver)
+	if !containsString([]string{"postgres", "sqlite", ""}, c.Database.Driver) {
+		return fmt.Errorf("unsupported database.driver (only postgres or sqlite is supported): %s", c.Database.Driver)
 	}
 	if !containsString([]string{"round_robin", "random", "least_load", "least_tpm", "cost_based", "sticky", "ml_rank", ""}, c.Router.Strategy) {
 		return fmt.Errorf("unsupported router.strategy: %s", c.Router.Strategy)
@@ -481,6 +492,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Router.Affinity.SessionTTL < 0 || c.Router.Affinity.PrefixTTL < 0 || c.Router.Affinity.PrefixDepth < 0 {
 		return fmt.Errorf("router.affinity values must be >= 0")
+	}
+	if c.Plugins.ReloadIntervalSeconds < 0 {
+		return fmt.Errorf("plugins.reloadIntervalSeconds must be >= 0")
 	}
 	return nil
 }
@@ -570,6 +584,12 @@ func DefaultConfig() *Config {
 			DefaultTenant:   "default",
 			BootstrapKey:    "admin-key-001",
 			BootstrapSecret: "admin-secret-001",
+		},
+		Plugins: PluginsConfig{
+			Enabled:               false,
+			Directory:             "./plugins",
+			AutoReload:            true,
+			ReloadIntervalSeconds: 30,
 		},
 	}
 }

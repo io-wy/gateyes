@@ -18,6 +18,7 @@ import (
 
 func TestCreateReturnsQuotaExceededAfterUpstreamSuccess(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"chatcmpl-upstream","object":"chat.completion","created":1700000000,"model":"provider-model","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`))
 	}))
 	defer upstream.Close()
@@ -41,6 +42,7 @@ func TestCreateReturnsQuotaExceededAfterUpstreamSuccess(t *testing.T) {
 
 func TestCreateReturnsOutputBudgetTooLowWhenOnlyThinkingIsProduced(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"resp-upstream","created_at":1700000000,"model":"provider-model","status":"completed","output":[{"id":"msg-1","type":"message","role":"assistant","status":"completed","content":[{"type":"thinking","thinking":"internal reasoning","signature":"sig-1"}]}],"usage":{"input_tokens":3,"output_tokens":60,"total_tokens":63}}`))
 	}))
 	defer upstream.Close()
@@ -355,6 +357,7 @@ func TestPlanCandidatesCapturesKeyProviderScopeTrace(t *testing.T) {
 
 func TestCreatePersistsRouteTraceAndResponseObject(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"chatcmpl-upstream","object":"chat.completion","created":1700000000,"model":"provider-model","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`))
 	}))
 	defer upstream.Close()
