@@ -3,16 +3,24 @@ package provider
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/packages/param"
+	oairesponses "github.com/openai/openai-go/responses"
 )
 
-func buildOpenAIInput(messages []Message) []map[string]any {
-	items := make([]map[string]any, 0, len(messages))
+// --- Request builders: internal Message → SDK params ---
+
+func buildOpenAIInput(messages []Message) []oairesponses.ResponseInputItemUnionParam {
+	items := make([]oairesponses.ResponseInputItemUnionParam, 0, len(messages))
 	for _, message := range messages {
 		if message.ToolCallID != "" {
-			items = append(items, map[string]any{
-				"type":    "function_call_output",
-				"call_id": message.ToolCallID,
-				"output":  collectText(message.Content),
+			items = append(items, oairesponses.ResponseInputItemUnionParam{
+				OfFunctionCallOutput: &oairesponses.ResponseInputItemFunctionCallOutputParam{
+					CallID: message.ToolCallID,
+					Output: collectText(message.Content),
+					Type:   "function_call_output",
+				},
 			})
 			continue
 		}
@@ -22,54 +30,119 @@ func buildOpenAIInput(messages []Message) []map[string]any {
 			if role == "" {
 				role = "user"
 			}
-			items = append(items, map[string]any{
-				"role":    role,
-				"content": content,
+
+			contentParam := oairesponses.EasyInputMessageContentUnionParam{
+				OfInputItemContentList: content,
+			}
+			if len(content) == 1 && content[0].OfInputText != nil {
+				contentParam = oairesponses.EasyInputMessageContentUnionParam{
+					OfString: param.NewOpt(content[0].OfInputText.Text),
+				}
+			}
+
+			items = append(items, oairesponses.ResponseInputItemUnionParam{
+				OfMessage: &oairesponses.EasyInputMessageParam{
+					Role:    oairesponses.EasyInputMessageRole(role),
+					Content: contentParam,
+					Type:    "message",
+				},
 			})
 		}
 
 		for _, call := range message.ToolCalls {
-			items = append(items, map[string]any{
-				"type":      "function_call",
-				"id":        call.ID,
-				"call_id":   firstNonEmpty(call.ID, message.ToolCallID),
-				"name":      call.Function.Name,
-				"arguments": call.Function.Arguments,
+			items = append(items, oairesponses.ResponseInputItemUnionParam{
+				OfFunctionCall: &oairesponses.ResponseFunctionToolCallParam{
+					Arguments: call.Function.Arguments,
+					CallID:    firstNonEmpty(call.ID, message.ToolCallID),
+					Name:      call.Function.Name,
+					Type:      "function_call",
+				},
 			})
 		}
 	}
 	return items
 }
 
-// buildChatCompletionMessages creates messages for Chat Completions API (simple format)
-func buildChatCompletionMessages(messages []Message) []map[string]any {
-	result := make([]map[string]any, 0, len(messages))
+func buildChatCompletionMessages(messages []Message) []openai.ChatCompletionMessageParamUnion {
+	result := make([]openai.ChatCompletionMessageParamUnion, 0, len(messages))
 	for _, msg := range messages {
 		role := msg.Role
 		if role == "" {
 			role = "user"
 		}
-		content := buildChatCompletionMessageContent(msg.Content)
-		if content == nil {
+		if len(msg.Content) == 0 && len(msg.ToolCalls) == 0 && msg.ToolCallID == "" {
 			continue
 		}
-		entry := map[string]any{
-			"role":    role,
-			"content": content,
+
+		switch role {
+		case "system":
+			text := collectText(msg.Content)
+			if text != "" {
+				result = append(result, openai.SystemMessage(text))
+			}
+		case "developer":
+			text := collectText(msg.Content)
+			if text != "" {
+				result = append(result, openai.DeveloperMessage(text))
+			}
+		case "assistant":
+			result = append(result, buildChatCompletionAssistantMessage(msg))
+		case "tool":
+			if msg.ToolCallID != "" {
+				result = append(result, openai.ToolMessage(collectText(msg.Content), msg.ToolCallID))
+			}
+		default:
+			if hasImageBlocks(msg.Content) {
+				parts := make([]openai.ChatCompletionContentPartUnionParam, 0, len(msg.Content))
+				for _, block := range msg.Content {
+					if part, ok := buildChatCompletionContentPart(block); ok {
+						parts = append(parts, part)
+					}
+				}
+				if len(parts) > 0 {
+					result = append(result, openai.UserMessage(parts))
+				}
+			} else {
+				text := collectText(msg.Content)
+				if text != "" {
+					result = append(result, openai.UserMessage(text))
+				}
+			}
 		}
-		if msg.ToolCallID != "" {
-			entry["tool_call_id"] = msg.ToolCallID
-		}
-		if len(msg.ToolCalls) > 0 {
-			entry["tool_calls"] = msg.ToolCalls
-		}
-		result = append(result, entry)
 	}
 	return result
 }
 
-func buildOpenAIMessageContent(content []ContentBlock) []map[string]any {
-	parts := make([]map[string]any, 0, len(content))
+func buildChatCompletionAssistantMessage(msg Message) openai.ChatCompletionMessageParamUnion {
+	var toolCalls []openai.ChatCompletionMessageToolCallParam
+	for _, tc := range msg.ToolCalls {
+		toolCalls = append(toolCalls, openai.ChatCompletionMessageToolCallParam{
+			ID:   tc.ID,
+			Type: "function",
+			Function: openai.ChatCompletionMessageToolCallFunctionParam{
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments,
+			},
+		})
+	}
+
+	content := collectText(msg.Content)
+	var contentUnion openai.ChatCompletionAssistantMessageParamContentUnion
+	if content != "" {
+		contentUnion.OfString = param.NewOpt(content)
+	}
+
+	return openai.ChatCompletionMessageParamUnion{
+		OfAssistant: &openai.ChatCompletionAssistantMessageParam{
+			Role:      "assistant",
+			Content:   contentUnion,
+			ToolCalls: toolCalls,
+		},
+	}
+}
+
+func buildOpenAIMessageContent(content []ContentBlock) []oairesponses.ResponseInputContentUnionParam {
+	parts := make([]oairesponses.ResponseInputContentUnionParam, 0, len(content))
 	for _, item := range content {
 		part, ok := buildOpenAIContentPart(item)
 		if ok {
@@ -79,63 +152,41 @@ func buildOpenAIMessageContent(content []ContentBlock) []map[string]any {
 	return parts
 }
 
-func buildChatCompletionMessageContent(content []ContentBlock) any {
-	if len(content) == 0 {
-		return ""
-	}
-	if hasImageBlocks(content) {
-		parts := make([]map[string]any, 0, len(content))
-		for _, block := range content {
-			part, ok := buildChatCompletionContentPart(block)
-			if ok {
-				parts = append(parts, part)
-			}
-		}
-		return parts
-	}
-	return collectText(content)
-}
-
-func buildOpenAIContentPart(value ContentBlock) (map[string]any, bool) {
+func buildOpenAIContentPart(value ContentBlock) (oairesponses.ResponseInputContentUnionParam, bool) {
 	switch value.Type {
 	case "text", "output_text":
 		if value.Text == "" {
-			return nil, false
+			return oairesponses.ResponseInputContentUnionParam{}, false
 		}
-		return map[string]any{"type": "input_text", "text": value.Text}, true
+		return oairesponses.ResponseInputContentParamOfInputText(value.Text), true
 	case "thinking":
 		if value.Thinking == "" {
-			return nil, false
+			return oairesponses.ResponseInputContentUnionParam{}, false
 		}
-		return map[string]any{"type": "input_text", "text": value.Thinking}, true
+		return oairesponses.ResponseInputContentParamOfInputText(value.Thinking), true
 	case "refusal":
 		if value.Refusal == "" {
-			return nil, false
+			return oairesponses.ResponseInputContentUnionParam{}, false
 		}
-		return map[string]any{"type": "input_text", "text": value.Refusal}, true
+		return oairesponses.ResponseInputContentParamOfInputText(value.Refusal), true
 	case "image":
 		if value.Image == nil {
-			return nil, false
+			return oairesponses.ResponseInputContentUnionParam{}, false
 		}
+		img := &oairesponses.ResponseInputImageParam{Type: "input_image"}
 		if value.Image.URL != "" {
-			return map[string]any{
-				"type":      "input_image",
-				"image_url": value.Image.URL,
-			}, true
+			img.ImageURL = param.NewOpt(value.Image.URL)
+		} else if value.Image.Data != "" {
+			img.ImageURL = param.NewOpt("data:" + value.Image.MediaType + ";base64," + value.Image.Data)
 		}
-		if value.Image.Data != "" {
-			return map[string]any{
-				"type":         "input_image",
-				"image_base64": value.Image.Data,
-			}, true
-		}
+		return oairesponses.ResponseInputContentUnionParam{OfInputImage: img}, true
 	case "structured_output":
 		if value.Structured != nil && value.Structured.Data != nil {
 			raw, _ := json.Marshal(value.Structured.Data)
-			return map[string]any{"type": "input_text", "text": string(raw)}, true
+			return oairesponses.ResponseInputContentParamOfInputText(string(raw)), true
 		}
 	}
-	return nil, false
+	return oairesponses.ResponseInputContentUnionParam{}, false
 }
 
 func normalizeOpenAITextType(typeName string) string {
@@ -147,24 +198,24 @@ func normalizeOpenAITextType(typeName string) string {
 	}
 }
 
-func buildChatCompletionContentPart(value ContentBlock) (map[string]any, bool) {
+func buildChatCompletionContentPart(value ContentBlock) (openai.ChatCompletionContentPartUnionParam, bool) {
 	switch value.Type {
 	case "text", "output_text":
 		if value.Text == "" {
-			return nil, false
+			return openai.ChatCompletionContentPartUnionParam{}, false
 		}
-		return map[string]any{"type": "text", "text": value.Text}, true
+		return openai.TextContentPart(value.Text), true
 	case "image":
 		if value.Image == nil || value.Image.URL == "" {
-			return nil, false
+			return openai.ChatCompletionContentPartUnionParam{}, false
 		}
-		imageURL := map[string]any{"url": value.Image.URL}
+		imgURL := openai.ChatCompletionContentPartImageImageURLParam{URL: value.Image.URL}
 		if value.Image.Detail != "" {
-			imageURL["detail"] = value.Image.Detail
+			imgURL.Detail = value.Image.Detail
 		}
-		return map[string]any{"type": "image_url", "image_url": imageURL}, true
+		return openai.ImageContentPart(imgURL), true
 	default:
-		return nil, false
+		return openai.ChatCompletionContentPartUnionParam{}, false
 	}
 }
 
@@ -177,67 +228,8 @@ func hasImageBlocks(content []ContentBlock) bool {
 	return false
 }
 
-type openAIResponsePayload struct {
-	ID        string             `json:"id"`
-	Object    string             `json:"object"`
-	CreatedAt int64              `json:"created_at"`
-	Model     string             `json:"model"`
-	Status    string             `json:"status"`
-	Output    []openAIOutputItem `json:"output"`
-	Usage     struct {
-		InputTokens  int `json:"input_tokens"`
-		CachedTokens int `json:"cached_tokens"`
-		OutputTokens int `json:"output_tokens"`
-		TotalTokens  int `json:"total_tokens"`
-	} `json:"usage"`
-}
-
-// Chat Completions API response format
-type chatCompletionResponse struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	Model   string `json:"model"`
-	Choices []struct {
-		Index   int `json:"index"`
-		Message struct {
-			Role      string     `json:"role"`
-			Content   string     `json:"content"`
-			ToolCalls []ToolCall `json:"tool_calls"`
-		} `json:"message"`
-		FinishReason string `json:"finish_reason"`
-	} `json:"choices"`
-	Usage struct {
-		PromptTokens        int `json:"prompt_tokens"`
-		CompletionTokens    int `json:"completion_tokens"`
-		TotalTokens         int `json:"total_tokens"`
-		PromptTokensDetails struct {
-			CachedTokens int `json:"cached_tokens"`
-		} `json:"prompt_tokens_details"`
-	} `json:"usage"`
-}
-
-type openAIOutputItem struct {
-	ID        string `json:"id"`
-	Type      string `json:"type"`
-	Role      string `json:"role"`
-	Status    string `json:"status"`
-	CallID    string `json:"call_id"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-	Content   []struct {
-		Type      string `json:"type"`
-		Text      string `json:"text"`
-		Thinking  string `json:"thinking"`
-		Signature string `json:"signature"`
-		Refusal   string `json:"refusal"`
-	} `json:"content"`
-}
-
-// detectResponseFormat 检测响应格式：responses API vs chat completions
-// 通过检查响应 body 的结构特征来识别格式
+// detectResponseFormat detects responses API vs chat completions by response body structure.
 func detectResponseFormat(body []byte) string {
-	// 快速检查：responses API 有 output 字段，chat completions 有 choices 字段
 	var preview struct {
 		Output  json.RawMessage `json:"output"`
 		Choices json.RawMessage `json:"choices"`
@@ -246,17 +238,13 @@ func detectResponseFormat(body []byte) string {
 		return "unknown"
 	}
 
-	// 如果有 output 字段且无 choices，是 responses API
 	if len(preview.Output) > 0 && len(preview.Choices) == 0 {
 		return "responses"
 	}
-
-	// 如果有 choices 字段且无 output，是 chat completions
 	if len(preview.Choices) > 0 && len(preview.Output) == 0 {
 		return "chat"
 	}
 
-	// 如果两者都没有，检查 object 字段的典型值
 	var objCheck struct {
 		Object string `json:"object"`
 	}
@@ -269,7 +257,6 @@ func detectResponseFormat(body []byte) string {
 		}
 	}
 
-	// 最后的兜底：检查是否有 choices 数组（更精确）
 	var choicesCheck struct {
 		Choices []any `json:"choices"`
 	}
@@ -287,102 +274,18 @@ func detectResponseFormat(body []byte) string {
 	return "unknown"
 }
 
-func convertOpenAIResponse(raw openAIResponsePayload, requestedModel string) *Response {
-	output := make([]ResponseOutput, 0, len(raw.Output))
-	for _, item := range raw.Output {
-		converted := convertOpenAIOutputItem(item)
-		if converted == nil {
-			continue
-		}
-		output = append(output, *converted)
-	}
+// --- Response converters: SDK types → internal Response ---
 
+func convertSDKChatCompletion(resp openai.ChatCompletion, requestedModel string) *Response {
 	model := requestedModel
 	if model == "" {
-		model = raw.Model
-	}
-
-	return &Response{
-		ID:      raw.ID,
-		Object:  "response",
-		Created: raw.CreatedAt,
-		Model:   model,
-		Status:  raw.Status,
-		Output:  output,
-		Usage: Usage{
-			PromptTokens:     raw.Usage.InputTokens,
-			CompletionTokens: raw.Usage.OutputTokens,
-			TotalTokens:      raw.Usage.TotalTokens,
-			CachedTokens:     raw.Usage.CachedTokens,
-		},
-	}
-}
-
-func convertOpenAIOutputItem(item openAIOutputItem) *ResponseOutput {
-	switch item.Type {
-	case "message":
-		content := make([]ResponseContent, 0, len(item.Content))
-		for _, block := range item.Content {
-			switch block.Type {
-			case "thinking":
-				if block.Thinking == "" {
-					continue
-				}
-				content = append(content, ResponseContent{
-					Type:      "thinking",
-					Thinking:  block.Thinking,
-					Signature: block.Signature,
-				})
-			case "refusal":
-				if block.Refusal == "" {
-					continue
-				}
-				content = append(content, ResponseContent{
-					Type:    "refusal",
-					Refusal: block.Refusal,
-				})
-			default:
-				if block.Text == "" {
-					continue
-				}
-				content = append(content, ResponseContent{
-					Type: block.Type,
-					Text: block.Text,
-				})
-			}
-		}
-		return &ResponseOutput{
-			ID:      item.ID,
-			Type:    item.Type,
-			Role:    item.Role,
-			Status:  item.Status,
-			Content: content,
-		}
-	case "function_call":
-		return &ResponseOutput{
-			ID:     item.ID,
-			Type:   item.Type,
-			Status: item.Status,
-			CallID: firstNonEmpty(item.CallID, item.ID),
-			Name:   item.Name,
-			Args:   item.Arguments,
-		}
-	default:
-		return nil
-	}
-}
-
-func convertChatCompletionResponse(raw chatCompletionResponse, requestedModel string) *Response {
-	model := requestedModel
-	if model == "" {
-		model = raw.Model
+		model = resp.Model
 	}
 
 	var output []ResponseOutput
-	if len(raw.Choices) > 0 {
-		msg := raw.Choices[0].Message
+	if len(resp.Choices) > 0 {
+		msg := resp.Choices[0].Message
 
-		// Handle tool_calls
 		if len(msg.ToolCalls) > 0 {
 			for _, tc := range msg.ToolCalls {
 				output = append(output, ResponseOutput{
@@ -394,7 +297,6 @@ func convertChatCompletionResponse(raw chatCompletionResponse, requestedModel st
 			}
 		}
 
-		// Handle content
 		if msg.Content != "" {
 			output = append(output, ResponseOutput{
 				Type: "message",
@@ -406,16 +308,209 @@ func convertChatCompletionResponse(raw chatCompletionResponse, requestedModel st
 	}
 
 	return &Response{
-		ID:      raw.ID,
-		Object:  "chat.completion",
-		Created: raw.Created,
+		ID:      resp.ID,
+		Object:  "response",
+		Created: resp.Created,
 		Model:   model,
+		Status:  "completed",
 		Output:  output,
 		Usage: Usage{
-			PromptTokens:     raw.Usage.PromptTokens,
-			CompletionTokens: raw.Usage.CompletionTokens,
-			TotalTokens:      raw.Usage.TotalTokens,
-			CachedTokens:     raw.Usage.PromptTokensDetails.CachedTokens,
+			PromptTokens:     int(resp.Usage.PromptTokens),
+			CompletionTokens: int(resp.Usage.CompletionTokens),
+			TotalTokens:      int(resp.Usage.TotalTokens),
+			CachedTokens:     int(resp.Usage.PromptTokensDetails.CachedTokens),
 		},
 	}
+}
+
+func convertSDKResponse(resp oairesponses.Response, requestedModel string) *Response {
+	model := requestedModel
+	if model == "" {
+		model = string(resp.Model)
+	}
+
+	output := make([]ResponseOutput, 0, len(resp.Output))
+	for _, item := range resp.Output {
+		converted := convertSDKOutputItem(item)
+		if converted != nil {
+			output = append(output, *converted)
+		}
+	}
+
+	return &Response{
+		ID:      resp.ID,
+		Object:  "response",
+		Created: int64(resp.CreatedAt),
+		Model:   model,
+		Status:  string(resp.Status),
+		Output:  output,
+		Usage: Usage{
+			PromptTokens:     int(resp.Usage.InputTokens),
+			CompletionTokens: int(resp.Usage.OutputTokens),
+			TotalTokens:      int(resp.Usage.TotalTokens),
+			CachedTokens:     int(resp.Usage.InputTokensDetails.CachedTokens),
+		},
+	}
+}
+
+func convertSDKOutputItem(item oairesponses.ResponseOutputItemUnion) *ResponseOutput {
+	switch item.Type {
+	case "message":
+		content := make([]ResponseContent, 0, len(item.Content))
+		for _, block := range item.Content {
+			switch block.Type {
+			case "output_text":
+				if block.Text != "" {
+					content = append(content, ResponseContent{Type: "output_text", Text: block.Text})
+				}
+			case "refusal":
+				if block.Refusal != "" {
+					content = append(content, ResponseContent{Type: "refusal", Refusal: block.Refusal})
+				}
+			}
+		}
+		return &ResponseOutput{
+			ID:      item.ID,
+			Type:    "message",
+			Role:    string(item.Role),
+			Status:  item.Status,
+			Content: content,
+		}
+	case "function_call":
+		return &ResponseOutput{
+			ID:     item.ID,
+			Type:   "function_call",
+			CallID: item.CallID,
+			Name:   item.Name,
+			Args:   item.Arguments,
+		}
+	default:
+		return nil
+	}
+}
+
+// --- Stream parsers: SDK chunk/event types → ResponseEvent ---
+
+func parseSDKChatCompletionChunk(chunk openai.ChatCompletionChunk, requestedModel string) *ResponseEvent {
+	// Handle usage-only chunks (stream_options: {"include_usage": true})
+	if len(chunk.Choices) == 0 {
+		if chunk.Usage.TotalTokens > 0 {
+			return &ResponseEvent{
+				Type: EventContentDelta,
+				Usage: &Usage{
+					PromptTokens:     int(chunk.Usage.PromptTokens),
+					CompletionTokens: int(chunk.Usage.CompletionTokens),
+					TotalTokens:      int(chunk.Usage.TotalTokens),
+				},
+			}
+		}
+		return nil
+	}
+
+	choice := chunk.Choices[0]
+	delta := choice.Delta
+
+	text := delta.Content
+	toolCalls := make([]ToolCall, 0, len(delta.ToolCalls))
+	for _, tc := range delta.ToolCalls {
+		toolCalls = append(toolCalls, ToolCall{
+			ID:   tc.ID,
+			Type: string(tc.Type),
+			Function: FunctionCall{
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments,
+			},
+		})
+	}
+
+	if text == "" && len(toolCalls) == 0 && choice.FinishReason == "" && chunk.Usage.TotalTokens == 0 {
+		return nil
+	}
+
+	event := ResponseEvent{
+		Type:      EventContentDelta,
+		Delta:     text,
+		TextDelta: text,
+	}
+	if len(toolCalls) > 0 {
+		event.ToolCalls = toolCalls
+	}
+	if choice.FinishReason != "" {
+		event.FinishReason = choice.FinishReason
+	}
+	if chunk.Usage.TotalTokens > 0 {
+		event.Usage = &Usage{
+			PromptTokens:     int(chunk.Usage.PromptTokens),
+			CompletionTokens: int(chunk.Usage.CompletionTokens),
+			TotalTokens:      int(chunk.Usage.TotalTokens),
+		}
+	}
+	return &event
+}
+
+func parseSDKResponseStreamEvent(event oairesponses.ResponseStreamEventUnion, requestedModel string) (*ResponseEvent, error) {
+	switch variant := event.AsAny().(type) {
+	case oairesponses.ResponseTextDeltaEvent:
+		if variant.Delta == "" {
+			return nil, nil
+		}
+		return &ResponseEvent{
+			Type:      EventContentDelta,
+			Delta:     variant.Delta,
+			TextDelta: variant.Delta,
+		}, nil
+	case oairesponses.ResponseOutputItemDoneEvent:
+		output := convertSDKOutputItem(variant.Item)
+		if output == nil {
+			return nil, nil
+		}
+		return &ResponseEvent{
+			Type:   EventToolCallDone,
+			Output: output,
+		}, nil
+	case oairesponses.ResponseCompletedEvent:
+		return &ResponseEvent{
+			Type:     EventResponseCompleted,
+			Response: convertSDKResponse(variant.Response, requestedModel),
+		}, nil
+	case oairesponses.ResponseErrorEvent:
+		msg := variant.Message
+		if msg == "" {
+			msg = "upstream response failed"
+		}
+		return nil, newProviderUpstreamMessageError(msg)
+	case oairesponses.ResponseRefusalDeltaEvent:
+		if variant.Delta == "" {
+			return nil, nil
+		}
+		return &ResponseEvent{
+			Type:      EventContentDelta,
+			Delta:     variant.Delta,
+			TextDelta: variant.Delta,
+		}, nil
+	default:
+		return nil, nil
+	}
+}
+
+// --- Extra-body helper: merge arbitrary fields into SDK params via JSON round-trip ---
+
+func mergeExtraBody(params any, extraBody map[string]any) error {
+	if len(extraBody) == 0 {
+		return nil
+	}
+	body, err := json.Marshal(params)
+	if err != nil {
+		return err
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return err
+	}
+	mergeAnyMap(payload, extraBody)
+	body, err = json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(body, params)
 }

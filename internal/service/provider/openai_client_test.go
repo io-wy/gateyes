@@ -11,7 +11,9 @@ import (
 
 func TestOpenAIClientAdditionalErrorBranches(t *testing.T) {
 	statusServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "upstream boom", http.StatusBadGateway)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"error":{"message":"upstream boom"}}`))
 	}))
 	defer statusServer.Close()
 
@@ -32,6 +34,7 @@ func TestOpenAIClientAdditionalErrorBranches(t *testing.T) {
 	}
 
 	chatServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"chat-1","object":"chat.completion","created":1,"model":"provider-model","choices":[{"message":{"role":"assistant","content":"hello chat"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`))
 	}))
 	defer chatServer.Close()
@@ -54,6 +57,7 @@ func TestOpenAIClientAdditionalErrorBranches(t *testing.T) {
 	}
 
 	badJSONServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"id":`))
 	}))

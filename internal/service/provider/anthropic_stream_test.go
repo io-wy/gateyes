@@ -1,8 +1,11 @@
 package provider
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/anthropics/anthropic-sdk-go"
 )
 
 func TestAnthropicStreamStateAndEventBranches(t *testing.T) {
@@ -14,96 +17,86 @@ func TestAnthropicStreamStateAndEventBranches(t *testing.T) {
 		t.Fatalf("applyContentBlock() outputs = %+v, want message + function_call", state.outputs)
 	}
 
-	start := parseAnthropicStreamEvent("message_start", `{"message":{"id":"resp-2","content":[{"type":"text","text":"prefill"}],"usage":{"input_tokens":2,"cache_hit_input_tokens":1}}}`, state)
-	if start != nil {
-		t.Fatalf("parseAnthropicStreamEvent(message_start) = %+v, want nil", start)
+	// Test message_start event
+	var msgStart anthropic.MessageStreamEventUnion
+	_ = json.Unmarshal([]byte(`{"type":"message_start","message":{"id":"resp-2","content":[{"type":"text","text":"prefill"}],"usage":{"input_tokens":2,"cache_read_input_tokens":1}}}`), &msgStart)
+	event := handleAnthropicStreamEvent(msgStart, state)
+	if event != nil {
+		t.Fatalf("handleAnthropicStreamEvent(message_start) = %+v, want nil", event)
 	}
 	if state.responseID != "resp-2" || state.promptTokens != 2 || state.cachedTokens != 1 {
 		t.Fatalf("message_start state = %+v, want response id and usage updated", state)
 	}
 
-	if event := parseAnthropicStreamEvent("content_block_start", `{"content_block":{"type":"thinking","thinking":"deep","signature":"sig-2"}}`, state); event == nil || event.Type != EventThinkingDelta {
-		t.Fatalf("content_block_start(thinking) = %+v, want thinking delta", event)
-	}
-	if event := parseAnthropicStreamEvent("content_block_start", `{"content_block":{"type":"text","text":"hello again"}}`, state); event == nil || event.Type != EventContentDelta || event.Text() != "hello again" {
-		t.Fatalf("content_block_start(text) = %+v, want text delta", event)
-	}
-	if event := parseAnthropicStreamEvent("content_block_start", `{"content_block":{"type":"tool_use","id":"tool-2","name":"lookup","input":{"city":"Beijing"}}}`, state); event != nil {
-		t.Fatalf("content_block_start(tool_use) = %+v, want nil while opening tool", event)
-	}
-	if event := parseAnthropicStreamEvent("content_block_stop", `{}`, state); event == nil || event.Type != EventToolCallDone || event.Output == nil || event.Output.Name != "lookup" {
-		t.Fatalf("content_block_stop(active tool) = %+v, want tool_call_done", event)
+	// Test content_block_start with thinking
+	var thinkingStart anthropic.MessageStreamEventUnion
+	_ = json.Unmarshal([]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"deep","signature":"sig-2"}}`), &thinkingStart)
+	if event := handleAnthropicStreamEvent(thinkingStart, state); event == nil || event.Type != EventThinkingDelta {
+		t.Fatalf("handleAnthropicStreamEvent(thinking start) = %+v, want thinking delta", event)
 	}
 
+	// Test content_block_start with text
+	var textStart anthropic.MessageStreamEventUnion
+	_ = json.Unmarshal([]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"hello again"}}`), &textStart)
+	if event := handleAnthropicStreamEvent(textStart, state); event == nil || event.Type != EventContentDelta || event.Text() != "hello again" {
+		t.Fatalf("handleAnthropicStreamEvent(text start) = %+v, want text delta", event)
+	}
+
+	// Test content_block_start with tool_use (opens active tool)
+	var toolStart anthropic.MessageStreamEventUnion
+	_ = json.Unmarshal([]byte(`{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tool-2","name":"lookup","input":{"city":"Beijing"}}}`), &toolStart)
+	if event := handleAnthropicStreamEvent(toolStart, state); event != nil {
+		t.Fatalf("handleAnthropicStreamEvent(tool_use start) = %+v, want nil while opening tool", event)
+	}
+
+	// Test content_block_stop (closes active tool)
+	var toolStop anthropic.MessageStreamEventUnion
+	_ = json.Unmarshal([]byte(`{"type":"content_block_stop","index":1}`), &toolStop)
+	if event := handleAnthropicStreamEvent(toolStop, state); event == nil || event.Type != EventToolCallDone || event.Output == nil || event.Output.Name != "lookup" {
+		t.Fatalf("handleAnthropicStreamEvent(tool_use stop) = %+v, want tool_call_done", event)
+	}
+
+	// Test content_block_delta with partial_json
 	state.activeTool = &ResponseOutput{Type: "function_call", Args: "{"}
-	if event := parseAnthropicStreamEvent("content_block_delta", `{"delta":{"partial_json":"\"city\":\"Shanghai\"}"}}`, state); event != nil {
-		t.Fatalf("content_block_delta(partial_json) = %+v, want nil while appending tool args", event)
+	var partialJSON anthropic.MessageStreamEventUnion
+	_ = json.Unmarshal([]byte(`{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"city\":\"Shanghai\"}"}}`), &partialJSON)
+	if event := handleAnthropicStreamEvent(partialJSON, state); event != nil {
+		t.Fatalf("handleAnthropicStreamEvent(partial_json) = %+v, want nil while appending tool args", event)
 	}
 	if !strings.Contains(state.activeTool.Args, `"city":"Shanghai"`) {
 		t.Fatalf("partial_json active tool args = %q, want appended json fragment", state.activeTool.Args)
 	}
 
-	if event := parseAnthropicStreamEvent("message_delta", `{"content":"done","usage":{"output_tokens":4}}`, state); event == nil || event.Text() != "done" {
-		t.Fatalf("message_delta(content) = %+v, want content delta", event)
-	}
-	if state.completionTokens != 0 {
-		t.Fatalf("message_delta(content) completion tokens = %d, want unchanged on content branch", state.completionTokens)
-	}
-	if event := parseAnthropicStreamEvent("message_delta", `{"usage":{"output_tokens":4}}`, state); event != nil {
-		t.Fatalf("message_delta(usage only) = %+v, want nil", event)
+	// Test message_delta
+	var msgDelta anthropic.MessageStreamEventUnion
+	_ = json.Unmarshal([]byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}`), &msgDelta)
+	if event := handleAnthropicStreamEvent(msgDelta, state); event != nil {
+		t.Fatalf("handleAnthropicStreamEvent(message_delta) = %+v, want nil", event)
 	}
 	if state.completionTokens != 4 {
-		t.Fatalf("message_delta(usage only) completion tokens = %d, want 4", state.completionTokens)
-	}
-	if event := parseAnthropicStreamEvent("message_delta", `{"delta":{"text":"delta text"}}`, state); event == nil || event.Text() != "delta text" {
-		t.Fatalf("message_delta(delta.text) = %+v, want text delta", event)
+		t.Fatalf("message_delta completion tokens = %d, want 4", state.completionTokens)
 	}
 
-	if event := parseAnthropicStreamEvent("ping", `{}`, state); event != nil {
-		t.Fatalf("ping event = %+v, want nil", event)
+	// Test message_stop
+	var msgStop anthropic.MessageStreamEventUnion
+	_ = json.Unmarshal([]byte(`{"type":"message_stop"}`), &msgStop)
+	if event := handleAnthropicStreamEvent(msgStop, state); event == nil || event.Type != EventResponseCompleted {
+		t.Fatalf("handleAnthropicStreamEvent(message_stop) = %+v, want completed response", event)
 	}
-	if event := parseAnthropicStreamEvent("", `{"type":"message_stop"}`, state); event == nil || event.Type != EventResponseCompleted {
-		t.Fatalf("parseAnthropicStreamEvent(empty eventName) = %+v, want event.Type fallback", event)
-	}
-	if event := parseAnthropicStreamEvent("text_block", `{"text":"legacy text"}`, state); event == nil || event.Text() != "legacy text" {
-		t.Fatalf("text_block event = %+v, want legacy text delta", event)
-	}
-	if event := parseAnthropicStreamEvent("content_block_stop", `{}`, &anthropicStreamState{}); event != nil {
-		t.Fatalf("content_block_stop(no active tool) = %+v, want nil", event)
-	}
-	if event := parseAnthropicStreamEvent("message_stop", `{}`, state); event == nil || event.Type != EventResponseCompleted {
-		t.Fatalf("message_stop event = %+v, want completed response event", event)
+
+	// Test content_block_stop with no active tool
+	var toolStopNoActive anthropic.MessageStreamEventUnion
+	_ = json.Unmarshal([]byte(`{"type":"content_block_stop","index":0}`), &toolStopNoActive)
+	if event := handleAnthropicStreamEvent(toolStopNoActive, &anthropicStreamState{}); event != nil {
+		t.Fatalf("handleAnthropicStreamEvent(content_block_stop no tool) = %+v, want nil", event)
 	}
 }
 
-func TestAnthropicParseStreamErrorAndEOFCompletion(t *testing.T) {
-	p := &anthropicProvider{}
-
-	errCh := make(chan error, 1)
-	result := make(chan ResponseEvent, 10)
-	p.parseStream(strings.NewReader("data: {\"type\":\"error\",\"error\":{\"message\":\"boom\"}}\n\n"), result, errCh, "claude-test")
-	select {
-	case err := <-errCh:
-		if err == nil || err.Error() != "upstream error: 0 boom" {
-			t.Fatalf("parseStream(error frame) err = %v, want boom upstream error", err)
-		}
-	default:
-		t.Fatal("parseStream(error frame) err channel empty, want boom")
-	}
-
-	errCh = make(chan error, 1)
-	result = make(chan ResponseEvent, 10)
-	body := "event: message_start\n" +
-		"data: {\"message\":{\"id\":\"resp-1\",\"usage\":{\"input_tokens\":2}}}\n\n" +
-		"event: content_block_delta\n" +
-		"data: {\"delta\":{\"text\":\"hello\"}}\n"
-	p.parseStream(strings.NewReader(body), result, errCh, "claude-test")
-	close(result)
-	var events []ResponseEvent
-	for event := range result {
-		events = append(events, event)
-	}
-	if len(events) == 0 || events[len(events)-1].Type != EventResponseCompleted {
-		t.Fatalf("parseStream(EOF completion) events = %+v, want terminal completed event", events)
+func TestHandleAnthropicStreamEventUnknownType(t *testing.T) {
+	state := &anthropicStreamState{responseID: "resp-1", model: "claude-test"}
+	var ping anthropic.MessageStreamEventUnion
+	_ = json.Unmarshal([]byte(`{"type":"ping"}`), &ping)
+	if event := handleAnthropicStreamEvent(ping, state); event != nil {
+		t.Fatalf("handleAnthropicStreamEvent(ping) = %+v, want nil", event)
 	}
 }

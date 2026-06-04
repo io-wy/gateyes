@@ -65,6 +65,33 @@ func setDefaultPayloadValue(payload map[string]any, key string, value any) {
 	payload[key] = cloneAnyValue(value)
 }
 
+func buildExtraBody(cfg config.ProviderConfig) map[string]any {
+	extra := make(map[string]any)
+	for k, v := range cfg.ExtraBody {
+		extra[k] = v
+	}
+	vendor := strings.ToLower(strings.TrimSpace(cfg.Vendor))
+	if vendor == "" {
+		return extra
+	}
+	typ := strings.ToLower(strings.TrimSpace(cfg.Type))
+	switch typ {
+	case "openai", "azure", "":
+		switch vendor {
+		case "vllm":
+			setDefaultPayloadValue(extra, "top_k", -1)
+		case "ollama":
+			setDefaultPayloadValue(extra, "stream_options", map[string]any{"include_usage": true})
+		}
+	case "anthropic":
+		switch vendor {
+		case "minimax":
+			setDefaultPayloadValue(extra, "stream_options", map[string]any{"include_usage": true})
+		}
+	}
+	return extra
+}
+
 func mergeAnyMap(dst map[string]any, src map[string]any) {
 	if dst == nil || len(src) == 0 {
 		return

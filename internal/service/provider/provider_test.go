@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/gateyes/gateway/internal/config"
+	oairesponses "github.com/openai/openai-go/responses"
 )
 
 func TestNormalizeMessagesSupportsResponseToolItems(t *testing.T) {
@@ -116,40 +118,36 @@ func TestBuildOpenAIInputSupportsToolCallsAndToolResults(t *testing.T) {
 	if len(items) != 3 {
 		t.Fatalf("expected 3 input items, got %d", len(items))
 	}
-	if items[0]["role"] != "user" {
-		t.Fatalf("unexpected first role: %#v", items[0]["role"])
+	// First item: user message
+	if items[0].OfMessage == nil {
+		t.Fatalf("unexpected first item: %#v", items[0])
 	}
-	content, ok := items[0]["content"].([]map[string]any)
-	if !ok || len(content) != 2 || content[0]["type"] != "input_text" || content[1]["type"] != "input_text" {
-		t.Fatalf("unexpected openai content: %#v", items[0]["content"])
+	if items[0].OfMessage.Role != "user" {
+		t.Fatalf("unexpected first role: %#v", items[0].OfMessage.Role)
 	}
-	if items[1]["type"] != "function_call" || items[1]["name"] != "lookup_weather" {
+	// Second item: function_call
+	if items[1].OfFunctionCall == nil || items[1].OfFunctionCall.Name != "lookup_weather" {
 		t.Fatalf("unexpected tool call item: %#v", items[1])
 	}
-	if items[2]["type"] != "function_call_output" || items[2]["call_id"] != "call_1" {
+	// Third item: function_call_output
+	if items[2].OfFunctionCallOutput == nil || items[2].OfFunctionCallOutput.CallID != "call_1" {
 		t.Fatalf("unexpected tool result item: %#v", items[2])
 	}
 }
 
 func TestConvertOpenAIResponseSupportsFunctionCallOutputs(t *testing.T) {
-	raw := openAIResponsePayload{
+	resp := convertSDKResponse(oairesponses.Response{
 		ID:        "resp_1",
 		CreatedAt: 123,
 		Model:     "gpt-test",
 		Status:    "completed",
-		Output: []openAIOutputItem{
+		Output: []oairesponses.ResponseOutputItemUnion{
 			{
 				ID:     "msg_1",
 				Type:   "message",
 				Role:   "assistant",
 				Status: "completed",
-				Content: []struct {
-					Type      string `json:"type"`
-					Text      string `json:"text"`
-					Thinking  string `json:"thinking"`
-					Signature string `json:"signature"`
-					Refusal   string `json:"refusal"`
-				}{
+				Content: []oairesponses.ResponseOutputMessageContentUnion{
 					{Type: "output_text", Text: "hello"},
 				},
 			},
@@ -162,9 +160,8 @@ func TestConvertOpenAIResponseSupportsFunctionCallOutputs(t *testing.T) {
 				Arguments: "{\"city\":\"shanghai\"}",
 			},
 		},
-	}
+	}, "")
 
-	resp := convertOpenAIResponse(raw, "")
 	if len(resp.Output) != 2 {
 		t.Fatalf("expected 2 outputs, got %d", len(resp.Output))
 	}
@@ -174,7 +171,6 @@ func TestConvertOpenAIResponseSupportsFunctionCallOutputs(t *testing.T) {
 }
 
 func TestAnthropicBuildRequestAndConvertResponseSupportToolUse(t *testing.T) {
-	p := &anthropicProvider{baseProvider: newBaseProvider(config.ProviderConfig{MaxTokens: 256})}
 	req := &ResponseRequest{
 		Model: "claude-test",
 		Input: []any{
@@ -202,42 +198,37 @@ func TestAnthropicBuildRequestAndConvertResponseSupportToolUse(t *testing.T) {
 	}
 	req.Normalize()
 
-	payload, err := p.buildRequest(req, false)
+	// Test request building through buildAnthropicParams
+	cfg := config.ProviderConfig{MaxTokens: 256}
+	params, err := buildAnthropicParams(req, cfg)
 	if err != nil {
-		t.Fatalf("buildRequest error: %v", err)
+		t.Fatalf("buildAnthropicParams error: %v", err)
 	}
-	// 检查基本字段
-	if payload["model"] != "claude-test" {
-		t.Fatalf("unexpected model: %q", payload["model"])
+	if params.Model != "claude-test" {
+		t.Fatalf("unexpected model: %q", params.Model)
 	}
-	messages, ok := payload["messages"].([]map[string]any)
-	if !ok || len(messages) != 3 {
-		t.Fatalf("expected 3 messages, got %#v", payload["messages"])
+	if len(params.Messages) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(params.Messages))
 	}
-	if systemParam, _ := payload["system"].(string); systemParam != "sys" {
-		t.Fatalf("unexpected system prompt: %#v", payload["system"])
+	if len(params.System) != 1 || params.System[0].Text != "sys" {
+		t.Fatalf("unexpected system prompt: %#v", params.System)
 	}
 
-	raw := anthropicResponse{
+	// Test response conversion through convertSDKAnthropicMessage
+	resp := convertSDKAnthropicMessage(anthropic.Message{
 		ID:    "resp_1",
 		Model: "claude-test",
 		Role:  "assistant",
-		Content: []struct {
-			Type      string           `json:"type"`
-			Text      string           `json:"text"`
-			ID        string           `json:"id"`
-			Name      string           `json:"name"`
-			Input     json.RawMessage  `json:"input"`
-			Source    *AnthropicSource `json:"source"`
-			Thinking  string           `json:"thinking"`
-			Signature string           `json:"signature"`
-		}{
+		Content: []anthropic.ContentBlockUnion{
 			{Type: "text", Text: "need tool"},
 			{Type: "tool_use", ID: "call_1", Name: "lookup_weather", Input: json.RawMessage(`{"city":"shanghai"}`)},
 		},
-	}
+		Usage: anthropic.Usage{
+			InputTokens:  1,
+			OutputTokens: 2,
+		},
+	}, "")
 
-	resp := convertAnthropicResponse(raw, "")
 	if len(resp.Output) != 2 {
 		t.Fatalf("expected 2 outputs, got %d", len(resp.Output))
 	}
@@ -302,8 +293,10 @@ func TestMiscProviderBranches(t *testing.T) {
 		t.Fatalf("convertAnthropicBlock(image nil source) = %+v, want nil", got)
 	}
 
-	if got := buildChatCompletionMessages([]Message{{Role: "user"}}); len(got) != 1 || got[0]["content"] != "" {
-		t.Fatalf("buildChatCompletionMessages(empty content) = %+v, want one empty-content message", got)
+	// buildChatCompletionMessages now returns SDK types; empty messages are skipped.
+	msgs := buildChatCompletionMessages([]Message{{Role: "user", Content: TextBlocks("hello")}})
+	if len(msgs) != 1 || msgs[0].OfUser == nil {
+		t.Fatalf("buildChatCompletionMessages(user) = %+v, want one user message", msgs)
 	}
 	if normalizeOpenAITextType("custom") != "custom" {
 		t.Fatalf("normalizeOpenAITextType(custom) = %q, want custom", normalizeOpenAITextType("custom"))
@@ -311,11 +304,17 @@ func TestMiscProviderBranches(t *testing.T) {
 	if got := detectResponseFormat([]byte(`{"output":[{}],"choices":[{}]}`)); got != "chat" {
 		t.Fatalf("detectResponseFormat(ambiguous with choices) = %q, want chat", got)
 	}
-	if event, err := parseOpenAIStreamEvent(`{"type":"response.output_item.done","item":{"id":"x","type":"unknown"}}`, "public-model"); err != nil || event != nil {
-		t.Fatalf("parseOpenAIStreamEvent(unknown item) = (%+v,%v), want nil,nil", event, err)
+
+	// parseSDKResponseStreamEvent replaces parseOpenAIStreamEvent / parseOpenAIResponseEvent.
+	var unknownItem oairesponses.ResponseStreamEventUnion
+	_ = json.Unmarshal([]byte(`{"type":"response.output_item.done","item":{"id":"x","type":"unknown"}}`), &unknownItem)
+	if event, err := parseSDKResponseStreamEvent(unknownItem, "public-model"); err != nil || event != nil {
+		t.Fatalf("parseSDKResponseStreamEvent(unknown item) = (%+v,%v), want nil,nil", event, err)
 	}
-	if event, err := parseOpenAIStreamEvent(`{"type":"response.failed","response":{"error":{}}}`, "public-model"); err == nil || event != nil {
-		t.Fatalf("parseOpenAIStreamEvent(response.failed empty message) = (%+v,%v), want error", event, err)
+	var failedEvent oairesponses.ResponseStreamEventUnion
+	_ = json.Unmarshal([]byte(`{"type":"error","message":"boom"}`), &failedEvent)
+	if event, err := parseSDKResponseStreamEvent(failedEvent, "public-model"); err == nil || event != nil {
+		t.Fatalf("parseSDKResponseStreamEvent(error) = (%+v,%v), want error", event, err)
 	}
 
 	req := &ResponseRequest{

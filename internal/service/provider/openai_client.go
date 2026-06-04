@@ -1,190 +1,306 @@
 package provider
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"io"
-	"net/http"
+	"errors"
+	"fmt"
 	"strings"
+
+	"github.com/openai/openai-go"
+	oairesponses "github.com/openai/openai-go/responses"
+	"github.com/openai/openai-go/option"
 
 	"github.com/gateyes/gateway/internal/config"
 )
 
 type openAIProvider struct {
 	baseProvider
+	client openai.Client
 }
 
 func NewOpenAIProvider(cfg config.ProviderConfig) Provider {
+	bp := newBaseProvider(cfg)
+
+	opts := []option.RequestOption{
+		option.WithBaseURL(cfg.BaseURL),
+		option.WithAPIKey(cfg.APIKey),
+		option.WithMaxRetries(0),
+	}
+
+	for k, v := range cfg.Headers {
+		if strings.TrimSpace(k) != "" && v != "" {
+			opts = append(opts, option.WithHeader(k, v))
+		}
+	}
+
+	if vendor := strings.TrimSpace(cfg.Vendor); vendor != "" {
+		opts = append(opts, option.WithHeader("X-Gateyes-Vendor", vendor))
+	}
+
+	client := openai.NewClient(opts...)
+
 	return &openAIProvider{
-		baseProvider: newBaseProvider(cfg),
+		baseProvider: bp,
+		client:       client,
 	}
 }
 
 func (p *openAIProvider) CreateResponse(ctx context.Context, req *ResponseRequest) (*Response, error) {
-	httpReq, err := p.newRequest(ctx, req, false)
+	switch endpoint := strings.TrimSpace(p.cfg.Endpoint); endpoint {
+	case "responses":
+		return p.createResponses(ctx, req)
+	case "", "chat":
+		return p.createChatCompletion(ctx, req)
+	default:
+		return p.createChatCompletion(ctx, req)
+	}
+}
+
+func (p *openAIProvider) createChatCompletion(ctx context.Context, req *ResponseRequest) (*Response, error) {
+	params, err := p.toChatCompletionParams(req)
 	if err != nil {
 		return nil, err
 	}
 
-	httpResp, err := p.client.Do(httpReq)
+	resp, err := p.client.Chat.Completions.New(ctx, params)
 	if err != nil {
-		return nil, newProviderTransportError("provider.openai.create_response", err)
-	}
-	defer httpResp.Body.Close()
-
-	if httpResp.StatusCode != http.StatusOK {
-		return nil, newUpstreamStatusError(httpResp)
+		return nil, p.mapError(err)
 	}
 
-	bodyBytes, err := io.ReadAll(httpResp.Body)
+	return convertSDKChatCompletion(*resp, req.Model), nil
+}
+
+func (p *openAIProvider) createResponses(ctx context.Context, req *ResponseRequest) (*Response, error) {
+	params, err := p.toResponseParams(req)
 	if err != nil {
-		return nil, newProviderParseError("provider.openai.read_response", err, "read upstream response body")
+		return nil, err
 	}
 
-	switch detectResponseFormat(bodyBytes) {
-	case "chat":
-		var raw chatCompletionResponse
-		if err := json.Unmarshal(bodyBytes, &raw); err != nil {
-			return nil, newProviderParseError("provider.openai.parse_chat_response", err, "decode chat completion response")
-		}
-		return convertChatCompletionResponse(raw, req.Model), nil
-	case "responses":
-		var raw openAIResponsePayload
-		if err := json.Unmarshal(bodyBytes, &raw); err != nil {
-			return nil, newProviderParseError("provider.openai.parse_response", err, "decode responses payload")
-		}
-		return convertOpenAIResponse(raw, req.Model), nil
-	default:
-		return p.parseFallbackResponse(bodyBytes, req.Model)
-	}
-}
-
-func (p *openAIProvider) parseFallbackResponse(body []byte, requestedModel string) (*Response, error) {
-	var raw openAIResponsePayload
-	if err := json.Unmarshal(body, &raw); err == nil {
-		return convertOpenAIResponse(raw, requestedModel), nil
-	}
-
-	var chatRaw chatCompletionResponse
-	if err := json.Unmarshal(body, &chatRaw); err != nil {
-		return nil, newProviderParseError("provider.openai.parse_fallback_response", err, "unable to parse upstream response")
-	}
-	return convertChatCompletionResponse(chatRaw, requestedModel), nil
-}
-
-func (p *openAIProvider) newRequest(ctx context.Context, req *ResponseRequest, stream bool) (*http.Request, error) {
-	path, payload := p.requestPathAndPayload(req, stream)
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, joinOpenAIPath(p.cfg.BaseURL, path), nil)
+	resp, err := p.client.Responses.New(ctx, params)
 	if err != nil {
-		return nil, newProviderConfigError("provider.openai.new_request", err.Error())
+		return nil, p.mapError(err)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
-	if tc, ok := traceContextFromContext(ctx); ok {
-		httpReq.Header.Set("X-Request-ID", tc.RequestID)
-		httpReq.Header.Set("traceparent", tc.Traceparent)
-	}
-	applyProviderProfile(p.cfg, payload, httpReq.Header)
 
-	body, _ := json.Marshal(payload)
-	httpReq.Body = io.NopCloser(bytes.NewReader(body))
-	httpReq.ContentLength = int64(len(body))
-	return httpReq, nil
+	return convertSDKResponse(*resp, req.Model), nil
 }
 
-func (p *openAIProvider) requestPathAndPayload(req *ResponseRequest, stream bool) (string, map[string]any) {
-	switch endpoint := strings.TrimSpace(p.cfg.Endpoint); endpoint {
-	case "responses":
-		payload := map[string]any{
-			"model":  req.Model,
-			"input":  buildOpenAIInput(req.InputMessages()),
-			"stream": stream,
-		}
-		if maxTokens := req.RequestedMaxTokens(); maxTokens > 0 {
-			payload["max_output_tokens"] = maxTokens
-		}
-		if len(req.Tools) > 0 {
-			payload["tools"] = req.Tools
-		}
-		if req.OutputFormat != nil && len(req.OutputFormat.Raw) > 0 {
-			payload["response_format"] = req.OutputFormat.Raw
-		}
-		return "/responses", payload
-	case "", "chat":
-		return "/v1/chat/completions", buildOpenAIChatPayload(req, stream)
-	default:
-		return endpoint, buildOpenAIChatPayload(req, stream)
-	}
-}
-
-func buildOpenAIChatPayload(req *ResponseRequest, stream bool) map[string]any {
-	payload := map[string]any{
-		"model":    req.Model,
-		"messages": buildChatCompletionMessages(req.InputMessages()),
-		"stream":   stream,
+func (p *openAIProvider) toChatCompletionParams(req *ResponseRequest) (openai.ChatCompletionNewParams, error) {
+	params := openai.ChatCompletionNewParams{
+		Model:    openai.ChatModel(req.Model),
+		Messages: buildChatCompletionMessages(req.InputMessages()),
 	}
 	if maxTokens := req.RequestedMaxTokens(); maxTokens > 0 {
-		payload["max_tokens"] = maxTokens
+		params.MaxTokens = openai.Int(int64(maxTokens))
 	}
 	if len(req.Tools) > 0 {
-		payload["tools"] = req.Tools
+		body, err := json.Marshal(req.Tools)
+		if err != nil {
+			return openai.ChatCompletionNewParams{}, fmt.Errorf("marshal tools: %w", err)
+		}
+		if err := json.Unmarshal(body, &params.Tools); err != nil {
+			return openai.ChatCompletionNewParams{}, fmt.Errorf("unmarshal tools: %w", err)
+		}
 	}
 	if req.OutputFormat != nil && len(req.OutputFormat.Raw) > 0 {
-		payload["response_format"] = req.OutputFormat.Raw
+		body, err := json.Marshal(req.OutputFormat.Raw)
+		if err != nil {
+			return openai.ChatCompletionNewParams{}, fmt.Errorf("marshal response_format: %w", err)
+		}
+		if err := json.Unmarshal(body, &params.ResponseFormat); err != nil {
+			return openai.ChatCompletionNewParams{}, fmt.Errorf("unmarshal response_format: %w", err)
+		}
 	}
-	return payload
+
+	extraBody := buildExtraBody(p.cfg)
+	if err := mergeExtraBody(&params, extraBody); err != nil {
+		return openai.ChatCompletionNewParams{}, fmt.Errorf("merge extra body: %w", err)
+	}
+
+	return params, nil
 }
 
-func joinOpenAIPath(baseURL, path string) string {
-	base := strings.TrimRight(baseURL, "/")
-	if strings.HasSuffix(strings.ToLower(base), "/v1") && strings.HasPrefix(path, "/v1/") {
-		path = strings.TrimPrefix(path, "/v1")
+func (p *openAIProvider) toResponseParams(req *ResponseRequest) (oairesponses.ResponseNewParams, error) {
+	params := oairesponses.ResponseNewParams{
+		Model: oairesponses.ResponsesModel(req.Model),
+		Input: oairesponses.ResponseNewParamsInputUnion{
+			OfInputItemList: buildOpenAIInput(req.InputMessages()),
+		},
 	}
-	return base + path
+	if maxTokens := req.RequestedMaxTokens(); maxTokens > 0 {
+		params.MaxOutputTokens = openai.Int(int64(maxTokens))
+	}
+	if len(req.Tools) > 0 {
+		body, err := json.Marshal(req.Tools)
+		if err != nil {
+			return oairesponses.ResponseNewParams{}, fmt.Errorf("marshal tools: %w", err)
+		}
+		if err := json.Unmarshal(body, &params.Tools); err != nil {
+			return oairesponses.ResponseNewParams{}, fmt.Errorf("unmarshal tools: %w", err)
+		}
+	}
+
+	extraBody := buildExtraBody(p.cfg)
+	if err := mergeExtraBody(&params, extraBody); err != nil {
+		return oairesponses.ResponseNewParams{}, fmt.Errorf("merge extra body: %w", err)
+	}
+
+	return params, nil
+}
+
+func (p *openAIProvider) StreamResponse(ctx context.Context, req *ResponseRequest) (<-chan ResponseEvent, <-chan error) {
+	result := make(chan ResponseEvent)
+	errCh := make(chan error, 1)
+
+	go func() {
+		defer close(result)
+		defer close(errCh)
+
+		switch endpoint := strings.TrimSpace(p.cfg.Endpoint); endpoint {
+		case "responses":
+			p.streamResponses(ctx, req, result, errCh)
+		default:
+			p.streamChatCompletion(ctx, req, result, errCh)
+		}
+	}()
+
+	return result, errCh
+}
+
+func (p *openAIProvider) streamChatCompletion(ctx context.Context, req *ResponseRequest, result chan<- ResponseEvent, errCh chan<- error) {
+	params, err := p.toChatCompletionParams(req)
+	if err != nil {
+		errCh <- err
+		return
+	}
+
+	stream := p.client.Chat.Completions.NewStreaming(ctx, params)
+	defer stream.Close()
+
+	var responseID string
+	var finalUsage Usage
+
+	for stream.Next() {
+		chunk := stream.Current()
+		if responseID == "" && chunk.ID != "" {
+			responseID = chunk.ID
+		}
+		event := parseSDKChatCompletionChunk(chunk, req.Model)
+		if event != nil {
+			if event.Usage != nil {
+				finalUsage = *event.Usage
+			}
+			result <- *event
+		}
+	}
+
+	if err := stream.Err(); err != nil {
+		errCh <- p.mapError(err)
+		return
+	}
+
+	if responseID == "" {
+		responseID = "stream-" + uuid()
+	}
+	result <- ResponseEvent{
+		Type: EventResponseCompleted,
+		Response: &Response{
+			ID:     responseID,
+			Object: "response",
+			Model:  req.Model,
+			Status: "completed",
+			Usage:  finalUsage,
+		},
+	}
+}
+
+func (p *openAIProvider) streamResponses(ctx context.Context, req *ResponseRequest, result chan<- ResponseEvent, errCh chan<- error) {
+	params, err := p.toResponseParams(req)
+	if err != nil {
+		errCh <- err
+		return
+	}
+
+	stream := p.client.Responses.NewStreaming(ctx, params)
+	defer stream.Close()
+
+	var completed bool
+	for stream.Next() {
+		event := stream.Current()
+		parsed, parseErr := parseSDKResponseStreamEvent(event, req.Model)
+		if parseErr != nil {
+			errCh <- parseErr
+			return
+		}
+		if parsed != nil {
+			if parsed.Type == EventResponseCompleted {
+				completed = true
+			}
+			result <- *parsed
+		}
+	}
+
+	if err := stream.Err(); err != nil {
+		errCh <- p.mapError(err)
+		return
+	}
+
+	if !completed {
+		result <- ResponseEvent{Type: EventResponseCompleted}
+	}
 }
 
 func (p *openAIProvider) CreateEmbedding(ctx context.Context, req *EmbeddingRequest) (*EmbeddingResponse, error) {
-	payload := map[string]any{
-		"model": req.Model,
-		"input": req.Input,
+	params := openai.EmbeddingNewParams{
+		Model: openai.EmbeddingModel(req.Model),
 	}
-	body, _ := json.Marshal(payload)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, joinOpenAIPath(p.cfg.BaseURL, "/v1/embeddings"), bytes.NewReader(body))
+
+	switch v := req.Input.(type) {
+	case string:
+		params.Input = openai.EmbeddingNewParamsInputUnion{OfString: openai.String(v)}
+	case []string:
+		params.Input = openai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: v}
+	}
+
+	if len(p.cfg.ExtraBody) > 0 {
+		params.SetExtraFields(p.cfg.ExtraBody)
+	}
+
+	resp, err := p.client.Embeddings.New(ctx, params)
 	if err != nil {
-		return nil, newProviderConfigError("provider.openai.new_embedding_request", err.Error())
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
-	if tc, ok := traceContextFromContext(ctx); ok {
-		httpReq.Header.Set("X-Request-ID", tc.RequestID)
-		httpReq.Header.Set("traceparent", tc.Traceparent)
-	}
-	applyProviderProfile(p.cfg, payload, httpReq.Header)
-
-	body, _ = json.Marshal(payload)
-	httpReq.Body = io.NopCloser(bytes.NewReader(body))
-	httpReq.ContentLength = int64(len(body))
-
-	httpResp, err := p.client.Do(httpReq)
-	if err != nil {
-		return nil, newProviderTransportError("provider.openai.create_embedding", err)
-	}
-	defer httpResp.Body.Close()
-
-	if httpResp.StatusCode != http.StatusOK {
-		return nil, newUpstreamStatusError(httpResp)
+		return nil, p.mapError(err)
 	}
 
-	respBody, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, newProviderParseError("provider.openai.read_embedding_response", err, "read upstream embedding body")
+	result := &EmbeddingResponse{
+		Object: "list",
+		Model:  resp.Model,
+		Usage: Usage{
+			PromptTokens:     int(resp.Usage.PromptTokens),
+			CompletionTokens: 0,
+			TotalTokens:      int(resp.Usage.TotalTokens),
+		},
 	}
 
-	var result EmbeddingResponse
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, newProviderParseError("provider.openai.parse_embedding_response", err, "decode embedding response")
+	for _, item := range resp.Data {
+		result.Data = append(result.Data, EmbeddingData{
+			Object:    "embedding",
+			Index:     int(item.Index),
+			Embedding: item.Embedding,
+		})
 	}
-	return &result, nil
+
+	return result, nil
+}
+
+func (p *openAIProvider) mapError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	var apiErr *openai.Error
+	if errors.As(err, &apiErr) {
+		return newUpstreamStatusErrorFromCode(apiErr.StatusCode, err)
+	}
+
+	return newProviderTransportError("provider.openai", err)
 }

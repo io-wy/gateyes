@@ -84,7 +84,7 @@ func TestAnthropicClientAdditionalErrorBranches(t *testing.T) {
 		t.Fatal("Anthropic StreamResponse(status error) err = nil, want upstream error")
 	}
 
-	badURLProvider := &anthropicProvider{baseProvider: newBaseProvider(config.ProviderConfig{
+	badURLProvider := NewAnthropicProvider(config.ProviderConfig{
 		Name:      "anthropic-a",
 		Type:      "anthropic",
 		BaseURL:   "://bad-url",
@@ -92,10 +92,7 @@ func TestAnthropicClientAdditionalErrorBranches(t *testing.T) {
 		Model:     "claude-test",
 		Timeout:   5,
 		MaxTokens: 128,
-	})}
-	if _, err := badURLProvider.newRequest(context.Background(), map[string]any{"model": "claude-test"}, false); err == nil {
-		t.Fatal("anthropic newRequest(bad url) error = nil, want config error")
-	}
+	}).(*anthropicProvider)
 	events, errs = badURLProvider.StreamResponse(context.Background(), &ResponseRequest{
 		Model:    "claude-public",
 		Messages: []Message{{Role: "user", Content: TextBlocks("hello")}},

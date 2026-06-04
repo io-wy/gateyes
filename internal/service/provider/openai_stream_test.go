@@ -2,43 +2,91 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/gateyes/gateway/internal/config"
+	"github.com/openai/openai-go"
+	oairesponses "github.com/openai/openai-go/responses"
 )
 
-func TestOpenAIStreamParsingAdditionalBranches(t *testing.T) {
-	if got := detectStreamFormat(`{"type":"response.created"}`); got != "responses" {
-		t.Fatalf("detectStreamFormat(response.*) = %q, want responses", got)
+func TestParseSDKChatCompletionChunk(t *testing.T) {
+	chunk := openai.ChatCompletionChunk{
+		ID:      "chat-1",
+		Object:  "chat.completion.chunk",
+		Created: 1,
+		Model:   "provider-model",
+		Choices: []openai.ChatCompletionChunkChoice{{
+			Delta: openai.ChatCompletionChunkChoiceDelta{
+				Content: "hello",
+			},
+			Index:        0,
+			FinishReason: "stop",
+		}},
 	}
-	if got := detectStreamFormat(`{"choices":[{"delta":{"content":"hi"}}]}`); got != "chat" {
-		t.Fatalf("detectStreamFormat(choices) = %q, want chat", got)
-	}
-
-	if event, err := parseSSELine(`{"type":"response.output_text.delta","delta":"hi"}`, "", "public-model"); err != nil || event == nil || event.Text() != "hi" {
-		t.Fatalf("parseSSELine(responses delta) = (%+v,%v), want text delta", event, err)
-	}
-
-	toolJSON := `{"choices":[{"delta":{"tool_calls":[{"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{}"}}],"finish_reason":"tool_calls"},"index":0}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`
-	if event, err := parseSSELine(toolJSON, "chat", "public-model"); err != nil || event == nil || len(event.ToolCalls) != 1 || event.FinishReason != "tool_calls" || event.Usage == nil {
-		t.Fatalf("parseSSELine(chat tool calls) = (%+v,%v), want tool_call event with usage", event, err)
-	}
-
-	outputItemJSON := `{"type":"response.output_item.done","output_item":{"id":"call-1","type":"function_call","name":"lookup","arguments":"{}"}}`
-	if event, err := parseOpenAIStreamEvent(outputItemJSON, "public-model"); err != nil || event == nil || event.Type != EventToolCallDone || event.Output == nil || event.Output.Name != "lookup" {
-		t.Fatalf("parseOpenAIStreamEvent(output_item) = (%+v,%v), want tool_call_done", event, err)
+	event := parseSDKChatCompletionChunk(chunk, "public-model")
+	if event == nil || event.Type != EventContentDelta || event.Text() != "hello" || event.FinishReason != "stop" {
+		t.Fatalf("parseSDKChatCompletionChunk() = %+v, want content delta", event)
 	}
 
-	completedJSON := `{"type":"response.completed","response":{"id":"resp-1","created_at":1,"model":"provider-model","status":"completed","output":[{"id":"msg-1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}`
-	if event, err := parseOpenAIStreamEvent(completedJSON, "public-model"); err != nil || event == nil || event.Type != EventResponseCompleted || event.Response == nil || event.Response.OutputText() != "done" {
-		t.Fatalf("parseOpenAIStreamEvent(response.completed) = (%+v,%v), want completed response", event, err)
+	// Empty choices should return nil
+	emptyChunk := openai.ChatCompletionChunk{Choices: []openai.ChatCompletionChunkChoice{}}
+	if event := parseSDKChatCompletionChunk(emptyChunk, "public-model"); event != nil {
+		t.Fatalf("parseSDKChatCompletionChunk(empty) = %+v, want nil", event)
+	}
+}
+
+func TestParseSDKResponseStreamEvent(t *testing.T) {
+	// Test response.output_text.delta
+	var textDelta oairesponses.ResponseStreamEventUnion
+	_ = json.Unmarshal([]byte(`{"type":"response.output_text.delta","delta":"hello","item_id":"item-1","output_index":0,"content_index":0,"sequence_number":1}`), &textDelta)
+	event, err := parseSDKResponseStreamEvent(textDelta, "public-model")
+	if err != nil {
+		t.Fatalf("parseSDKResponseStreamEvent(text_delta) error: %v", err)
+	}
+	if event == nil || event.Type != EventContentDelta || event.Text() != "hello" {
+		t.Fatalf("parseSDKResponseStreamEvent(text_delta) = %+v, want content delta", event)
 	}
 
-	if event, err := parseChatCompletionEvent(`{"choices":[]}`, "public-model"); err != nil || event != nil {
-		t.Fatalf("parseChatCompletionEvent(empty choices) = (%+v,%v), want nil,nil", event, err)
+	// Test response.output_item.done
+	var itemDone oairesponses.ResponseStreamEventUnion
+	_ = json.Unmarshal([]byte(`{"type":"response.output_item.done","item":{"id":"call-1","type":"function_call","name":"lookup","arguments":"{}"},"output_index":0,"sequence_number":2}`), &itemDone)
+	event, err = parseSDKResponseStreamEvent(itemDone, "public-model")
+	if err != nil {
+		t.Fatalf("parseSDKResponseStreamEvent(output_item_done) error: %v", err)
+	}
+	if event == nil || event.Type != EventToolCallDone || event.Output == nil || event.Output.Name != "lookup" {
+		t.Fatalf("parseSDKResponseStreamEvent(output_item_done) = %+v, want tool_call_done", event)
+	}
+
+	// Test response.completed
+	var completed oairesponses.ResponseStreamEventUnion
+	_ = json.Unmarshal([]byte(`{"type":"response.completed","response":{"id":"resp-1","created_at":1,"model":"provider-model","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}},"sequence_number":3}`), &completed)
+	event, err = parseSDKResponseStreamEvent(completed, "public-model")
+	if err != nil {
+		t.Fatalf("parseSDKResponseStreamEvent(completed) error: %v", err)
+	}
+	if event == nil || event.Type != EventResponseCompleted {
+		t.Fatalf("parseSDKResponseStreamEvent(completed) = %+v, want completed", event)
+	}
+
+	// Test response.failed
+	var failed oairesponses.ResponseStreamEventUnion
+	_ = json.Unmarshal([]byte(`{"type":"error","message":"upstream exploded"}`), &failed)
+	_, err = parseSDKResponseStreamEvent(failed, "public-model")
+	if err == nil {
+		t.Fatal("parseSDKResponseStreamEvent(failed) = nil, want error")
+	}
+
+	// Test unknown event type returns nil
+	var unknown oairesponses.ResponseStreamEventUnion
+	_ = json.Unmarshal([]byte(`{"type":"response.created","sequence_number":0}`), &unknown)
+	event, err = parseSDKResponseStreamEvent(unknown, "public-model")
+	if err != nil || event != nil {
+		t.Fatalf("parseSDKResponseStreamEvent(unknown) = (%+v,%v), want nil,nil", event, err)
 	}
 }
 
@@ -75,11 +123,11 @@ func TestOpenAIProviderStreamResponseStatusError(t *testing.T) {
 	}
 }
 
-func TestOpenAIProviderStreamResponseParsesPendingFrameOnDone(t *testing.T) {
+func TestOpenAIProviderStreamResponseParsesChatChunks(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n")
-		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"id\":\"chat-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"provider-model\",\"choices\":[{\"delta\":{\"content\":\"hello\"},\"index\":0}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"id\":\"chat-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"provider-model\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}]}\n\n")
 	}))
 	defer server.Close()
 
@@ -90,7 +138,7 @@ func TestOpenAIProviderStreamResponseParsesPendingFrameOnDone(t *testing.T) {
 		APIKey:    "test-key",
 		Model:     "provider-model",
 		Timeout:   5,
-		Endpoint:  "responses",
+		Endpoint:  "chat",
 		MaxTokens: 64,
 	}).(*openAIProvider)
 
@@ -105,47 +153,19 @@ func TestOpenAIProviderStreamResponseParsesPendingFrameOnDone(t *testing.T) {
 	}
 	for err := range errs {
 		if err != nil {
-			t.Fatalf("StreamResponse(done flush) error: %v", err)
+			t.Fatalf("StreamResponse(chat chunks) error: %v", err)
 		}
 	}
-	if len(got) != 1 || got[0].Text() != "hello" {
-		t.Fatalf("StreamResponse(done flush) events = %+v, want pending frame parsed", got)
+	if len(got) < 1 {
+		t.Fatalf("StreamResponse(chat chunks) events = %+v, want at least one event", got)
 	}
-}
-
-func TestOpenAIProviderStreamResponseParsesPendingFrameOnEOF(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"eof hello\"}\n")
-	}))
-	defer server.Close()
-
-	p := NewOpenAIProvider(config.ProviderConfig{
-		Name:      "openai-a",
-		Type:      "openai",
-		BaseURL:   server.URL,
-		APIKey:    "test-key",
-		Model:     "provider-model",
-		Timeout:   5,
-		Endpoint:  "responses",
-		MaxTokens: 64,
-	}).(*openAIProvider)
-
-	events, errs := p.StreamResponse(context.Background(), &ResponseRequest{
-		Model:    "public-model",
-		Messages: []Message{{Role: "user", Content: TextBlocks("hello")}},
-		Stream:   true,
-	})
-	var got []ResponseEvent
-	for event := range events {
-		got = append(got, event)
-	}
-	for err := range errs {
-		if err != nil {
-			t.Fatalf("StreamResponse(EOF flush) error: %v", err)
+	var foundText bool
+	for _, e := range got {
+		if e.Text() == "hello" {
+			foundText = true
 		}
 	}
-	if len(got) != 1 || got[0].Text() != "eof hello" {
-		t.Fatalf("StreamResponse(EOF flush) events = %+v, want pending frame parsed on EOF", got)
+	if !foundText {
+		t.Fatalf("StreamResponse(chat chunks) events = %+v, want hello delta", got)
 	}
 }

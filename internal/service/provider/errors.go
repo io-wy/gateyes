@@ -76,3 +76,7 @@ func newProviderConfigError(op string, message string) error {
 func newProviderUpstreamMessageError(message string) error {
 	return gateerror.New(gateerror.CodeUnknown, message)
 }
+
+func newUpstreamStatusErrorFromCode(statusCode int, err error) error {
+	return newUpstreamError(statusCode, err.Error())
+}

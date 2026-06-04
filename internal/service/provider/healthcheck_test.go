@@ -4,11 +4,11 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 
+	"github.com/gateyes/gateway/internal/testutil"
+
 	"github.com/gateyes/gateway/internal/config"
-	"github.com/gateyes/gateway/internal/db"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/repository/sqlstore"
 )
@@ -19,21 +19,7 @@ func TestHealthCheckerUpdatesRegistryStatus(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	database, err := db.Open(config.DatabaseConfig{
-		Driver:                 "sqlite",
-		DSN:                    filepath.Join(t.TempDir(), "health.db"),
-		AutoMigrate:            true,
-		MaxOpenConns:           1,
-		MaxIdleConns:           1,
-		ConnMaxLifetimeSeconds: 60,
-	})
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = database.Close() })
-	if err := database.Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate db: %v", err)
-	}
+	database := testutil.OpenTestDB(t)
 
 	store := sqlstore.New(database)
 	manager, err := NewManager([]config.ProviderConfig{{

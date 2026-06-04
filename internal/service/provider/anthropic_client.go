@@ -1,55 +1,56 @@
 package provider
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"io"
-	"net/http"
+	"errors"
 	"strings"
+
+	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 
 	"github.com/gateyes/gateway/internal/config"
 )
 
-const anthropicVersion = "2023-06-01"
-
 type anthropicProvider struct {
 	baseProvider
+	client anthropic.Client
 }
 
 func NewAnthropicProvider(cfg config.ProviderConfig) Provider {
+	bp := newBaseProvider(cfg)
+
+	opts := []option.RequestOption{
+		option.WithBaseURL(cfg.BaseURL),
+		option.WithAPIKey(cfg.APIKey),
+		option.WithMaxRetries(0),
+	}
+
+	for k, v := range cfg.Headers {
+		if strings.TrimSpace(k) != "" && v != "" {
+			opts = append(opts, option.WithHeader(k, v))
+		}
+	}
+
+	client := anthropic.NewClient(opts...)
+
 	return &anthropicProvider{
-		baseProvider: newBaseProvider(cfg),
+		baseProvider: bp,
+		client:       client,
 	}
 }
 
 func (p *anthropicProvider) CreateResponse(ctx context.Context, req *ResponseRequest) (*Response, error) {
-	params, err := p.buildParams(req)
+	params, err := buildAnthropicParams(req, p.cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	httpReq, err := p.newRequest(ctx, params, false)
+	resp, err := p.client.Messages.New(ctx, params)
 	if err != nil {
-		return nil, err
+		return nil, p.mapError(err)
 	}
 
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		return nil, newProviderTransportError("provider.anthropic.create_response", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, newUpstreamStatusError(resp)
-	}
-
-	var anthropicResp anthropicResponse
-	if err := json.NewDecoder(resp.Body).Decode(&anthropicResp); err != nil {
-		return nil, newProviderParseError("provider.anthropic.parse_response", err, "decode anthropic response")
-	}
-
-	return convertAnthropicResponse(anthropicResp, req.Model), nil
+	return convertSDKAnthropicMessage(*resp, req.Model), nil
 }
 
 func (p *anthropicProvider) StreamResponse(ctx context.Context, req *ResponseRequest) (<-chan ResponseEvent, <-chan error) {
@@ -60,56 +61,51 @@ func (p *anthropicProvider) StreamResponse(ctx context.Context, req *ResponseReq
 		defer close(result)
 		defer close(errCh)
 
-		params, err := p.buildParams(req)
+		streamReq := *req
+		streamReq.Stream = true
+		params, err := buildAnthropicParams(&streamReq, p.cfg)
 		if err != nil {
 			errCh <- err
 			return
 		}
 
-		httpReq, err := p.newRequest(ctx, params, true)
-		if err != nil {
-			errCh <- err
+		stream := p.client.Messages.NewStreaming(ctx, params)
+		defer stream.Close()
+
+		state := &anthropicStreamState{
+			responseID: "stream-" + uuid(),
+			model:      req.Model,
+		}
+
+		for stream.Next() {
+			event := stream.Current()
+			if evt := handleAnthropicStreamEvent(event, state); evt != nil {
+				result <- *evt
+			}
+		}
+
+		if err := stream.Err(); err != nil {
+			errCh <- p.mapError(err)
 			return
 		}
 
-		resp, err := p.client.Do(httpReq)
-		if err != nil {
-			errCh <- newProviderTransportError("provider.anthropic.stream_response", err)
-			return
+		if !state.completed {
+			result <- ResponseEvent{Type: EventResponseCompleted, Response: state.response()}
 		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			errCh <- newUpstreamStatusError(resp)
-			return
-		}
-
-		p.parseStream(resp.Body, result, errCh, req.Model)
 	}()
 
 	return result, errCh
 }
 
-func (p *anthropicProvider) newRequest(ctx context.Context, params map[string]any, stream bool) (*http.Request, error) {
-	body, _ := json.Marshal(params)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(p.cfg.BaseURL, "/")+"/v1/messages", bytes.NewReader(body))
-	if err != nil {
-		return nil, newProviderConfigError("provider.anthropic.new_request", err.Error())
+func (p *anthropicProvider) mapError(err error) error {
+	if err == nil {
+		return nil
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", p.cfg.APIKey)
-	httpReq.Header.Set("anthropic-version", anthropicVersion)
-	if tc, ok := traceContextFromContext(ctx); ok {
-		httpReq.Header.Set("X-Request-ID", tc.RequestID)
-		httpReq.Header.Set("traceparent", tc.Traceparent)
-	}
-	if stream {
-		httpReq.Header.Set("Accept", "text/event-stream")
-	}
-	applyProviderProfile(p.cfg, params, httpReq.Header)
 
-	body, _ = json.Marshal(params)
-	httpReq.Body = io.NopCloser(bytes.NewReader(body))
-	httpReq.ContentLength = int64(len(body))
-	return httpReq, nil
+	var httpErr interface{ StatusCode() int }
+	if errors.As(err, &httpErr) {
+		return newUpstreamStatusErrorFromCode(httpErr.StatusCode(), err)
+	}
+
+	return newProviderTransportError("provider.anthropic", err)
 }

@@ -1,12 +1,13 @@
 package provider
 
 import (
-	"context"
 	"encoding/json"
-	"io"
 	"testing"
 
+	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/gateyes/gateway/internal/config"
+	"github.com/openai/openai-go"
+	oairesponses "github.com/openai/openai-go/responses"
 )
 
 func TestChatCompatibilityHelpers(t *testing.T) {
@@ -95,111 +96,81 @@ func TestOpenAIProviderHelpersAndParsers(t *testing.T) {
 		t.Fatalf("openAIProvider.Cost() = %v, want %v", got, want)
 	}
 
-	req := &ResponseRequest{Model: "public-model", Input: []Message{{Role: "user", Content: []ContentBlock{{Type: "text", Text: "hello"}, {Type: "text", Text: " world"}}}}, MaxTokens: 12}
-	httpReq, err := p.newRequest(context.Background(), req, true)
-	if err != nil {
-		t.Fatalf("openAIProvider.newRequest(responses) error: %v", err)
-	}
-	if got, want := httpReq.URL.String(), "https://openai.example/responses"; got != want {
-		t.Fatalf("openAIProvider.newRequest(responses) URL = %q, want %q", got, want)
-	}
-	if got := httpReq.Header.Get("Authorization"); got != "Bearer test-key" {
-		t.Fatalf("openAIProvider.newRequest() Authorization = %q, want %q", got, "Bearer test-key")
-	}
-
-	p.cfg.Endpoint = "chat"
-	httpReq, err = p.newRequest(context.Background(), req, false)
-	if err != nil {
-		t.Fatalf("openAIProvider.newRequest(chat) error: %v", err)
-	}
-	if got, want := httpReq.URL.String(), "https://openai.example/v1/chat/completions"; got != want {
-		t.Fatalf("openAIProvider.newRequest(chat) URL = %q, want %q", got, want)
-	}
-	p.cfg.BaseURL = "https://openai.example/v1"
-	httpReq, err = p.newRequest(context.Background(), req, false)
-	if err != nil {
-		t.Fatalf("openAIProvider.newRequest(chat with /v1 base) error: %v", err)
-	}
-	if got, want := httpReq.URL.String(), "https://openai.example/v1/chat/completions"; got != want {
-		t.Fatalf("openAIProvider.newRequest(chat with /v1 base) URL = %q, want %q", got, want)
-	}
-
-	if msgs := buildChatCompletionMessages([]Message{{Role: "user", Content: TextBlocks("hello")}}); len(msgs) != 1 || msgs[0]["content"] != "hello" {
+	// buildChatCompletionMessages now returns SDK types.
+	msgs := buildChatCompletionMessages([]Message{{Role: "user", Content: TextBlocks("hello")}})
+	if len(msgs) != 1 || msgs[0].OfUser == nil || msgs[0].OfUser.Content.OfString.Value != "hello" {
 		t.Fatalf("buildChatCompletionMessages() = %+v, want one simple chat message", msgs)
 	}
-	if parts := buildOpenAIMessageContent([]ContentBlock{{Type: "output_text", Text: "hello"}}); len(parts) != 1 || parts[0]["type"] != "input_text" {
+
+	// buildOpenAIMessageContent now returns SDK union types.
+	parts := buildOpenAIMessageContent([]ContentBlock{{Type: "output_text", Text: "hello"}})
+	if len(parts) != 1 || parts[0].OfInputText == nil || parts[0].OfInputText.Text != "hello" {
 		t.Fatalf("buildOpenAIMessageContent() = %+v, want normalized input_text block", parts)
 	}
-	if part, ok := buildOpenAIContentPart(ContentBlock{Type: "text", Text: "1234"}); !ok || part["text"] != "1234" {
+
+	// buildOpenAIContentPart now returns SDK union types.
+	if part, ok := buildOpenAIContentPart(ContentBlock{Type: "text", Text: "1234"}); !ok || part.OfInputText == nil || part.OfInputText.Text != "1234" {
 		t.Fatalf("buildOpenAIContentPart(text block) = (%+v,%v), want text part", part, ok)
 	}
+
 	if got := normalizeOpenAITextType("output_text"); got != "input_text" {
 		t.Fatalf("normalizeOpenAITextType(output_text) = %q, want %q", got, "input_text")
 	}
-	if parts := buildOpenAIMessageContent([]ContentBlock{{Type: "image", Image: &ContentImage{URL: "https://example.com/cat.png"}}}); len(parts) != 1 || parts[0]["type"] != "input_image" {
-		t.Fatalf("buildOpenAIMessageContent(image) = %+v, want input_image block", parts)
+
+	// Image content through buildOpenAIMessageContent
+	imgParts := buildOpenAIMessageContent([]ContentBlock{{Type: "image", Image: &ContentImage{URL: "https://example.com/cat.png"}}})
+	if len(imgParts) != 1 || imgParts[0].OfInputImage == nil {
+		t.Fatalf("buildOpenAIMessageContent(image) = %+v, want input_image block", imgParts)
 	}
 
-	delta, err := parseOpenAIResponseEvent(`{"type":"response.output_text.delta","delta":"hi"}`, "public-model")
+	// parseSDKResponseStreamEvent replaces parseOpenAIResponseEvent.
+	var textDelta oairesponses.ResponseStreamEventUnion
+	_ = json.Unmarshal([]byte(`{"type":"response.output_text.delta","delta":"hi","item_id":"item-1","output_index":0,"content_index":0,"sequence_number":1}`), &textDelta)
+	delta, err := parseSDKResponseStreamEvent(textDelta, "public-model")
 	if err != nil || delta == nil || delta.Delta != "hi" {
-		t.Fatalf("parseOpenAIResponseEvent(delta) = (%+v,%v), want delta hi", delta, err)
-	}
-	itemDone, err := parseOpenAIResponseEvent(`{"type":"response.output_item.done","item":{"id":"call-1","type":"function_call","name":"lookup","arguments":"{}"}}`, "public-model")
-	if err != nil || itemDone == nil || itemDone.Output == nil || itemDone.Output.Name != "lookup" {
-		t.Fatalf("parseOpenAIResponseEvent(item done) = (%+v,%v), want function_call output", itemDone, err)
-	}
-	completed, err := parseOpenAIResponseEvent(`{"type":"response.completed","response":{"id":"resp-1","created_at":1,"model":"provider-model","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}`, "public-model")
-	if err != nil || completed == nil || completed.Response == nil || completed.Response.Model != "public-model" {
-		t.Fatalf("parseOpenAIResponseEvent(completed) = (%+v,%v), want normalized response model", completed, err)
-	}
-	if _, err := parseOpenAIResponseEvent(`{"type":"response.failed","response":{"error":{"message":"boom"}}}`, "public-model"); err == nil {
-		t.Fatal("parseOpenAIResponseEvent(failed) error = nil, want non-nil")
-	}
-	chatEvent, err := parseOpenAIResponseEvent(`{"id":"chat-1","object":"chat.completion.chunk","created":1,"model":"provider-model","choices":[{"delta":{"content":"hello","tool_calls":[{"id":"call-1","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`, "public-model")
-	if err != nil || chatEvent == nil || chatEvent.Type != EventContentDelta || len(chatEvent.ToolCalls) != 1 || chatEvent.Usage == nil {
-		t.Fatalf("parseOpenAIResponseEvent(chat chunk) = (%+v,%v), want content_delta with tool calls and usage", chatEvent, err)
-	}
-	chatEvent, err = parseOpenAIResponseEvent(`{"id":"chat-2","object":"chat.completion.chunk","created":1,"model":"provider-model","choices":[{"delta":{"content":[{"type":"text","text":"hello"},{"type":"text","text":" world"}]}}]}`, "public-model")
-	if err != nil || chatEvent == nil || chatEvent.Delta != "hello world" {
-		t.Fatalf("parseOpenAIResponseEvent(chat array content) = (%+v,%v), want concatenated delta", chatEvent, err)
-	}
-	chatEvent, err = parseOpenAIResponseEvent(`{"id":"chat-3","object":"chat.completion.chunk","created":1,"model":"provider-model","choices":[{"message":{"role":"assistant","content":"hello from message"}}]}`, "public-model")
-	if err != nil || chatEvent == nil || chatEvent.Delta != "hello from message" {
-		t.Fatalf("parseOpenAIResponseEvent(message fallback) = (%+v,%v), want delta from message.content", chatEvent, err)
-	}
-	chatEvent, err = parseOpenAIResponseEvent(`{"id":"chat-4","object":"chat.completion.chunk","created":1,"model":"provider-model","choices":[{"text":"legacy hello"}]}`, "public-model")
-	if err != nil || chatEvent == nil || chatEvent.Delta != "legacy hello" {
-		t.Fatalf("parseOpenAIResponseEvent(text fallback) = (%+v,%v), want delta from choice.text", chatEvent, err)
-	}
-	chatEvent, err = parseOpenAIResponseEvent(`{"id":"chat-5","object":"chat.completion.chunk","created":1,"model":"provider-model","choices":[{"message":{"tool_calls":[{"id":"call-2","type":"function","function":{"name":"lookup","arguments":"{}"}}]}}]}`, "public-model")
-	if err != nil || chatEvent == nil || len(chatEvent.ToolCalls) != 1 || chatEvent.ToolCalls[0].Function.Name != "lookup" {
-		t.Fatalf("parseOpenAIResponseEvent(message tool_calls fallback) = (%+v,%v), want tool call from message", chatEvent, err)
+		t.Fatalf("parseSDKResponseStreamEvent(delta) = (%+v,%v), want delta hi", delta, err)
 	}
 
-	rawResp := chatCompletionResponse{
+	var itemDone oairesponses.ResponseStreamEventUnion
+	_ = json.Unmarshal([]byte(`{"type":"response.output_item.done","item":{"id":"call-1","type":"function_call","name":"lookup","arguments":"{}"},"output_index":0,"sequence_number":2}`), &itemDone)
+	itemEvent, err := parseSDKResponseStreamEvent(itemDone, "public-model")
+	if err != nil || itemEvent == nil || itemEvent.Output == nil || itemEvent.Output.Name != "lookup" {
+		t.Fatalf("parseSDKResponseStreamEvent(item done) = (%+v,%v), want function_call output", itemEvent, err)
+	}
+
+	var completed oairesponses.ResponseStreamEventUnion
+	_ = json.Unmarshal([]byte(`{"type":"response.completed","response":{"id":"resp-1","created_at":1,"model":"provider-model","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}},"sequence_number":3}`), &completed)
+	completedEvent, err := parseSDKResponseStreamEvent(completed, "public-model")
+	if err != nil || completedEvent == nil || completedEvent.Response == nil || completedEvent.Response.Model != "public-model" {
+		t.Fatalf("parseSDKResponseStreamEvent(completed) = (%+v,%v), want normalized response model", completedEvent, err)
+	}
+
+	var failed oairesponses.ResponseStreamEventUnion
+	_ = json.Unmarshal([]byte(`{"type":"error","message":"boom"}`), &failed)
+	if _, err := parseSDKResponseStreamEvent(failed, "public-model"); err == nil {
+		t.Fatal("parseSDKResponseStreamEvent(failed) error = nil, want non-nil")
+	}
+
+	// Chat completion chunks are handled by parseSDKChatCompletionChunk (tested in openai_stream_test.go).
+	// The old parseOpenAIResponseEvent fallback paths (array content, message fallback, text fallback,
+	// message tool_calls fallback) are no longer needed because the SDK types enforce a single schema.
+
+	// convertSDKChatCompletion replaces convertChatCompletionResponse.
+	resp := openai.ChatCompletion{
 		ID:      "chat-1",
-		Object:  "chat.completion",
 		Created: 1,
 		Model:   "provider-model",
-		Choices: []struct {
-			Index   int `json:"index"`
-			Message struct {
-				Role      string     `json:"role"`
-				Content   string     `json:"content"`
-				ToolCalls []ToolCall `json:"tool_calls"`
-			} `json:"message"`
-			FinishReason string `json:"finish_reason"`
-		}{
-			{Message: struct {
-				Role      string     `json:"role"`
-				Content   string     `json:"content"`
-				ToolCalls []ToolCall `json:"tool_calls"`
-			}{Role: "assistant", Content: "hello"}},
-		},
+		Choices: []openai.ChatCompletionChoice{{
+			Message: openai.ChatCompletionMessage{
+				Role:    "assistant",
+				Content: "hello",
+			},
+			FinishReason: "stop",
+		}},
 	}
-	converted := convertChatCompletionResponse(rawResp, "public-model")
-	if converted.Model != "public-model" || converted.OutputText() != "hello" {
-		t.Fatalf("convertChatCompletionResponse() = %+v, want normalized response", converted)
+	converted := convertSDKChatCompletion(resp, "public-model")
+	if converted.Model != "public-model" || converted.OutputText() != "hello" || converted.Status != "completed" || converted.Object != "response" {
+		t.Fatalf("convertSDKChatCompletion() = %+v, want normalized response", converted)
 	}
 
 	format := normalizeOutputFormatValue(map[string]any{
@@ -215,132 +186,50 @@ func TestOpenAIProviderHelpersAndParsers(t *testing.T) {
 	}
 }
 
-func TestOpenAIProviderNewRequestEncodesImageInputAndJSONSchema(t *testing.T) {
-	formatRaw := map[string]any{
-		"type": "json_schema",
-		"json_schema": map[string]any{
-			"name":   "VisionAnswer",
-			"strict": true,
-			"schema": map[string]any{"type": "object"},
+func TestParseSDKChatCompletionChunkHandlesUsageOnly(t *testing.T) {
+	// When stream_options: {"include_usage": true}, the last chunk has empty choices but usage.
+	chunk := openai.ChatCompletionChunk{
+		ID:      "chat-1",
+		Object:  "chat.completion.chunk",
+		Created: 1,
+		Model:   "gpt-4",
+		Choices: []openai.ChatCompletionChunkChoice{},
+		Usage: openai.CompletionUsage{
+			PromptTokens:     10,
+			CompletionTokens: 5,
+			TotalTokens:      15,
 		},
 	}
-	req := &ResponseRequest{
-		Model: "public-model",
-		Messages: []Message{{
-			Role: "user",
-			Content: []ContentBlock{
-				{Type: "text", Text: "look"},
-				{Type: "image", Image: &ContentImage{URL: "https://example.com/cat.png", Detail: "high"}},
-			},
-		}},
-		OutputFormat: &OutputFormat{
-			Type:   "json_schema",
-			Name:   "VisionAnswer",
-			Strict: true,
-			Schema: map[string]any{"type": "object"},
-			Raw:    formatRaw,
-		},
+	event := parseSDKChatCompletionChunk(chunk, "public-model")
+	if event == nil || event.Usage == nil || event.Usage.TotalTokens != 15 {
+		t.Fatalf("parseSDKChatCompletionChunk(usage-only) = %+v, want usage event", event)
 	}
-	cfg := config.ProviderConfig{
-		Name:     "openai-a",
-		Type:     "openai",
-		BaseURL:  "https://openai.example",
-		APIKey:   "test-key",
-		Timeout:  5,
-		Endpoint: "chat",
-	}
-	p := NewOpenAIProvider(cfg).(*openAIProvider)
-
-	t.Run("chat", func(t *testing.T) {
-		httpReq, err := p.newRequest(context.Background(), req, false)
-		if err != nil {
-			t.Fatalf("openAIProvider.newRequest(chat) error: %v", err)
-		}
-		var payload map[string]any
-		body, _ := io.ReadAll(httpReq.Body)
-		if err := json.Unmarshal(body, &payload); err != nil {
-			t.Fatalf("json.Unmarshal(chat payload) error: %v", err)
-		}
-		if _, ok := payload["response_format"].(map[string]any); !ok {
-			t.Fatalf("chat payload response_format = %#v, want raw response_format", payload["response_format"])
-		}
-		messages, ok := payload["messages"].([]any)
-		if !ok || len(messages) != 1 {
-			t.Fatalf("chat payload messages = %#v, want one message", payload["messages"])
-		}
-		message, _ := messages[0].(map[string]any)
-		content, ok := message["content"].([]any)
-		if !ok || len(content) != 2 {
-			t.Fatalf("chat message content = %#v, want text + image", message["content"])
-		}
-		imagePart, _ := content[1].(map[string]any)
-		if imagePart["type"] != "image_url" {
-			t.Fatalf("chat image part type = %#v, want image_url", imagePart["type"])
-		}
-		imageURL, _ := imagePart["image_url"].(map[string]any)
-		if imageURL["url"] != "https://example.com/cat.png" || imageURL["detail"] != "high" {
-			t.Fatalf("chat image_url = %#v, want url/detail", imageURL)
-		}
-	})
-
-	t.Run("responses", func(t *testing.T) {
-		p.cfg.Endpoint = "responses"
-		httpReq, err := p.newRequest(context.Background(), req, false)
-		if err != nil {
-			t.Fatalf("openAIProvider.newRequest(responses) error: %v", err)
-		}
-		var payload map[string]any
-		body, _ := io.ReadAll(httpReq.Body)
-		if err := json.Unmarshal(body, &payload); err != nil {
-			t.Fatalf("json.Unmarshal(responses payload) error: %v", err)
-		}
-		if _, ok := payload["response_format"].(map[string]any); !ok {
-			t.Fatalf("responses payload response_format = %#v, want raw response_format", payload["response_format"])
-		}
-		input, ok := payload["input"].([]any)
-		if !ok || len(input) != 1 {
-			t.Fatalf("responses payload input = %#v, want one item", payload["input"])
-		}
-		item, _ := input[0].(map[string]any)
-		content, ok := item["content"].([]any)
-		if !ok || len(content) != 2 {
-			t.Fatalf("responses input content = %#v, want input_text + input_image", item["content"])
-		}
-		imagePart, _ := content[1].(map[string]any)
-		if imagePart["type"] != "input_image" || imagePart["image_url"] != "https://example.com/cat.png" {
-			t.Fatalf("responses image part = %#v, want input_image with URL", imagePart)
-		}
-	})
 }
 
 func TestConvertOpenAIResponsePreservesRefusalBlock(t *testing.T) {
-	resp := convertOpenAIResponse(openAIResponsePayload{
+	resp := convertSDKResponse(oairesponses.Response{
 		ID:        "resp-1",
 		CreatedAt: 1,
 		Model:     "provider-model",
 		Status:    "completed",
-		Output: []openAIOutputItem{{
-			ID:     "msg-1",
-			Type:   "message",
-			Role:   "assistant",
-			Status: "completed",
-			Content: []struct {
-				Type      string `json:"type"`
-				Text      string `json:"text"`
-				Thinking  string `json:"thinking"`
-				Signature string `json:"signature"`
-				Refusal   string `json:"refusal"`
-			}{
-				{Type: "refusal", Refusal: "blocked"},
+		Output: []oairesponses.ResponseOutputItemUnion{
+			{
+				ID:     "msg-1",
+				Type:   "message",
+				Role:   "assistant",
+				Status: "completed",
+				Content: []oairesponses.ResponseOutputMessageContentUnion{
+					{Type: "refusal", Refusal: "blocked"},
+				},
 			},
-		}},
+		},
 	}, "public-model")
 
 	if len(resp.Output) != 1 || len(resp.Output[0].Content) != 1 {
-		t.Fatalf("convertOpenAIResponse() = %+v, want one refusal message", resp)
+		t.Fatalf("convertSDKResponse() = %+v, want one refusal message", resp)
 	}
 	if resp.Output[0].Content[0].Type != "refusal" || resp.Output[0].Content[0].Refusal != "blocked" {
-		t.Fatalf("convertOpenAIResponse() refusal block = %+v, want refusal block", resp.Output[0].Content[0])
+		t.Fatalf("convertSDKResponse() refusal block = %+v, want refusal block", resp.Output[0].Content[0])
 	}
 }
 
@@ -376,13 +265,15 @@ func TestAnthropicProviderHelpers(t *testing.T) {
 			},
 		}},
 	}
-	blocks := buildAnthropicBlocks(msg)
-	if len(blocks) != 2 || blocks[0].Type != "text" || blocks[1].Type != "tool_use" {
-		t.Fatalf("buildAnthropicBlocks() = %+v, want text block and tool_use block", blocks)
+	blocks := buildAnthropicContentBlocks(msg)
+	if len(blocks) != 2 || blocks[0].OfText == nil || blocks[1].OfToolUse == nil {
+		t.Fatalf("buildAnthropicContentBlocks() = %+v, want text block and tool_use block", blocks)
 	}
-	if block, ok := buildAnthropicTextBlock(ContentBlock{Type: "text", Text: "123"}); !ok || block.Text != "123" {
+
+	if block, ok := buildAnthropicTextBlock(ContentBlock{Type: "text", Text: "123"}); !ok || block.OfText == nil || block.OfText.Text != "123" {
 		t.Fatalf("buildAnthropicTextBlock(text block) = (%+v,%v), want text block", block, ok)
 	}
+
 	if string(marshalRawJSON(`{"ok":true}`)) != `{"ok":true}` {
 		t.Fatalf("marshalRawJSON(valid json) = %q, want %q", string(marshalRawJSON(`{"ok":true}`)), `{"ok":true}`)
 	}
@@ -408,32 +299,27 @@ func TestAnthropicProviderHelpers(t *testing.T) {
 }
 
 func TestConvertAnthropicResponsePreservesThinkingBlock(t *testing.T) {
-	resp := convertAnthropicResponse(anthropicResponse{
+	resp := convertSDKAnthropicMessage(anthropic.Message{
 		ID:    "resp-1",
 		Model: "claude-provider",
 		Role:  "assistant",
-		Content: []struct {
-			Type      string           `json:"type"`
-			Text      string           `json:"text"`
-			ID        string           `json:"id"`
-			Name      string           `json:"name"`
-			Input     json.RawMessage  `json:"input"`
-			Source    *AnthropicSource `json:"source"`
-			Thinking  string           `json:"thinking"`
-			Signature string           `json:"signature"`
-		}{
+		Content: []anthropic.ContentBlockUnion{
 			{Type: "thinking", Thinking: "chain", Signature: "sig-1"},
 			{Type: "text", Text: "done"},
+		},
+		Usage: anthropic.Usage{
+			InputTokens:  1,
+			OutputTokens: 2,
 		},
 	}, "claude-public")
 
 	if len(resp.Output) != 1 || len(resp.Output[0].Content) != 2 {
-		t.Fatalf("convertAnthropicResponse() = %+v, want one message with thinking + text", resp)
+		t.Fatalf("convertSDKAnthropicMessage() = %+v, want one message with thinking + text", resp)
 	}
 	if resp.Output[0].Content[0].Type != "thinking" || resp.Output[0].Content[0].Thinking != "chain" || resp.Output[0].Content[0].Signature != "sig-1" {
-		t.Fatalf("convertAnthropicResponse() thinking block = %+v, want thinking block", resp.Output[0].Content[0])
+		t.Fatalf("convertSDKAnthropicMessage() thinking block = %+v, want thinking block", resp.Output[0].Content[0])
 	}
 	if resp.Output[0].Content[1].Type != "output_text" || resp.Output[0].Content[1].Text != "done" {
-		t.Fatalf("convertAnthropicResponse() text block = %+v, want output_text block", resp.Output[0].Content[1])
+		t.Fatalf("convertSDKAnthropicMessage() text block = %+v, want output_text block", resp.Output[0].Content[1])
 	}
 }
