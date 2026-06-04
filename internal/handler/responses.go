@@ -288,6 +288,9 @@ func (h *Handler) streamAnthropicMessages(c *gin.Context, stream *responseSvc.St
 			}
 
 			for _, anthropicEvent := range encoder.Encode(event) {
+				if _, err := c.Writer.Write([]byte("event: " + anthropicEvent.Type + "\n")); err != nil {
+					return
+				}
 				if err := writeSSE(c, anthropicEvent); err != nil {
 					return
 				}
