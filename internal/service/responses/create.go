@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	pluginSvc "github.com/gateyes/gateway/internal/plugin"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/cache"
 	"github.com/gateyes/gateway/internal/service/guardrail"
@@ -165,6 +166,32 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 
 		s.providerMgr.Stats.IncrementLoad(providerName)
 
+		// PreUpstream plugin
+		blockedByPlugin, blockReason := false, ""
+		prePayload := map[string]any{"request": exec.upstreamRequest}
+		if cmd := s.invokePlugins(ctx, pluginSvc.PreUpstream, prePayload, responseID, tenantID, identity.UserID, req.Model, req.Stream); cmd != nil {
+			switch cmd.Action {
+			case "BLOCK":
+				blockedByPlugin = true
+				blockReason = cmd.Reason
+			case "TRANSFORM":
+				var transformed provider.ResponseRequest
+				if err := json.Unmarshal(cmd.Payload, &transformed); err == nil {
+					exec.upstreamRequest = &transformed
+				}
+			}
+		}
+		if blockedByPlugin {
+			s.providerMgr.Stats.DecrementLoad(providerName)
+			if s.circuitBreaker != nil {
+				s.circuitBreaker.RecordFailure(tenantID, providerName)
+			}
+			appendRouteAttempt(trace, providerName, 0, "plugin_blocked", fmt.Errorf("plugin blocked: %s", blockReason))
+			lastErr = fmt.Errorf("plugin blocked: %s", blockReason)
+			fallbackCount++
+			continue
+		}
+
 		resp, retries, err := s.callWithRetrySF(ctx, identity, exec, identity.TenantID, req)
 		totalRetries += retries
 		latencyMs := time.Since(exec.startedAt).Milliseconds()
@@ -188,6 +215,22 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 		}
 
 		resp = s.normalizeResponse(exec, resp)
+
+		// PostUpstream plugin
+		postPayload := map[string]any{"response": resp}
+		if cmd := s.invokePlugins(ctx, pluginSvc.PostUpstream, postPayload, responseID, tenantID, identity.UserID, req.Model, req.Stream); cmd != nil {
+			switch cmd.Action {
+			case "BLOCK":
+				_ = s.persistSuccess(ctx, identity, exec, resp, latencyMs)
+				return nil, fmt.Errorf("plugin blocked: %s", cmd.Reason)
+			case "TRANSFORM":
+				var transformed provider.Response
+				if err := json.Unmarshal(cmd.Payload, &transformed); err == nil {
+					resp = &transformed
+				}
+			}
+		}
+
 		if budgetErr := validateVisibleOutputBudget(exec, resp); budgetErr != nil {
 			appendRouteAttempt(exec.routeTrace, providerName, retries, "budget_rejected", budgetErr)
 			if s.circuitBreaker != nil {
@@ -213,6 +256,15 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 		if err := s.persistSuccess(ctx, identity, exec, resp, latencyMs); err != nil {
 			return nil, err
 		}
+
+		// Async audit: fire plugins in background, do not wait.
+		s.invokePluginsAsync(pluginSvc.Audit, map[string]any{
+			"request":  string(exec.requestBody),
+			"response": resp,
+			"usage":    resp.Usage,
+			"provider": providerName,
+			"latency":  latencyMs,
+		}, responseID, identity.TenantID, identity.UserID, req.Model, req.Stream)
 		body, _ := json.Marshal(resp)
 		s.writeCache(ctx, identity, req, &cache.Entry{
 			Response:  body,

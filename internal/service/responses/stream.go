@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"time"
 
 	"github.com/google/uuid"
 
+	pluginSvc "github.com/gateyes/gateway/internal/plugin"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/cache"
+	"github.com/gateyes/gateway/internal/service/guardrail"
 	"github.com/gateyes/gateway/internal/service/provider"
 	"github.com/gateyes/gateway/internal/service/router"
 )
@@ -86,15 +89,63 @@ func (s *Service) isStreamRetryable(err error) bool {
 func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*Stream, error) {
 	req.Normalize()
 
+	responseID := uuid.NewString()
+
+	// Run pre-call guardrails before any cache lookup or provider call.
+	if s.guardrails != nil {
+		pre := s.guardrails.PreCall(ctx, req)
+		slog.Info("stream guardrail precall", "verdict", pre.Verdict.String(), "reason", pre.Reason)
+		if pre.Verdict == guardrail.Block {
+			return nil, fmt.Errorf("%w: %s", ErrGuardrailBlocked, pre.Reason)
+		}
+		if pre.Verdict == guardrail.Transform && pre.Request != nil {
+			req = pre.Request
+		}
+	}
+
+	// PreRoute plugin
+	preRoutePayload := map[string]any{"request": req}
+	if cmd := s.invokePlugins(ctx, pluginSvc.PreRoute, preRoutePayload, responseID, identity.TenantID, identity.UserID, req.Model, req.Stream); cmd != nil {
+		switch cmd.Action {
+		case "BLOCK":
+			return nil, fmt.Errorf("plugin blocked: %s", cmd.Reason)
+		case "TRANSFORM":
+			var transformed provider.ResponseRequest
+			if err := json.Unmarshal(cmd.Payload, &transformed); err == nil {
+				req = &transformed
+			}
+		}
+	}
+
 	candidates, trace := s.planCandidates(ctx, identity, sessionID, req)
 	if len(candidates) == 0 {
 		return nil, ErrNoProvider
 	}
 
+	// PostRoute plugin
+	candidateNames := make([]string, len(candidates))
+	for i, c := range candidates {
+		candidateNames[i] = c.Name()
+	}
+	postRoutePayload := map[string]any{
+		"request":    req,
+		"candidates": candidateNames,
+	}
+	if cmd := s.invokePlugins(ctx, pluginSvc.PostRoute, postRoutePayload, responseID, identity.TenantID, identity.UserID, req.Model, req.Stream); cmd != nil {
+		switch cmd.Action {
+		case "BLOCK":
+			return nil, fmt.Errorf("plugin blocked: %s", cmd.Reason)
+		case "TRANSFORM":
+			var transformed provider.ResponseRequest
+			if err := json.Unmarshal(cmd.Payload, &transformed); err == nil {
+				req = &transformed
+			}
+		}
+	}
+
 	events := make(chan provider.ResponseEvent)
 	errCh := make(chan error, 1)
 
-	responseID := uuid.NewString()
 	if trace != nil {
 		trace.ResponseID = responseID
 		trace.touch()
@@ -134,6 +185,8 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 	defer close(out)
 	defer close(errCh)
 
+	requestBody, _ := json.Marshal(req)
+
 	if entry, hit := s.lookupCache(ctx, identity, req); hit {
 		s.replayCachedStream(ctx, identity, req, entry, responseID, out, errCh)
 		return
@@ -145,6 +198,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 	firstResponseSent := false
 	hasSentPayload := false
 
+providerLoop:
 	for _, p := range candidates {
 		providerName := p.Name()
 
@@ -196,6 +250,52 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 			Options:         provider.CloneRequestOptions(req.Options),
 		}
 
+		// pre_upstream: plugins can modify the request.
+		blockedByPlugin, blockReason := false, ""
+		prePayload := map[string]any{"request": upstreamReq}
+		if cmd := s.invokePlugins(ctx, pluginSvc.PreUpstream, prePayload, responseID, tenantID, identity.UserID, req.Model, req.Stream); cmd != nil {
+			switch cmd.Action {
+			case "BLOCK":
+				blockedByPlugin = true
+			case "TRANSFORM":
+				var transformed provider.ResponseRequest
+				if err := json.Unmarshal(cmd.Payload, &transformed); err == nil {
+					upstreamReq = &transformed
+				}
+			case "CACHE_HIT":
+				var cached provider.Response
+				if err := json.Unmarshal(cmd.Payload, &cached); err == nil {
+					body, _ := json.Marshal(cached)
+					s.writeCache(ctx, identity, req, &cache.Entry{
+						Response:  body,
+						Stream:    true,
+						Model:     req.Model,
+						Provider:  providerName,
+						Usage: cache.Usage{
+							PromptTokens:     cached.Usage.PromptTokens,
+							CompletionTokens: cached.Usage.CompletionTokens,
+							TotalTokens:      cached.Usage.TotalTokens,
+							CachedTokens:     cached.Usage.CachedTokens,
+						},
+						CreatedAt: time.Now().Unix(),
+					})
+					if entry, hit := s.lookupCache(ctx, identity, req); hit {
+						s.replayCachedStream(ctx, identity, req, entry, responseID, out, errCh)
+						s.providerMgr.Stats.DecrementLoad(providerName)
+						return
+					}
+				}
+			}
+		}
+		if blockedByPlugin {
+			s.providerMgr.Stats.DecrementLoad(providerName)
+			if s.circuitBreaker != nil {
+				s.circuitBreaker.RecordFailure(tenantID, providerName)
+			}
+			appendRouteAttempt(trace, providerName, 0, "plugin_blocked", fmt.Errorf("plugin blocked: %s", blockReason))
+			continue providerLoop
+		}
+
 		streamCtx, streamCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
 		stream, upstreamErrCh := p.StreamResponse(streamCtx, upstreamReq)
 		var finalResponse *provider.Response
@@ -245,8 +345,38 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 						},
 						CreatedAt: time.Now().Unix(),
 					})
-					s.finalizeStream(ctx, identity, responseID, providerName, req.Model, finalResponse, latencyMs, trace, out, !hasSentPayload)
-					s.providerMgr.Stats.DecrementLoad(providerName)
+					// post_upstream: guardrails and plugins can modify the response.
+					finalResponse, postErr := s.runStreamPostChecks(ctx, identity, req, finalResponse, responseID, tenantID, identity.UserID, req.Model, req.Stream, hasSentPayload)
+					if postErr != nil {
+						if hasSentPayload {
+							slog.Error("stream blocked after content sent", "responseID", responseID, "error", postErr)
+							out <- provider.ResponseEvent{
+								Type:         provider.EventResponseCompleted,
+								Response:     finalResponse,
+								FinishReason: "content_filter",
+							}
+						} else {
+							errCh <- postErr
+						}
+						s.providerMgr.Stats.DecrementLoad(providerName)
+						if s.circuitBreaker != nil {
+							s.circuitBreaker.RecordSuccess(tenantID, providerName)
+						}
+						return
+					}
+
+										s.finalizeStream(ctx, identity, responseID, providerName, req.Model, finalResponse, latencyMs, trace, out, !hasSentPayload)
+
+					// Async audit.
+					s.invokePluginsAsync(pluginSvc.Audit, map[string]any{
+						"request":  string(requestBody),
+						"response": finalResponse,
+						"usage":    finalResponse.Usage,
+						"provider": providerName,
+						"latency":  latencyMs,
+					}, responseID, tenantID, identity.UserID, req.Model, req.Stream)
+
+										s.providerMgr.Stats.DecrementLoad(providerName)
 					if s.circuitBreaker != nil {
 						s.circuitBreaker.RecordSuccess(tenantID, providerName)
 					}
@@ -306,7 +436,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 				}
 
 				if !hasSentPayload {
-					goto nextProvider
+					continue providerLoop
 				}
 
 				errCh <- err
@@ -366,8 +496,38 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 							},
 							CreatedAt: time.Now().Unix(),
 						})
-						s.finalizeStream(ctx, identity, responseID, providerName, req.Model, finalResponse, latencyMs, trace, out, !hasSentPayload)
-						if s.router != nil {
+						// post_upstream: guardrails and plugins can modify the response.
+						finalResponse, postErr := s.runStreamPostChecks(ctx, identity, req, finalResponse, responseID, tenantID, identity.UserID, req.Model, req.Stream, hasSentPayload)
+						if postErr != nil {
+							if hasSentPayload {
+								slog.Error("stream blocked after content sent", "responseID", responseID, "error", postErr)
+								out <- provider.ResponseEvent{
+									Type:         provider.EventResponseCompleted,
+									Response:     finalResponse,
+									FinishReason: "content_filter",
+								}
+							} else {
+								errCh <- postErr
+							}
+							s.providerMgr.Stats.DecrementLoad(providerName)
+							if s.circuitBreaker != nil {
+								s.circuitBreaker.RecordSuccess(tenantID, providerName)
+							}
+							return
+						}
+
+												s.finalizeStream(ctx, identity, responseID, providerName, req.Model, finalResponse, latencyMs, trace, out, !hasSentPayload)
+
+						// Async audit.
+						s.invokePluginsAsync(pluginSvc.Audit, map[string]any{
+							"request":  string(requestBody),
+							"response": finalResponse,
+							"usage":    finalResponse.Usage,
+							"provider": providerName,
+							"latency":  latencyMs,
+						}, responseID, tenantID, identity.UserID, req.Model, req.Stream)
+
+												if s.router != nil {
 							s.router.PromoteAffinity(router.RouteContext{
 								Model:        req.Model,
 								SessionID:    sessionID,
@@ -419,7 +579,7 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 					}
 
 					if !hasSentPayload && s.isStreamRetryable(err) {
-						goto nextProvider
+						continue providerLoop
 					}
 
 					errCh <- err
@@ -434,9 +594,6 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 				}
 			}
 
-		nextProvider:
-			s.providerMgr.Stats.DecrementLoad(providerName)
-			break
 		}
 	}
 
@@ -451,6 +608,37 @@ func (s *Service) runStreamWithFallback(ctx context.Context, identity *repositor
 	})
 	errCh <- ErrNoProvider
 }
+
+
+// runStreamPostChecks runs guardrail post-call and plugin post-upstream checks
+// for stream responses. Returns the (possibly transformed) response.
+func (s *Service) runStreamPostChecks(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, resp *provider.Response, traceID, tenantID, userID, model string, stream bool, hasSentPayload bool) (*provider.Response, error) {
+	if s.guardrails != nil {
+		post := s.guardrails.PostCall(ctx, resp)
+		if post.Verdict == guardrail.Block {
+			return resp, fmt.Errorf("%w: %s", ErrGuardrailBlocked, post.Reason)
+		}
+		if post.Verdict == guardrail.Transform && post.Response != nil {
+			resp = post.Response
+		}
+	}
+
+	postPayload := map[string]any{"response": resp}
+	if cmd := s.invokePlugins(ctx, pluginSvc.PostUpstream, postPayload, traceID, tenantID, userID, model, stream); cmd != nil {
+		switch cmd.Action {
+		case "BLOCK":
+			return resp, fmt.Errorf("plugin blocked: %s", cmd.Reason)
+		case "TRANSFORM":
+			var transformed provider.Response
+			if err := json.Unmarshal(cmd.Payload, &transformed); err == nil {
+				resp = &transformed
+			}
+		}
+	}
+
+	return resp, nil
+}
+
 
 func (s *Service) prepare(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*execution, error) {
 	selected, err := s.selectProvider(ctx, identity, sessionID, req)
