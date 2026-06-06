@@ -507,6 +507,15 @@ func writeSSE(c *gin.Context, payload any) error {
 	return err
 }
 
+func writeSSEEvent(c *gin.Context, eventType string, payload any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	_, err = c.Writer.Write([]byte("event: " + eventType + "\ndata: " + string(data) + "\n\n"))
+	return err
+}
+
 func writeSSEDone(c *gin.Context) {
 	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
 }

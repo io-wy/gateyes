@@ -32,6 +32,8 @@ type Config struct {
 	APIKeys        []APIKeyConfig       `yaml:"apiKeys"`
 	Admin          AdminConfig          `yaml:"admin"`
 	Plugins        PluginsConfig        `yaml:"plugins"`
+	GRPCPlugins    []GRPCPluginConfig   `yaml:"grpcPlugins"`
+	WASMPlugins    []WASMPluginConfig   `yaml:"wasmPlugins"`
 }
 
 // PluginsConfig configures the WASM plugin system.
@@ -44,8 +46,33 @@ type PluginsConfig struct {
 	ReloadIntervalSeconds int `yaml:"reloadIntervalSeconds"`
 }
 
-// GuardrailConfig defines a single pre-/post-call validator. Currently
-// only the "regex" type is bundled; users may add more via code.
+// GRPCPluginConfig configures a single gRPC plugin connection.
+type GRPCPluginConfig struct {
+	Name    string   `yaml:"name"`    // Plugin name, e.g. "ml-router"
+	Type    string   `yaml:"type"`    // Plugin type: "router", "gateway", etc.
+	Address string   `yaml:"address"` // gRPC target, e.g. "localhost:50051"
+	Timeout int      `yaml:"timeout"` // Call timeout in milliseconds, default 100
+	Weight  int      `yaml:"weight"`  // Priority weight for multi-plugin chains, default 100
+	Phases  []string `yaml:"phases"`  // Subscribed phases: "pre_route", "post_route", "pre_upstream", "post_upstream", "audit"
+}
+
+// WASMPluginConfig configures a single WASM gateway plugin.
+type WASMPluginConfig struct {
+	Name        string   `yaml:"name"`
+	Path        string   `yaml:"path"`        // .wasm file path
+	Phases      []string `yaml:"phases"`      // subscribed phases
+	TimeoutMs   int      `yaml:"timeoutMs"`   // default 50
+	MemoryPages uint32   `yaml:"memoryPages"` // default 1
+}
+
+// GuardrailConfig defines a single pre-/post-call validator.
+//
+// Deprecated: use WASMPluginConfig with pre_upstream / post_upstream phases instead.
+// This type is kept for backward compatibility and will be removed in a future release.
+//
+// Supported types:
+//   - "regex": in-process regex blocklist/redaction
+//   - "wasm": WebAssembly guardrail plugin with Allow/Block/Transform verdicts
 //
 // Example yaml:
 //
@@ -54,11 +81,19 @@ type PluginsConfig struct {
 //	    type: regex
 //	    requestPatterns: ["\\b\\d{3}-\\d{2}-\\d{4}\\b"]
 //	    responsePatterns: []
+//	  - name: pii-wasm
+//	    type: wasm
+//	    path: ./plugins/pii_guard.wasm
+//	    timeoutMs: 100
+//	    memoryPages: 2
 type GuardrailConfig struct {
 	Name             string   `yaml:"name"`
 	Type             string   `yaml:"type"`
 	RequestPatterns  []string `yaml:"requestPatterns"`
 	ResponsePatterns []string `yaml:"responsePatterns"`
+	Path             string   `yaml:"path"`
+	TimeoutMs        int      `yaml:"timeoutMs"`
+	MemoryPages      uint32   `yaml:"memoryPages"`
 }
 
 // PricingConfig enables an external model→price feed that fills in
@@ -104,6 +139,8 @@ type ServerConfig struct {
 	WriteTimeout    int    `yaml:"writeTimeout"`
 	IdleTimeout     int    `yaml:"idleTimeout"`
 	ShutdownTimeout int    `yaml:"shutdownTimeout"`
+	TLSCertFile     string `yaml:"tlsCertFile"`
+	TLSKeyFile      string `yaml:"tlsKeyFile"`
 }
 
 type DatabaseConfig struct {

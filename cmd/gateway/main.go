@@ -14,6 +14,9 @@ import (
 	"github.com/gateyes/gateway/internal/db"
 	"github.com/gateyes/gateway/internal/handler"
 	"github.com/gateyes/gateway/internal/middleware"
+	"github.com/gateyes/gateway/internal/plugin"
+	grpcplugin "github.com/gateyes/gateway/internal/plugin/grpc"
+	wasmplugin "github.com/gateyes/gateway/internal/plugin/wasm"
 	redispkg "github.com/gateyes/gateway/internal/redis"
 	"github.com/redis/go-redis/v9"
 	"github.com/gateyes/gateway/internal/repository"
@@ -37,6 +40,47 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 )
+
+// compositePluginManager combines gRPC and WASM plugin managers.
+type compositePluginManager struct {
+	grpcMgr *grpcplugin.Manager
+	wasmMgr *wasmplugin.Manager
+}
+
+func (c *compositePluginManager) Router() plugin.Router {
+	if c.grpcMgr == nil {
+		return nil
+	}
+	return c.grpcMgr.Router()
+}
+
+func (c *compositePluginManager) GetByPhase(phase plugin.Phase) []plugin.Gateway {
+	var result []plugin.Gateway
+	if c.grpcMgr != nil {
+		result = append(result, c.grpcMgr.GetByPhase(phase)...)
+	}
+	if c.wasmMgr != nil {
+		result = append(result, c.wasmMgr.GetByPhase(phase)...)
+	}
+	return result
+}
+
+func (c *compositePluginManager) Close() error {
+	var firstErr error
+	if c.grpcMgr != nil {
+		if err := c.grpcMgr.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if c.wasmMgr != nil {
+		if err := c.wasmMgr.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+var _ plugin.Manager = (*compositePluginManager)(nil)
 
 func main() {
 	configPath := flag.String("config", "configs/config.yaml", "path to config file")
@@ -210,19 +254,46 @@ func main() {
 		defer pricingFeed.Stop()
 	}
 
+	// gRPC plugin manager
+	var grpcMgr *grpcplugin.Manager
+	if len(cfg.GRPCPlugins) > 0 {
+		pm, err := grpcplugin.NewManager(cfg.GRPCPlugins)
+		if err != nil {
+			slog.Warn("failed to initialize some grpc plugins", "error", err)
+		}
+		grpcMgr = pm
+	}
+
+	// WASM plugin manager
+	var wasmMgr *wasmplugin.Manager
+	if len(cfg.WASMPlugins) > 0 {
+		wm, err := wasmplugin.NewManager(cfg.WASMPlugins)
+		if err != nil {
+			slog.Warn("failed to initialize some wasm plugins", "error", err)
+		}
+		wasmMgr = wm
+	}
+
+	// Unified plugin manager (gRPC + WASM)
+	var pluginManager plugin.Manager
+	if grpcMgr != nil || wasmMgr != nil {
+		pluginManager = &compositePluginManager{grpcMgr: grpcMgr, wasmMgr: wasmMgr}
+	}
+
 	responsesService := responseSvc.New(&responseSvc.Dependencies{
-		Config:      cfg,
-		Store:       store,
-		Auth:        httpMiddleware.AuthService(),
-		ProviderMgr: providerMgr,
-		Router:      routerSvc,
-		Alert:       alertSvc,
-		Limiter:     limiterSvc,
-		Cache:       cacheSvc,
-		Metrics:     metrics,
-		EventBus:    persistBus,
-		Guardrails:  guardrails,
-		PricingFeed: pricingFeed,
+		Config:        cfg,
+		Store:         store,
+		Auth:          httpMiddleware.AuthService(),
+		ProviderMgr:   providerMgr,
+		Router:        routerSvc,
+		Alert:         alertSvc,
+		Limiter:       limiterSvc,
+		Cache:         cacheSvc,
+		Metrics:       metrics,
+		EventBus:      persistBus,
+		Guardrails:    guardrails,
+		PricingFeed:   pricingFeed,
+		PluginManager: pluginManager,
 	})
 	if redisClient != nil {
 		responsesService.SetRedis(redisClient)
@@ -333,6 +404,16 @@ func main() {
 		slog.Warn("persistence event bus dropped events during run", "count", dropped)
 	}
 	providerMgr.CloseIdleConnections()
+	if pluginManager != nil {
+		if err := pluginManager.Close(); err != nil {
+			slog.Warn("failed to close grpc plugin manager", "error", err)
+		}
+	}
+	if guardrails != nil {
+		if err := guardrails.Close(); err != nil {
+			slog.Warn("failed to close guardrails", "error", err)
+		}
+	}
 	if pm := httpMiddleware.PluginManager(); pm != nil {
 		pm.Close()
 	}
@@ -462,6 +543,13 @@ func buildGuardrails(cfgs []config.GuardrailConfig) *guardrail.Manager {
 		switch c.Type {
 		case "regex":
 			chain = append(chain, guardrail.NewRegexBlocklist(c.Name, c.RequestPatterns, c.ResponsePatterns))
+		case "wasm":
+			g, err := guardrail.NewWASMGuardrail(c.Name, c.Path, c.TimeoutMs, c.MemoryPages)
+			if err != nil {
+				slog.Warn("failed to load wasm guardrail, skipping", "name", c.Name, "error", err)
+				continue
+			}
+			chain = append(chain, g)
 		default:
 			slog.Warn("unsupported guardrail type, skipping", "name", c.Name, "type", c.Type)
 		}

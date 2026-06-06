@@ -85,6 +85,20 @@ func (p *openAIProvider) createResponses(ctx context.Context, req *ResponseReque
 	return convertSDKResponse(*resp, req.Model), nil
 }
 
+func filterFunctionTools(tools []any) []any {
+	filtered := make([]any, 0, len(tools))
+	for _, t := range tools {
+		m, ok := t.(map[string]any)
+		if !ok {
+			continue
+		}
+		if typ, _ := m["type"].(string); typ == "function" {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
+}
+
 func (p *openAIProvider) toChatCompletionParams(req *ResponseRequest) (openai.ChatCompletionNewParams, error) {
 	params := openai.ChatCompletionNewParams{
 		Model:    openai.ChatModel(req.Model),
@@ -93,8 +107,8 @@ func (p *openAIProvider) toChatCompletionParams(req *ResponseRequest) (openai.Ch
 	if maxTokens := req.RequestedMaxTokens(); maxTokens > 0 {
 		params.MaxTokens = openai.Int(int64(maxTokens))
 	}
-	if len(req.Tools) > 0 {
-		body, err := json.Marshal(req.Tools)
+	if tools := filterFunctionTools(req.Tools); len(tools) > 0 {
+		body, err := json.Marshal(tools)
 		if err != nil {
 			return openai.ChatCompletionNewParams{}, fmt.Errorf("marshal tools: %w", err)
 		}
@@ -130,8 +144,8 @@ func (p *openAIProvider) toResponseParams(req *ResponseRequest) (oairesponses.Re
 	if maxTokens := req.RequestedMaxTokens(); maxTokens > 0 {
 		params.MaxOutputTokens = openai.Int(int64(maxTokens))
 	}
-	if len(req.Tools) > 0 {
-		body, err := json.Marshal(req.Tools)
+	if tools := filterFunctionTools(req.Tools); len(tools) > 0 {
+		body, err := json.Marshal(tools)
 		if err != nil {
 			return oairesponses.ResponseNewParams{}, fmt.Errorf("marshal tools: %w", err)
 		}

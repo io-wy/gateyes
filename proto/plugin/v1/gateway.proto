@@ -1,0 +1,120 @@
+syntax = "proto3";
+
+package gateyes.plugin.v1;
+
+option go_package = "github.com/gateyes/gateway/pkg/plugin/v1";
+
+// GatewayPlugin is a universal extension interface for all non-routing
+// plugin scenarios (cache, audit, transform, guardrail, etc.).
+//
+// The gateway sends Events at fixed lifecycle points; the plugin
+// returns Commands that the gateway then executes (allow, block,
+// transform, cache_hit, skip, etc.).
+//
+// Communication is streaming so that a single plugin instance can
+// handle multiple events without paying connection overhead each time.
+service GatewayPlugin {
+  // Process receives a stream of events and returns a stream of commands.
+  // Both sides are half-duplex: the gateway sends an event, the plugin
+  // replies with one or more commands, then the gateway may send the
+  // next event.
+  rpc Process(stream Event) returns (stream Command);
+}
+
+// Event is emitted by the gateway at a fixed lifecycle point.
+message Event {
+  // The lifecycle phase at which this event is fired.
+  Phase phase = 1;
+
+  // Request context (available in all phases).
+  Context context = 2;
+
+  // Phase-specific payload (JSON).
+  bytes payload = 3;
+}
+
+// Phase defines the fixed lifecycle points in the gateway.
+// A plugin may subscribe to one or more phases via its config.
+enum Phase {
+  PHASE_UNSPECIFIED = 0;
+
+  // Before the gateway routes the request to an upstream provider.
+  // Payload: {"candidates": [...]}
+  PHASE_PRE_ROUTE = 1;
+
+  // After the gateway has selected/ordered providers.
+  // Payload: {"ordered": [...], "selected": "provider_name"}
+  PHASE_POST_ROUTE = 2;
+
+  // Before the request is sent to the upstream provider.
+  // Payload: {"request": {...}} (the full upstream request body)
+  PHASE_PRE_UPSTREAM = 3;
+
+  // After the upstream response has been received.
+  // Payload: {"response": {...}} (the full upstream response body)
+  PHASE_POST_UPSTREAM = 4;
+
+  // After the response has been fully streamed/written to the client.
+  // Payload: {"request": {...}, "response": {...}, "usage": {...}}
+  // This is fire-and-forget; the gateway does not wait for commands.
+  PHASE_AUDIT = 5;
+}
+
+// Context carries request metadata available in all phases.
+message Context {
+  // Gateway-generated trace ID.
+  string trace_id = 1;
+
+  // Tenant identifier.
+  string tenant_id = 2;
+
+  // User / API key identifier.
+  string user_id = 3;
+
+  // Model requested by the client.
+  string model = 4;
+
+  // Whether the request is streaming.
+  bool stream = 5;
+
+  // The provider that was ultimately selected (post_route and later).
+  string selected_provider = 6;
+
+  // The surface being used ("chat", "responses", "messages").
+  string surface = 7;
+}
+
+// Command is returned by the plugin to instruct the gateway.
+message Command {
+  // The action the gateway should take.
+  Action action = 1;
+
+  // Action-specific payload (JSON).
+  bytes payload = 2;
+
+  // Human-readable reason (required when action = BLOCK).
+  string reason = 3;
+}
+
+// Action is the instruction the plugin gives to the gateway.
+enum Action {
+  ACTION_UNSPECIFIED = 0;
+
+  // Continue processing without changes.
+  ACTION_ALLOW = 1;
+
+  // Abort the request and return an error to the client.
+  // Payload is ignored; reason should be set.
+  ACTION_BLOCK = 2;
+
+  // Replace the current payload with the transformed version.
+  // Payload: the new JSON payload for this phase.
+  ACTION_TRANSFORM = 3;
+
+  // Cache hit: the gateway should return the payload directly
+  // without going upstream (valid only in pre_upstream).
+  ACTION_CACHE_HIT = 4;
+
+  // Skip further plugins in this phase.
+  ACTION_SKIP = 5;
+}

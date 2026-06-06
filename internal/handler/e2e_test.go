@@ -322,14 +322,14 @@ func TestGatewayE2E(t *testing.T) {
 		})
 		assertStatus(t, resp, http.StatusOK, body)
 		events := parseSSEData(body)
-		if len(events) < 4 || events[len(events)-1] != "[DONE]" {
-			t.Fatalf("responses stream events = %v, want done-terminated SSE", events)
-		}
-		responseTypes := collectTypes(t, events[:len(events)-1])
+			if len(events) < 3 {
+				t.Fatalf("responses stream events = %v, want at least 3 events", events)
+			}
+		responseTypes := collectTypes(t, events)
 		if !contains(responseTypes, "response.created") || !contains(responseTypes, "response.output_text.delta") || !contains(responseTypes, "response.completed") {
 			t.Fatalf("responses stream types = %v, want created/output_text.delta/completed", responseTypes)
 		}
-		if !contains(bodyJSONSnippets(events[:len(events)-1]), `"type":"function_call"`) {
+		if !contains(bodyJSONSnippets(events), `"type":"function_call"`) {
 			t.Fatalf("responses stream body = %s, want function_call in completed payload", body)
 		}
 	})

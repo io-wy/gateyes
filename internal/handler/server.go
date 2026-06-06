@@ -148,6 +148,9 @@ func registerTenantRoutes(g *gin.RouterGroup, adminH *AdminHandler) {
 
 func (s *Server) Start() error {
 	s.srv = s.buildHTTPServer()
+	if s.cfg.TLSCertFile != "" && s.cfg.TLSKeyFile != "" {
+		return s.srv.ListenAndServeTLS(s.cfg.TLSCertFile, s.cfg.TLSKeyFile)
+	}
 	return s.srv.ListenAndServe()
 }
 

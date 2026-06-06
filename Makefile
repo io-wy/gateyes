@@ -1,7 +1,18 @@
 GO ?= go
 CONFIG ?= configs/config.example.yaml
 
-.PHONY: fmt test test-race vet lint vuln migrate-up migrate-status run docker-build
+.PHONY: fmt test test-race vet lint vuln migrate-up migrate-status run docker-build proto
+
+proto:
+	protoc \
+		--proto_path=. \
+		--go_out=. \
+		--go_opt=paths=source_relative \
+		--go-grpc_out=. \
+		--go-grpc_opt=paths=source_relative \
+		proto/plugin/v1/plugin.proto proto/plugin/v1/router.proto
+	@rm -rf pkg/plugin/v1/proto
+	@mv proto/plugin/v1/*.pb.go pkg/plugin/v1/
 
 fmt:
 	$(GO) fmt ./...

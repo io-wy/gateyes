@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package gateyes.plugin.v1;
+
+option go_package = "github.com/gateyes/gateway/pkg/plugin/v1";
+
+// Plugin is the common interface all gRPC plugins may implement.
+service Plugin {
+  // HealthCheck returns the plugin's health status.
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+
+  // GetCapabilities returns the capabilities this plugin provides.
+  rpc GetCapabilities(CapabilitiesRequest) returns (CapabilitiesResponse);
+}
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  Status status = 1;
+  string message = 2;
+
+  enum Status {
+    UNKNOWN = 0;
+    HEALTHY = 1;
+    UNHEALTHY = 2;
+  }
+}
+
+message CapabilitiesRequest {}
+
+message CapabilitiesResponse {
+  // The type of plugin: "router", "guardrail", "auditor", etc.
+  string plugin_type = 1;
+  // Semantic version of the plugin.
+  string version = 2;
+  // Human-readable description.
+  string description = 3;
+}

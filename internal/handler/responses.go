@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -97,15 +98,23 @@ func (h *Handler) streamResponses(c *gin.Context, stream *responseSvc.Stream, re
 	}
 
 	firstTokenRecorded := false
+	outputItemAdded := false
+	var accumulatedText string
+	outputItemID := "msg_" + stream.ResponseID[:8]
 
 	for {
 		select {
 		case event, ok := <-stream.Events:
 			if !ok {
-				// Stream ended
+				// Stream ended — send done events if text was streamed but not closed
+				if outputItemAdded {
+					if err := writeCodexDoneEvents(c, accumulatedText, outputItemID); err != nil {
+						return
+					}
+					flusher.Flush()
+				}
 				h.metrics.ObserveStreamDuration(metricsSurfaceResponses, stream.ProviderName, metricsResultSuccess, time.Since(start))
 				h.logRequestCompleted(c, metricsSurfaceResponses, stream.ProviderName, http.StatusOK, time.Since(start))
-				writeSSEDone(c)
 				flusher.Flush()
 				return
 			}
@@ -116,8 +125,60 @@ func (h *Handler) streamResponses(c *gin.Context, stream *responseSvc.Stream, re
 					h.metrics.ObserveTTFT(metricsSurfaceResponses, stream.ProviderName, time.Since(start))
 					firstTokenRecorded = true
 				}
-				if err := writeSSE(c, normalized); err != nil {
-					return
+
+				// Insert added events before the first output_text.delta
+				if normalized.Type == "response.output_text.delta" && !outputItemAdded {
+					if err := writeSSEEvent(c, "response.output_item.added", gin.H{
+						"type":         "response.output_item.added",
+						"output_index": 0,
+						"item": gin.H{
+							"id":      outputItemID,
+							"type":    "message",
+							"role":    "assistant",
+							"status":  "in_progress",
+							"content": []gin.H{},
+						},
+					}); err != nil {
+						return
+					}
+					if err := writeSSEEvent(c, "response.content_part.added", gin.H{
+						"type":          "response.content_part.added",
+						"output_index":  0,
+						"content_index": 0,
+						"part": gin.H{
+							"type": "output_text",
+							"text": "",
+						},
+					}); err != nil {
+						return
+					}
+					outputItemAdded = true
+				}
+
+				if normalized.Type == "response.output_text.delta" {
+					accumulatedText += normalized.Delta
+				}
+
+				// Insert done events before response.completed
+				if normalized.Type == "response.completed" && outputItemAdded {
+					if err := writeCodexDoneEvents(c, accumulatedText, outputItemID); err != nil {
+						return
+					}
+					outputItemAdded = false
+				}
+
+				// Write the event (response.created / response.completed need usage remap)
+				if normalized.Response != nil && (normalized.Type == "response.created" || normalized.Type == "response.completed") {
+					if err := writeCodexResponseEvent(c, normalized.Type, normalized.Response); err != nil {
+						return
+					}
+				} else {
+					if _, err := c.Writer.Write([]byte("event: " + normalized.Type + "\n")); err != nil {
+						return
+					}
+					if err := writeSSE(c, normalized); err != nil {
+						return
+					}
 				}
 				flusher.Flush()
 			}
@@ -130,8 +191,10 @@ func (h *Handler) streamResponses(c *gin.Context, stream *responseSvc.Stream, re
 				h.metrics.RecordError(metricsSurfaceResponses, stream.ProviderName, result, errorClass)
 				h.metrics.ObserveStreamDuration(metricsSurfaceResponses, stream.ProviderName, result, time.Since(start))
 				h.logRequestFailed(c, metricsSurfaceResponses, stream.ProviderName, http.StatusBadGateway, err)
+				if _, werr := c.Writer.Write([]byte("event: error\n")); werr != nil {
+					return
+				}
 				_ = writeSSE(c, gin.H{"type": "error", "message": err.Error()})
-				writeSSEDone(c)
 				flusher.Flush()
 				return
 			}
@@ -151,6 +214,9 @@ func normalizeResponsesStreamEvent(event provider.ResponseEvent) []provider.Resp
 			textEvent.Delta = event.Text()
 			textEvent.TextDelta = ""
 			textEvent.ToolCalls = nil
+			zero := 0
+			textEvent.OutputIndex = &zero
+			textEvent.ContentIndex = &zero
 			normalized = append(normalized, textEvent)
 		}
 		for _, call := range event.ToolCalls {
@@ -189,6 +255,69 @@ func normalizeResponsesStreamEvent(event provider.ResponseEvent) []provider.Resp
 
 func normalizedEventType(event provider.ResponseEvent) string {
 	return event.Type
+}
+
+func writeCodexDoneEvents(c *gin.Context, text string, itemID string) error {
+	if err := writeSSEEvent(c, "response.output_text.done", gin.H{
+		"type":          "response.output_text.done",
+		"output_index":  0,
+		"content_index": 0,
+	}); err != nil {
+		return err
+	}
+	if err := writeSSEEvent(c, "response.content_part.done", gin.H{
+		"type":          "response.content_part.done",
+		"output_index":  0,
+		"content_index": 0,
+		"part": gin.H{
+			"type": "output_text",
+			"text": text,
+		},
+	}); err != nil {
+		return err
+	}
+	if err := writeSSEEvent(c, "response.output_item.done", gin.H{
+		"type":         "response.output_item.done",
+		"output_index": 0,
+		"item": gin.H{
+			"id":      itemID,
+			"type":    "message",
+			"role":    "assistant",
+			"status":  "completed",
+			"content": []gin.H{{"type": "output_text", "text": text}},
+		},
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func writeCodexResponseEvent(c *gin.Context, eventType string, resp *provider.Response) error {
+	payload := map[string]any{
+		"type": eventType,
+		"response": map[string]any{
+			"id":         resp.ID,
+			"object":     resp.Object,
+			"created_at": resp.Created,
+			"model":      resp.Model,
+			"status":     resp.Status,
+			"output":     resp.Output,
+			"usage": map[string]any{
+				"input_tokens":  resp.Usage.PromptTokens,
+				"output_tokens": resp.Usage.CompletionTokens,
+				"total_tokens":  resp.Usage.TotalTokens,
+				"input_tokens_details": map[string]any{
+					"cached_tokens": resp.Usage.CachedTokens,
+				},
+			},
+		},
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	_, err = c.Writer.Write([]byte("event: " + eventType + "\ndata: " + string(data) + "\n\n"))
+	return err
 }
 
 func (h *Handler) streamChatCompatibility(c *gin.Context, stream *responseSvc.Stream, model string, start time.Time) {

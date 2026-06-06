@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -323,43 +322,6 @@ func TestChatEndpointReturnsCompatibilityJSON(t *testing.T) {
 	}
 	if len(payload.Choices) != 1 || payload.Choices[0].Message.Content != "compat hello" {
 		t.Fatalf("unexpected chat payload: %s", rec.Body.String())
-	}
-}
-
-func TestResponsesEndpointStreamReturnsSSE(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"stream handler\"}\n\n")
-		_, _ = fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_up\",\"created_at\":1700000000,\"model\":\"provider-model\",\"status\":\"completed\",\"output\":[{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"stream handler\"}]}],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n")
-		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
-	}))
-	defer upstream.Close()
-
-	env := newHandlerTestEnv(t, handlerTestEnvConfig{
-		upstreamURL: upstream.URL,
-		endpoint:    "responses",
-	})
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"public-model","input":"hello","stream":true}`))
-	req.Header.Set("Authorization", "Bearer test-key:test-secret")
-	req.Header.Set("Content-Type", "application/json")
-	env.server.engine.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "response.created") {
-		t.Fatalf("expected response.created event, got %q", body)
-	}
-	if !strings.Contains(body, "stream handler") {
-		t.Fatalf("expected stream delta in body, got %q", body)
-	}
-	if !strings.Contains(body, "data: [DONE]") {
-		t.Fatalf("expected done marker, got %q", body)
 	}
 }
 

@@ -2,6 +2,7 @@ package responses
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gateyes/gateway/internal/middleware"
+	pluginSvc "github.com/gateyes/gateway/internal/plugin"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/provider"
 	"github.com/gateyes/gateway/internal/trace"
@@ -106,9 +108,42 @@ func (s *Service) callWithRetry(ctx context.Context, identity *repository.AuthId
 	retryCount := 0
 
 	for i := 0; i <= retryCfg.MaxRetries; i++ {
+		// pre_upstream: plugins can modify the request or return cache_hit.
+		prePayload := map[string]any{"request": exec.upstreamRequest}
+		if cmd := s.invokePlugins(ctx, pluginSvc.PreUpstream, prePayload, traceID, exec.tenantID, "", exec.provider.Model(), exec.upstreamRequest.Stream); cmd != nil {
+			switch cmd.Action {
+			case "BLOCK":
+				return nil, retryCount, fmt.Errorf("plugin blocked: %s", cmd.Reason)
+			case "TRANSFORM":
+				// Parse transformed request from payload.
+				var transformed provider.ResponseRequest
+				if err := json.Unmarshal(cmd.Payload, &transformed); err == nil {
+					exec.upstreamRequest = &transformed
+				}
+			case "CACHE_HIT":
+				var cached provider.Response
+				if err := json.Unmarshal(cmd.Payload, &cached); err == nil {
+					return &cached, retryCount, nil
+				}
+			}
+		}
+
 		resp, err := exec.provider.CreateResponse(ctx, exec.upstreamRequest)
 
 		if err == nil {
+			// post_upstream: plugins can modify the response.
+			postPayload := map[string]any{"response": resp}
+			if cmd := s.invokePlugins(ctx, pluginSvc.PostUpstream, postPayload, traceID, exec.tenantID, "", exec.provider.Model(), exec.upstreamRequest.Stream); cmd != nil {
+				switch cmd.Action {
+				case "BLOCK":
+					return nil, retryCount, fmt.Errorf("plugin blocked: %s", cmd.Reason)
+				case "TRANSFORM":
+					var transformed provider.Response
+					if err := json.Unmarshal(cmd.Payload, &transformed); err == nil {
+						resp = &transformed
+					}
+				}
+			}
 			return resp, retryCount, nil
 		}
 		lastErr = err

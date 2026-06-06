@@ -118,6 +118,8 @@ type ResponseEvent struct {
 	ToolCalls     []ToolCall      `json:"tool_calls,omitempty"`
 	FinishReason  string          `json:"finish_reason,omitempty"`
 	Usage         *Usage          `json:"usage,omitempty"`
+	OutputIndex   *int            `json:"output_index,omitempty"`
+	ContentIndex  *int            `json:"content_index,omitempty"`
 }
 
 func (e ResponseEvent) Text() string {

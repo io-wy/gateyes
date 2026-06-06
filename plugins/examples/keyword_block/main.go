@@ -1,6 +1,9 @@
 // keyword_block is a sample gateyes WASM plugin that blocks requests
 // containing sensitive keywords.
 //
+// Deprecated: use the GatewayPlugin interface (evaluate_gateway ABI) instead.
+// See plugins/examples/wasm_auditor for the recommended approach.
+//
 // Build:
 //
 //	tinygo build -o keyword_block.wasm -target=wasi -no-debug -opt=z .

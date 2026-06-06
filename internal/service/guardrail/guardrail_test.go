@@ -100,8 +100,8 @@ func TestManagerTransformPropagates(t *testing.T) {
 	check := &stubGuardrail{name: "check", pre: PreResult{Verdict: Allow}}
 	m := New([]Guardrail{transform, check})
 	res := m.PreCall(context.Background(), &provider.ResponseRequest{Input: "original"})
-	if res.Verdict != Allow {
-		t.Fatalf("verdict = %v, want Allow", res.Verdict)
+	if res.Verdict != Transform {
+		t.Fatalf("verdict = %v, want Transform", res.Verdict)
 	}
 	if res.Request == nil || res.Request.Input != "rewritten" {
 		t.Fatalf("Request not propagated: %+v", res.Request)
@@ -145,8 +145,8 @@ func TestManagerPostCallTransformPropagates(t *testing.T) {
 	}}
 	m := New([]Guardrail{transform, check})
 	res := m.PostCall(context.Background(), &provider.Response{ID: "r1"})
-	if res.Verdict != Allow || res.Response == nil || res.Response.ID != "r2" {
-		t.Fatalf("got %+v, want Allow with transformed response", res)
+	if res.Verdict != Transform || res.Response == nil || res.Response.ID != "r2" {
+		t.Fatalf("got %+v, want Transform with transformed response", res)
 	}
 }
 

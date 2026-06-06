@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gateyes/gateway/internal/repository"
+	pluginSvc "github.com/gateyes/gateway/internal/plugin"
 	"github.com/gateyes/gateway/internal/service/provider"
 	routeSvc "github.com/gateyes/gateway/internal/service/router"
 	"github.com/gateyes/gateway/internal/trace"
@@ -121,17 +122,100 @@ func (s *Service) planCandidates(ctx context.Context, identity *repository.AuthI
 		return nil, trace
 	}
 
+	ordered := routable
 	if s.router != nil {
-		ordered, routerTrace := s.router.ExplainOrderCandidates(routable, buildRouteContext(req, sessionID))
+		var routerTrace routeSvc.OrderTrace
+		ordered, routerTrace = s.router.ExplainOrderCandidates(routable, buildRouteContext(req, sessionID))
 		trace.Router = routerTrace
-		trace.OrderedCandidates = providerNamesFromSlice(ordered)
-		trace.touch()
-		return ordered, trace
 	}
 
-	trace.OrderedCandidates = providerNamesFromSlice(routable)
+	// Try gRPC router plugin (outside lock — it's IO).
+	if s.pluginMgr != nil {
+		if pr := s.pluginMgr.Router(); pr != nil {
+			pluginOrdered := s.tryPluginRouter(ctx, pr, ordered, buildRouteContext(req, sessionID))
+			if pluginOrdered != nil {
+				ordered = pluginOrdered
+				trace.Router.Strategy = "plugin:" + pr.Name()
+			}
+		}
+	}
+
+	trace.OrderedCandidates = providerNamesFromSlice(ordered)
 	trace.touch()
-	return routable, trace
+	return ordered, trace
+}
+
+func (s *Service) tryPluginRouter(ctx context.Context, pr pluginSvc.Router, candidates []provider.Provider, routeCtx routeSvc.RouteContext) []provider.Provider {
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	candInfos := make([]pluginSvc.CandidateInfo, len(candidates))
+	for i, p := range candidates {
+		candInfos[i] = pluginSvc.CandidateInfo{
+			Name:     p.Name(),
+			Model:    p.Model(),
+			Weight:   p.Weight(),
+			UnitCost: p.UnitCost(),
+		}
+		if s.providerMgr != nil {
+			if stats := s.providerMgr.Stats; stats != nil {
+				candInfos[i].Load = stats.CurrentLoad(p.Name())
+				candInfos[i].TPM = stats.TPM(p.Name())
+			}
+		}
+		if record, ok := s.providerMgr.Registry(p.Name()); ok {
+			candInfos[i].Healthy = record.HealthStatus == provider.ProviderHealthHealthy
+		}
+	}
+
+	pluginCtx := pluginSvc.RouteContext{
+		Model:               routeCtx.Model,
+		SessionID:           routeCtx.SessionID,
+		InputText:           routeCtx.InputText,
+		PromptTokens:        routeCtx.PromptTokens,
+		Stream:              routeCtx.Stream,
+		HasTools:            routeCtx.HasTools,
+		HasImages:           routeCtx.HasImages,
+		HasStructuredOutput: routeCtx.HasStructuredOutput,
+	}
+
+	names, ok := pr.OrderCandidates(ctx, candInfos, pluginCtx)
+	if !ok || len(names) == 0 {
+		return nil
+	}
+
+	// Map ordered names back to provider instances.
+	byName := make(map[string]provider.Provider, len(candidates))
+	for _, p := range candidates {
+		byName[p.Name()] = p
+	}
+	ordered := make([]provider.Provider, 0, len(names))
+	for _, name := range names {
+		if p, exists := byName[name]; exists {
+			ordered = append(ordered, p)
+		}
+	}
+	// Append any candidates the plugin didn't mention, preserving their relative order.
+	for _, p := range candidates {
+		if _, exists := byName[p.Name()]; !exists {
+			continue
+		}
+		found := false
+		for _, name := range names {
+			if name == p.Name() {
+				found = true
+				break
+			}
+		}
+		if !found {
+			ordered = append(ordered, p)
+		}
+	}
+	if len(ordered) == 0 {
+		return nil
+	}
+	return ordered
 }
 
 func registryFilterReason(record repository.ProviderRegistryRecord, req *provider.ResponseRequest) (string, string) {

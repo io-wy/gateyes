@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package gateyes.plugin.v1;
+
+option go_package = "github.com/gateyes/gateway/pkg/plugin/v1";
+
+// RouterPlugin is called by the gateway to decide the order in which
+// upstream providers should be tried. The gateway passes the full list
+// of candidate providers plus the request context; the plugin returns
+// an ordered list of provider names. The first name in the list is the
+// preferred provider.
+service RouterPlugin {
+  rpc OrderCandidates(OrderCandidatesRequest) returns (OrderCandidatesResponse);
+}
+
+message OrderCandidatesRequest {
+  // The candidate providers available for this request.
+  repeated Candidate candidates = 1;
+  // Context about the current request.
+  RouteContext context = 2;
+}
+
+message Candidate {
+  // Provider name (e.g. "codexapis").
+  string name = 1;
+  // The model this provider serves.
+  string model = 2;
+  // Routing weight configured in the gateway.
+  int32 weight = 3;
+  // Cost per token (input+output average), or 0 if unknown.
+  double unit_cost = 4;
+  // Current in-flight request count on this provider.
+  int64 current_load = 5;
+  // Tokens per minute observed on this provider.
+  int64 tpm = 6;
+  // Whether the provider is considered healthy.
+  bool healthy = 7;
+}
+
+message RouteContext {
+  // The model requested by the client.
+  string model = 1;
+  // Session identifier for affinity-aware routing.
+  string session_id = 2;
+  // The raw user input text (first user message content).
+  string input_text = 3;
+  // Estimated prompt token count.
+  int32 prompt_tokens = 4;
+  // Whether the request asks for streaming.
+  bool stream = 5;
+  // Whether the request includes tool definitions.
+  bool has_tools = 6;
+  // Whether the request includes image inputs.
+  bool has_images = 7;
+  // Whether the request asks for structured output.
+  bool has_structured_output = 8;
+}
+
+message OrderCandidatesResponse {
+  // Ordered list of provider names. The gateway will try them in this order.
+  // If empty, the gateway falls back to its built-in strategy.
+  repeated string ordered_names = 1;
+}

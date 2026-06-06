@@ -2,6 +2,7 @@ package responses
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/gateyes/gateway/internal/config"
@@ -17,6 +18,8 @@ import (
 	"github.com/gateyes/gateway/internal/service/router"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
+
+	pluginSvc "github.com/gateyes/gateway/internal/plugin"
 )
 
 const terminalPersistenceTimeout = 5 * time.Second
@@ -35,18 +38,19 @@ const streamCancelDrainTimeout = 5 * time.Second
 const streamCancelDrainQuiet = 250 * time.Millisecond
 
 type Dependencies struct {
-	Config      *config.Config
-	Store       repository.Store
-	Auth        *auth.Auth
-	ProviderMgr *provider.Manager
-	Router      *router.Router
-	Alert       *alert.AlertService
-	Limiter     *limiter.Limiter
-	Cache       cache.Cache
-	Metrics     CacheMetrics
-	EventBus    *eventbus.Bus
-	Guardrails  *guardrail.Manager
-	PricingFeed *pricing.Feed
+	Config        *config.Config
+	Store         repository.Store
+	Auth          *auth.Auth
+	ProviderMgr   *provider.Manager
+	Router        *router.Router
+	Alert         *alert.AlertService
+	Limiter       *limiter.Limiter
+	Cache         cache.Cache
+	Metrics       CacheMetrics
+	EventBus      *eventbus.Bus
+	Guardrails    *guardrail.Manager
+	PricingFeed   *pricing.Feed
+	PluginManager pluginSvc.Manager
 }
 
 type Service struct {
@@ -55,6 +59,7 @@ type Service struct {
 	auth           *auth.Auth
 	providerMgr    *provider.Manager
 	router         *router.Router
+	pluginMgr      pluginSvc.Manager
 	alert          *alert.AlertService
 	limiter        *limiter.Limiter
 	circuitBreaker *CircuitBreaker
@@ -105,6 +110,7 @@ func New(deps *Dependencies) *Service {
 		auth:           deps.Auth,
 		providerMgr:    deps.ProviderMgr,
 		router:         deps.Router,
+		pluginMgr:      deps.PluginManager,
 		alert:          deps.Alert,
 		limiter:        deps.Limiter,
 		circuitBreaker: NewCircuitBreaker(deps.Config.CircuitBreaker),
@@ -115,6 +121,63 @@ func New(deps *Dependencies) *Service {
 		pricingFeed:    deps.PricingFeed,
 		drainSem:       make(chan struct{}, 100),
 		persistSem:     make(chan struct{}, 50),
+	}
+}
+
+// SetPluginManager wires an optional gRPC plugin manager.
+func (s *Service) SetPluginManager(m pluginSvc.Manager) {
+	s.pluginMgr = m
+}
+
+// invokePlugins calls all healthy gateway plugins subscribed to the given phase.
+// It returns the first non-allow command (block/transform/cache_hit) or nil.
+func (s *Service) invokePlugins(ctx context.Context, phase pluginSvc.Phase, payload map[string]any, traceID, tenantID, userID, model string, stream bool) *pluginSvc.Command {
+	if s.pluginMgr == nil {
+		return nil
+	}
+	plugins := s.pluginMgr.GetByPhase(phase)
+	if len(plugins) == 0 {
+		return nil
+	}
+
+	payloadBytes, _ := json.Marshal(payload)
+	for _, p := range plugins {
+		cmds, err := p.Process(ctx, phase, payloadBytes, traceID, tenantID, userID, model, stream)
+		if err != nil {
+			continue // fail-open
+		}
+		for _, cmd := range cmds {
+			switch cmd.Action {
+			case "BLOCK":
+				return &cmd
+			case "TRANSFORM":
+				return &cmd
+			case "CACHE_HIT":
+				return &cmd
+			case "SKIP":
+				return nil
+			}
+		}
+	}
+	return nil
+}
+
+// invokePluginsAsync fires plugins in the background (for audit phases).
+func (s *Service) invokePluginsAsync(phase pluginSvc.Phase, payload map[string]any, traceID, tenantID, userID, model string, stream bool) {
+	if s.pluginMgr == nil {
+		return
+	}
+	plugins := s.pluginMgr.GetByPhase(phase)
+	if len(plugins) == 0 {
+		return
+	}
+	payloadBytes, _ := json.Marshal(payload)
+	for _, p := range plugins {
+		go func(pl pluginSvc.Gateway) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, _ = pl.Process(ctx, phase, payloadBytes, traceID, tenantID, userID, model, stream)
+		}(p)
 	}
 }
 

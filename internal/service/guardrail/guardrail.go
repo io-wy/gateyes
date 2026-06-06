@@ -1,6 +1,11 @@
 // Package guardrail provides a pluggable interface for pre-/post-call
 // validation of LLM requests and responses.
 //
+// Deprecated: Guardrail plugins are deprecated. New plugins should use the
+// GatewayPlugin interface with pre_upstream / post_upstream phases instead.
+// This package is kept for backward compatibility and will be removed in a
+// future release.
+//
 // A Guardrail inspects either the inbound request (PreCall) or the
 // upstream response (PostCall) and returns a Verdict that the gateway
 // then enforces:
@@ -21,6 +26,7 @@ package guardrail
 import (
 	"context"
 	"errors"
+	"io"
 	"regexp"
 	"strings"
 
@@ -95,12 +101,13 @@ func New(chain []Guardrail) *Manager {
 }
 
 // PreCall runs each guardrail's PreCall in order. Returns the first
-// non-Allow result, or Allow with the original request if all pass.
+// Block, or Transform if any guardrail rewrote the request, or Allow.
 func (m *Manager) PreCall(ctx context.Context, req *provider.ResponseRequest) PreResult {
 	if m == nil || len(m.chain) == 0 || req == nil {
 		return PreResult{Verdict: Allow, Request: req}
 	}
 	current := req
+	transformed := false
 	for _, g := range m.chain {
 		res := g.PreCall(ctx, current)
 		switch res.Verdict {
@@ -112,8 +119,12 @@ func (m *Manager) PreCall(ctx context.Context, req *provider.ResponseRequest) Pr
 		case Transform:
 			if res.Request != nil {
 				current = res.Request
+				transformed = true
 			}
 		}
+	}
+	if transformed {
+		return PreResult{Verdict: Transform, Request: current}
 	}
 	return PreResult{Verdict: Allow, Request: current}
 }
@@ -124,6 +135,7 @@ func (m *Manager) PostCall(ctx context.Context, resp *provider.Response) PostRes
 		return PostResult{Verdict: Allow, Response: resp}
 	}
 	current := resp
+	transformed := false
 	for _, g := range m.chain {
 		res := g.PostCall(ctx, current)
 		switch res.Verdict {
@@ -135,10 +147,30 @@ func (m *Manager) PostCall(ctx context.Context, resp *provider.Response) PostRes
 		case Transform:
 			if res.Response != nil {
 				current = res.Response
+				transformed = true
 			}
 		}
 	}
+	if transformed {
+		return PostResult{Verdict: Transform, Response: current}
+	}
 	return PostResult{Verdict: Allow, Response: current}
+}
+
+// Close releases resources held by guardrails that implement io.Closer.
+func (m *Manager) Close() error {
+	if m == nil {
+		return nil
+	}
+	var firstErr error
+	for _, g := range m.chain {
+		if c, ok := g.(io.Closer); ok {
+			if err := c.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
 }
 
 // RegexBlocklist is a reference Guardrail: blocks any request whose

@@ -1,3 +1,9 @@
+// Package filter provides a pluggable request-filtering pipeline.
+//
+// Deprecated: Filter plugins are deprecated. New plugins should use the
+// GatewayPlugin interface with the pre_upstream phase instead.
+// This package is kept for backward compatibility and will be removed in a
+// future release.
 package filter
 
 import (
