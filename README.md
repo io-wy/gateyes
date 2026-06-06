@@ -1,157 +1,128 @@
-[English](./README.en.md) | 简体中文
-
 # Gateyes
 
-> 为 LLM 应用而生的生产级 API Gateway
-
-Gateyes 是一个用 Go 编写的高性能 LLM API Gateway，在应用与上游模型提供商之间提供统一接入层。核心设计哲学是 **provider-native adapter** ——不做协议抹平，而是做精确转接，让 OpenAI、Anthropic、vLLM 等每种平台的原生能力都能被完整暴露。
+生产级 LLM API Gateway，统一接入 OpenAI / Anthropic / vLLM / SGLang，提供多租户隔离、智能路由、限流熔断、预算治理和完整可观测性。
 
 ```
-应用层  ->  Gateyes Gateway  ->  OpenAI / Anthropic / vLLM / ...
-              |
-              +-> 多租户隔离 + RBAC
-              +-> 限流 + 熔断 + 智能路由
-              +-> 预算管控 + 审计日志
-              +-> Prometheus + Grafana + OTLP 追踪
+Client (OpenAI/Anthropic SDK)
+    |
+    v
++----------------------------------+
+|  Gateyes Gateway                 |
+|  - Auth / RBAC / 多租户          |
+|  - 限流 / 熔断 / 缓存            |
+|  - 智能路由 / 预算治理            |
+|  - 插件系统 (WASM + gRPC)        |
+|  - Metrics / Trace / Audit       |
++----------------------------------+
+    |                  |         |
+    v                  v         v
+OpenAI API      Anthropic    vLLM/SGLang
 ```
 
 ---
 
-## 核心亮点
+## 内置功能
 
-### 1. 四路 API 统一接入，零摩擦迁移
+### API 接入（4 路统一）
 
-| 接口 | 协议来源 | 一句话说明 |
-|---|---|---|
-| `POST /v1/responses` | OpenAI Responses API | 内部主链路，所有能力从这里发散 |
-| `POST /v1/chat/completions` | OpenAI Chat Completions | 存量业务零改动接入 |
-| `POST /v1/messages` | Anthropic Messages API | Anthropic 生态直接对接 |
-| `POST /v1/embeddings` | OpenAI Embeddings API | 文本向量化统一出口 |
+| 接口 | 协议 | 说明 |
+|------|------|------|
+| `/v1/responses` | OpenAI Responses API | 内部主链路 |
+| `/v1/chat/completions` | OpenAI Chat Completions | 存量零改动接入 |
+| `/v1/messages` | Anthropic Messages API | Anthropic 生态直连 |
+| `/v1/embeddings` | OpenAI Embeddings API | 文本向量化 |
 
-三路文本生成接口共享同一套业务编排：provider 选择、重试、熔断、流式处理、usage 记录。换 provider 不改代码，换模型只改请求体。
+四路共享同一套业务编排：provider 选择、重试、熔断、流式处理、usage 记录。
 
-### 2. Provider-Native Adapter，不削足适履
+### 多租户与权限
 
-不做"最小公分母"协议抹平：
+- **鉴权链路**：`api_key:api_secret -> user -> tenant -> role`
+- **四级角色**：`super_admin` / `tenant_admin` / `tenant_user`
+- **Provider 可见性**：按 tenant 绑定，未绑定即不可见
+- **模型白名单**：user + api_key + virtual_key 三级 AND 控制
 
-- **OpenAI adapter**：保留 tool_call、function_call、json_schema、responses 端点
-- **Anthropic adapter**：完整保留 thinking、tool_use、citations 等特有字段
-- **grpc-vllm adapter**：gRPC 直连 vLLM，支持 tokenizer 本地 decode，支持流式输出
+### 路由（6 种策略）
 
-新增 adapter 只需实现 `Provider` 接口，通过 `vendor` profile + `headers`/`extraBody` 覆盖即可扩展。
-
-### 3. 企业级多租户隔离
-
-运行时鉴权链路：`api_key:api_secret -> user -> tenant -> role`
-
-| 隔离维度 | 说明 |
-|---|---|
-| 数据隔离 | user / api key / project / usage / responses 全隔离 |
-| Provider 可见性 | 按 tenant 绑定可用 provider，未绑定即不可见 |
-| 模型白名单 | user + api_key + virtual_key 三级 AND 关系精确控制 |
-| 角色体系 | `super_admin` / `tenant_admin` / `tenant_user` 固定角色 |
-
-### 4. 四层预算治理 + 多维度限流
-
-**预算治理**（virtual_key -> api_key -> project -> tenant）：
-- `hard_reject`：预算耗尽直接拒绝
-- `soft_alert`：告警但不阻断，触发 webhook
-- `grace`：宽限期模式，超支部分后续记账
-
-**限流**（Redis Lua token bucket / 内存降级）：
-- 全局 QPS/TPM、租户 TPM/RPM、Provider TPM/RPM、模型 QPS 多维度独立判定
-- 无 Redis 时自动降级为内存模式，fail-open 容错
-
-### 5. 智能路由 + 熔断自愈
-
-| 路由策略 | 场景 |
-|---|---|
+| 策略 | 说明 |
+|------|------|
 | `round_robin` | 简单轮询 |
-| `least_load` | 基于实时并发数的最小负载 |
-| `cost_based` | 按配置价格优先低成本 provider |
-| `sticky` | 同 session 命中同一 provider（SessionAffinity） |
-| `ruleEngine` | 按 prompt 长度、工具调用等特征分流 |
-| `prefix_affinity` | 同 prompt 前缀命中同一 provider（提升 prefix-cache 命中率） |
+| `least_load` | 实时并发最小负载 |
+| `cost_based` | 按价格优先低成本 |
+| `sticky` | 同 session 命中同一 provider |
+| `ruleEngine` | 按 prompt 长度、工具调用等分流 |
+| `prefix_affinity` | 同前缀命中同一 provider（提升 prefix-cache 命中率） |
 
-**熔断机制**：三态模型（healthy / degraded / unhealthy），定时探活 + 手动触发，状态变更自动持久化并告警。
+### 限流（Redis Lua Token Bucket）
 
-### 6. 完整的可观测性体系
+多维度独立判定：全局 QPS/TPM、租户 TPM/RPM、Provider TPM/RPM、模型 QPS。无 Redis 时自动降级为内存模式。
+
+### 预算治理
+
+四级预算（virtual_key -> api_key -> project -> tenant），三种策略：
+- `hard_reject`：耗尽即拒
+- `soft_alert`：告警但不阻断
+- `grace`：宽限期，超支后续记账
+
+### 熔断
+
+三态模型（healthy / degraded / unhealthy），定时探活 + 手动触发，状态变更持久化并告警。
+
+### 缓存
+
+L1 精确匹配缓存（Redis + 内存 LRU），命中时直接复用响应，不调用上游。
+
+### 可观测性
 
 - **14 个 Prometheus 指标**：请求/延迟/上游延迟/TTFT/流式时长/token/错误/重试/熔断
-- **OTLP 链路追踪**：HTTP exporter，W3C traceparent 传播
+- **OTLP 链路追踪**：W3C traceparent 传播
 - **审计日志**：admin 关键写操作全记录
-- **Grafana 基线 dashboard**：开箱即用
 
-### 7. 生产级可靠性
+### 插件系统
 
-- Graceful shutdown：SIGTERM 信号处理 + 连接排空
-- 配置热重载：`POST /admin/reload` 无需重启
-- Provider 动态管理：运行时增删改
-- 三库兼容：SQLite（开发）/ PostgreSQL（生产）/ MySQL
-- TDD 测试覆盖：`go test ./...` 全量回归
+支持 **WASM (TinyGo)** 和 **gRPC** 两种插件，覆盖 5 个生命周期阶段：
 
-### 8. 性能实测
-
-| 指标 | 数值 |
-|---|---|
-| Gateway 自身开销（P50） | ~28 ms |
-| 端到端 P95 | ~170 ms |
-| 单并发 RPS | ~8 req/s |
-| 流式首 token 延迟（TTFT） | ~130 ms |
-| 并发 CC=1 成功率 | 100% |
-
-完整 benchmark 报告见 [`docs/tech-highlights-report.md`](./docs/tech-highlights-report.md)。
+| Phase | 触发时机 | 典型用途 |
+|-------|---------|---------|
+| `pre_route` | 路由前 | 改写路由目标 |
+| `post_route` | 路由后 | 审计路由决策 |
+| `pre_upstream` | 发请求到 provider 前 | 拦截、改写请求、缓存命中 |
+| `post_upstream` | 收到 provider 响应后 | 改写响应、内容审核 |
+| `audit` | 响应已写入客户端后 | 异步日志、计费、监控 |
 
 ---
 
 ## 快速开始
 
-### Docker Compose 一键部署（推荐）
+### Docker Compose（推荐）
 
 ```bash
 git clone https://github.com/io-wy/gateyes.git && cd gateyes
 cp .env.example .env
-# 编辑 .env，填写 OPENAI_API_KEY 或 ANTHROPIC_API_KEY
+# 编辑 .env，填写 OPENAI_API_KEY
 docker compose up --build -d
+
 curl http://127.0.0.1:8083/health
 ```
 
-| 服务 | 地址 |
-|---|---|
-| Gateway | http://127.0.0.1:8083 |
-| Prometheus | http://127.0.0.1:9090 |
-| Grafana | http://127.0.0.1:3000 |
+暴露服务：
+- Gateway: `http://127.0.0.1:8083`
+- Prometheus: `http://127.0.0.1:9090`
+- Grafana: `http://127.0.0.1:3000`
 
-### 手动部署
+### 本地开发
 
 ```bash
-go build -o ./bin/gateway ./cmd/gateway
 cp configs/config.example.yaml configs/config.yaml
-# 编辑 configs/config.yaml
-./bin/gateway -config configs/config.yaml
+# 编辑 configs/config.yaml，配置 provider
+go run ./cmd/gateway
 ```
 
-### 发送第一个请求
+### 零成本体验（内置 Mock）
 
 ```bash
-curl -X POST http://localhost:8083/v1/chat/completions \
-  -H "Authorization: Bearer test-key-001:test-secret" \
-  -H "Content-Type: application/json" \
-  -d '{"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hello"}]}'
-```
-
-### 零成本体验全部功能
-
-使用内置 mock upstream，无需真实 API key：
-
-```bash
-# 1. 启动 mock 上游
 go run ./benchmark/cmd/mockupstream/main.go -port 19999
-
-# 2. 启动 gateway（使用 mock 配置）
 ./bin/gateway -config configs/demo-mock.yaml
 
-# 3. 体验 Responses / Chat / Messages / Embeddings 全部接口
 curl -X POST http://localhost:8083/v1/responses \
   -H "Authorization: Bearer demo-key-001:demo-secret-001" \
   -H "Content-Type: application/json" \
@@ -160,88 +131,160 @@ curl -X POST http://localhost:8083/v1/responses \
 
 ---
 
-## 架构概览
+## 插件开发
 
-```
-HTTP Request
-    |
-    v
-[Gin Router]
-    |
-    +-- Auth Middleware  --------->  api_key -> user -> tenant -> role
-    +-- Guard Middleware  -------->  模型白名单 + 配额 + 预算 + 限流
-    |
-    v
-[Handler]
-    |
-    +-- OpenAI / Anthropic 兼容转换
-    |
-    v
-[Responses Service]
-    |
-    +-- 查询 tenant 可用 provider
-    +-- 健康/能力/权重过滤
-    +-- ruleEngine -> ranker -> strategy 排序
-    +-- 重试 / fallback
-    +-- response 持久化
-    +-- usage 记录 + 多级预算扣减
-    |
-    v
-[Provider Adapter]  ->  OpenAI / Anthropic / grpc-vllm
+Gateyes 支持 **WASM (TinyGo)** 和 **gRPC** 两种插件。选择建议：
+
+| 维度 | WASM | gRPC |
+|------|------|------|
+| 延迟 | < 1ms | ~5-50ms |
+| 沙箱 | 完全隔离 | 独立进程 |
+| 外部依赖 | 不能访问 | 可以访问网络/数据库 |
+| 适用场景 | 轻量过滤、关键词拦截 | 复杂路由、模型调用 |
+
+### WASM 插件（TinyGo）
+
+```go
+package main
+
+import "github.com/gateyes/gateway/plugins/sdk/gateyes"
+
+//export evaluate_gateway
+func evaluateGateway(inputPtr, inputLen, outputPtr, outputMaxLen int32) int32 {
+    ev := gateyes.ReadGatewayEvent(inputPtr, inputLen)
+
+    switch ev.Phase {
+    case "pre_upstream":
+        // 检查请求，拦截敏感词
+        if shouldBlock(ev.Payload) {
+            return gateyes.WriteGatewayCommand(outputPtr,
+                gateyes.BlockGateway("blocked by policy"))
+        }
+    }
+
+    return gateyes.WriteGatewayCommand(outputPtr, gateyes.AllowGateway())
+}
+
+func main() {}
 ```
 
-详细架构见 [`docs/runtime-mechanisms.md`](./docs/runtime-mechanisms.md)。
+构建：
+```bash
+tinygo build -o my_plugin.wasm -target=wasi -no-debug -opt=z .
+```
+
+配置：
+```yaml
+wasmPlugins:
+  - name: my-filter
+    path: ./my_plugin.wasm
+    phases: [pre_upstream, post_upstream]
+    timeoutMs: 50
+    memoryPages: 1
+```
+
+### gRPC 插件（Go）
+
+```go
+func (s *server) Process(stream pluginv1.GatewayPlugin_ProcessServer) error {
+    for {
+        ev, err := stream.Recv()
+        if err == io.EOF { return nil }
+
+        switch ev.GetPhase() {
+        case pluginv1.Phase_PHASE_PRE_UPSTREAM:
+            stream.Send(&pluginv1.Command{
+                Action: pluginv1.Action_ACTION_ALLOW,
+            })
+        }
+    }
+}
+```
+
+配置：
+```yaml
+grpcPlugins:
+  - name: my-auditor
+    type: gateway
+    address: localhost:50052
+    timeout: 100
+    phases:
+      - pre_upstream
+      - post_upstream
+      - audit
+```
+
+完整开发指南（ABI 规范、TRANSFORM 用法、调试技巧、常见问题）见 [`docs/plugin-development.md`](./docs/plugin-development.md)。
 
 ---
 
-## API 文档
+## 部署与维护
 
-完整 API 规范（含所有 endpoint、请求/响应 schema、认证方式）：
+### Kubernetes（Helm）
 
-- [`docs/openapi.json`](./docs/openapi.json) — OpenAPI 3.0 规范
-- 导入 Postman / Swagger UI / Stoplight 即可使用
+```bash
+helm upgrade --install gateyes ./deploy/helm/gateyes \
+  -n gateyes --create-namespace \
+  -f ./deploy/helm/gateyes/values.yaml \
+  -f ./deploy/helm/gateyes/values-prod.yaml
+```
+
+Helm chart 包含：
+- Gateway Deployment（无状态，水平扩缩）
+- PostgreSQL / Redis 依赖（可外置）
+- Prometheus + Grafana
+- Migration Job（pre-install/pre-upgrade）
+- Health probes（`/ready`, `/health`）
+
+### 配置热重载
+
+```bash
+curl -X POST http://localhost:8083/admin/reload \
+  -H "Authorization: Bearer admin-key-001:admin-secret-001"
+```
+
+### 生产检查清单
+
+1. **数据库**：生产用 PostgreSQL，开发用 SQLite
+2. **Redis**：推荐部署，用于分布式限流；不部署时自动降级内存模式
+3. **密钥管理**：Provider API key 不放仓库，用 K8s Secret 或外部密钥管理器
+4. **监控**：Prometheus + Grafana 基线 dashboard 开箱即用
+5. **追踪**：OTLP exporter 配置到 Jaeger / Tempo
+
+详细部署指南见 [`docs/deployment.md`](./docs/deployment.md)。
+
+### 运维常用操作
+
+```bash
+# 查看 provider 状态
+curl -H "Authorization: Bearer admin-key-001:admin-secret-001" \
+  http://localhost:8083/admin/providers
+
+# 查看指标
+curl http://localhost:8083/metrics
+
+# 查看 trace
+curl -H "Authorization: Bearer admin-key-001:admin-secret-001" \
+  http://localhost:8083/admin/traces
+
+# 全量测试回归
+go test ./...
+```
 
 ---
 
 ## 文档导航
 
-完整文档索引见 [`docs/README.md`](./docs/README.md)。
-
-快速定位：
-
-| 我想... | 看这里 |
-|---|---|
-| 部署 Gateway | [`docs/deployment.md`](./docs/deployment.md) |
-| 理解鉴权/限流/路由/预算实现 | [`docs/runtime-mechanisms.md`](./docs/runtime-mechanisms.md) |
-| 接入新 Provider | [`docs/provider-protocol.md`](./docs/provider-protocol.md) |
-| 配置监控与告警 | [`docs/monitoring.md`](./docs/monitoring.md) |
-| 排查线上故障 | [`docs/runbook.md`](./docs/runbook.md) |
-| 了解 benchmark 数据 | [`docs/tech-highlights-report.md`](./docs/tech-highlights-report.md) |
-
----
-
-## 运行要求
-
-- Go 1.25+
-- PostgreSQL（推荐生产）或 SQLite（开发）
-- Redis（推荐，用于分布式限流；不部署时自动降级内存模式）
-
----
-
-## 与同类项目对比
-
-| 维度 | Gateyes | 典型网关 |
-|---|---|---|
-| 协议策略 | Provider-native（保留各平台特性） | 最小公分母（抹平差异） |
-| 内部主链路 | Responses API | Chat Completions |
-| 多租户 | 完整隔离 + RBAC | 通常无或弱隔离 |
-| 预算管控 | 四级预算 + 三种策略 | 通常仅 API Key 级别 |
-| 限流 | Redis Lua 多维度 token bucket | 通常简单 QPS 限流 |
-| 路由 | 5 种策略 + ruleEngine + Affinity（session/prefix） | 通常仅轮询/随机 |
-| L1 缓存 | Redis + 内存 LRU，精确匹配 | 通常无 |
-| 熔断 | 内置健康检查 + 三态熔断 | 通常无或简单超时 |
-| gRPC 上游 | 原生支持 vLLM gRPC | 通常仅 HTTP |
-| 可观测性 | 14 指标 + OTLP + 审计日志 | 通常基础指标 |
+| 文档 | 内容 |
+|------|------|
+| [`docs/plugin-development.md`](./docs/plugin-development.md) | WASM / gRPC 插件完整开发指南 |
+| [`docs/deployment.md`](./docs/deployment.md) | Docker Compose / K8s Helm 部署 |
+| [`docs/architecture.md`](./docs/architecture.md) | 架构总览、职责边界 |
+| [`docs/runtime-mechanisms.md`](./docs/runtime-mechanisms.md) | 鉴权、限流、路由、预算、缓存实现细节 |
+| [`docs/provider-configuration.md`](./docs/provider-configuration.md) | 本地 GPU / 云上 API 接入配置 |
+| [`docs/routing.md`](./docs/routing.md) | 路由策略详解 |
+| [`docs/cache.md`](./docs/cache.md) | L1 缓存机制 |
+| [`docs/monitoring.md`](./docs/monitoring.md) | 监控指标与告警 |
 
 ---
 
