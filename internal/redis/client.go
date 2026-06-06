@@ -2,6 +2,7 @@ package redis
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 
@@ -10,12 +11,23 @@ import (
 
 func NewClient(cfg config.RedisConfig) (*redis.Client, error) {
 	opts := &redis.Options{
-		Addr:     cfg.Addr,
-		Password: cfg.Password,
-		DB:       cfg.DB,
+		Addr:         cfg.Addr,
+		Password:     cfg.Password,
+		DB:           cfg.DB,
+		MinIdleConns: cfg.MinIdleConns,
+		MaxRetries:   cfg.MaxRetries,
 	}
 	if cfg.PoolSize > 0 {
 		opts.PoolSize = cfg.PoolSize
+	}
+	if cfg.DialTimeoutMs > 0 {
+		opts.DialTimeout = time.Duration(cfg.DialTimeoutMs) * time.Millisecond
+	}
+	if cfg.ReadTimeoutMs > 0 {
+		opts.ReadTimeout = time.Duration(cfg.ReadTimeoutMs) * time.Millisecond
+	}
+	if cfg.WriteTimeoutMs > 0 {
+		opts.WriteTimeout = time.Duration(cfg.WriteTimeoutMs) * time.Millisecond
 	}
 	client := redis.NewClient(opts)
 	return client, nil

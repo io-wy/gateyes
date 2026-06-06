@@ -123,10 +123,15 @@ type PersistenceConfig struct {
 }
 
 type RedisConfig struct {
-	Addr     string `yaml:"addr"`     // e.g. "localhost:6379"
-	Password string `yaml:"password"`
-	DB       int    `yaml:"db"`
-	PoolSize int    `yaml:"poolSize"` // 0 = default (10 per CPU)
+	Addr           string `yaml:"addr"`           // e.g. "localhost:6379"
+	Password       string `yaml:"password"`
+	DB             int    `yaml:"db"`
+	PoolSize       int    `yaml:"poolSize"`       // 0 = default (10 per CPU)
+	MinIdleConns   int    `yaml:"minIdleConns"`   // 0 = default
+	MaxRetries     int    `yaml:"maxRetries"`     // 0 = default (3)
+	DialTimeoutMs  int    `yaml:"dialTimeoutMs"`  // 0 = default (5s)
+	ReadTimeoutMs  int    `yaml:"readTimeoutMs"`  // 0 = default (3s)
+	WriteTimeoutMs int    `yaml:"writeTimeoutMs"` // 0 = default (3s)
 }
 
 func (r RedisConfig) Enabled() bool {

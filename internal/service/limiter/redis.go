@@ -53,7 +53,13 @@ func redisTryConsume(rdb *redis.Client, redisKey string, n, rate, burst int) boo
 }
 
 func limiterKey(parts ...string) string {
-	return fmt.Sprintf("gateyes:rl:%s", joinKey(parts))
+	// Use the most specific identifier as the Redis Cluster hash tag
+	// so that related keys (e.g. tenant TPM and RPM) land on the same slot.
+	tag := parts[0]
+	if len(parts) >= 2 && parts[1] != "" {
+		tag = parts[1]
+	}
+	return fmt.Sprintf("gateyes:rl:{%s}:%s", tag, joinKey(parts))
 }
 
 func joinKey(parts []string) string {

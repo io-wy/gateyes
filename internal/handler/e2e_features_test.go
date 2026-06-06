@@ -379,7 +379,7 @@ func TestE2EFeatures(t *testing.T) {
 		}
 
 		// Verify keys exist in Redis
-		keys, _ := rdb.Keys(ctx, "gateyes:rl:ten:redis-tenant:*").Result()
+		keys, _ := rdb.Keys(ctx, "gateyes:rl:{redis-tenant}:ten:redis-tenant:*").Result()
 		if len(keys) == 0 {
 			t.Fatal("expected Redis keys for rate-limited tenant")
 		}

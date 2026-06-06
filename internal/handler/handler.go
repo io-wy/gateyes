@@ -312,9 +312,9 @@ func (h *Handler) Ready(c *gin.Context) {
 
 	if h.deps.RedisPing != nil {
 		if err := h.deps.RedisPing(c.Request.Context()); err != nil {
-			slog.Error("ready check failed: redis", "error", err)
-			writeError(c, http.StatusServiceUnavailable, CodeServiceUnavailable, "redis unavailable")
-			return
+			// Redis is fail-open: cache falls back to memory, rate limiter falls
+			// back to in-memory buckets. Do not mark the pod unready.
+			slog.Warn("ready check: redis unavailable, continuing fail-open", "error", err)
 		}
 	}
 
