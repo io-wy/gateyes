@@ -9,7 +9,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
 
-	"github.com/gateyes/gateway/internal/config"
+	"github.com/gateyes/gateway/internal/app/config"
 )
 
 func buildAnthropicStreamResponse(id, model string, outputs []ResponseOutput, promptTokens, completionTokens int) *Response {

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gateyes/gateway/internal/config"
+	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/gateyes/gateway/internal/service/provider"
 )
 
@@ -20,12 +20,12 @@ type retryMockProvider struct {
 	failWithErr error
 }
 
-func (m *retryMockProvider) Name() string  { return m.name }
-func (m *retryMockProvider) Type() string  { return "openai" }
-func (m *retryMockProvider) BaseURL() string { return "" }
-func (m *retryMockProvider) Model() string { return m.modelName }
-func (m *retryMockProvider) Weight() int   { return 1 }
-func (m *retryMockProvider) UnitCost() float64 { return 0 }
+func (m *retryMockProvider) Name() string          { return m.name }
+func (m *retryMockProvider) Type() string          { return "openai" }
+func (m *retryMockProvider) BaseURL() string       { return "" }
+func (m *retryMockProvider) Model() string         { return m.modelName }
+func (m *retryMockProvider) Weight() int           { return 1 }
+func (m *retryMockProvider) UnitCost() float64     { return 0 }
 func (m *retryMockProvider) Cost(_, _ int) float64 { return 0 }
 func (m *retryMockProvider) CreateEmbedding(ctx context.Context, req *provider.EmbeddingRequest) (*provider.EmbeddingResponse, error) {
 	return nil, errors.New("not implemented")

@@ -8,7 +8,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/gateyes/gateway/internal/config"
+	"github.com/gateyes/gateway/internal/app/config"
 )
 
 type bucketEntry struct {
@@ -275,16 +275,23 @@ func (l *Limiter) check(key string, userQPS, tokens int) bool {
 	if userQPS > 0 {
 		rate = userQPS
 	}
+	burst := l.cfg.PerUserRequestBurst
+	if userQPS > 0 && rate > 0 && burst > rate {
+		burst = rate
+	}
 
 	l.mu.RLock()
 	ub, exists := l.userTokens[key]
+	needsRebuild := exists && (ub.bucket.rate != rate || ub.bucket.burst != burst)
 	l.mu.RUnlock()
 
-	if !exists {
+	if !exists || needsRebuild {
 		l.mu.Lock()
-		if _, ok := l.userTokens[key]; !ok {
+		ub, exists = l.userTokens[key]
+		needsRebuild = exists && (ub.bucket.rate != rate || ub.bucket.burst != burst)
+		if !exists || needsRebuild {
 			l.userTokens[key] = &userBucket{
-				bucket:     NewTokenBucket(rate, l.cfg.PerUserRequestBurst),
+				bucket:     NewTokenBucket(rate, burst),
 				lastAccess: time.Now(),
 			}
 		}
@@ -363,6 +370,7 @@ func (l *Limiter) Reload(cfg *config.Config) error {
 	l.cfg = newCfg
 	l.globalToken = NewTokenBucket(newCfg.GlobalTPM/60, globalBurst)
 	l.globalRPM = NewTokenBucket(globalRPMRate, globalRPMBurst)
+	l.userTokens = make(map[string]*userBucket)
 	return nil
 }
 

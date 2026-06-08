@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gateyes/gateway/internal/config"
+	"github.com/gateyes/gateway/internal/app/config"
 )
 
 func TestTokenBucket_TryConsume(t *testing.T) {
@@ -101,6 +101,26 @@ func TestLimiter_PerUserQPS(t *testing.T) {
 		t.Error("should have some successful requests")
 	}
 	t.Logf("per-user QPS test: success=%d, total=50", successCount)
+}
+
+func TestLimiter_PerUserQPSRejectsBeyondBurst(t *testing.T) {
+	cfg := config.LimiterConfig{
+		GlobalQPS:           10000,
+		GlobalTPM:           1000000,
+		GlobalTokenBurst:    1000,
+		PerUserRequestBurst: 1,
+		QueueSize:           1000,
+	}
+	l := NewLimiter(cfg)
+	defer l.Stop()
+
+	ctx := context.Background()
+	if !l.Allow(ctx, "user1", 1, 1) {
+		t.Fatal("first request should pass within burst")
+	}
+	if l.Allow(ctx, "user1", 1, 1) {
+		t.Fatal("second immediate request should be rate limited")
+	}
 }
 
 func TestLimiter_DifferentUsers(t *testing.T) {

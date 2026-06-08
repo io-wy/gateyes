@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/gateyes/gateway/internal/config"
+	"github.com/gateyes/gateway/internal/app/config"
 )
 
 func applyProviderProfile(cfg config.ProviderConfig, payload map[string]any, headers http.Header) {

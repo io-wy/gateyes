@@ -3,7 +3,7 @@ package provider
 import (
 	"strings"
 
-	"github.com/gateyes/gateway/internal/config"
+	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/gateyes/gateway/internal/repository"
 )
 
@@ -20,6 +20,7 @@ func DefaultRegistryRecordFromConfig(cfg config.ProviderConfig) repository.Provi
 	}
 
 	providerType := strings.ToLower(strings.TrimSpace(cfg.Type))
+	endpoint := strings.ToLower(strings.TrimSpace(cfg.Endpoint))
 	record := repository.ProviderRegistryRecord{
 		Name:                     cfg.Name,
 		Type:                     cfg.Type,
@@ -36,7 +37,7 @@ func DefaultRegistryRecordFromConfig(cfg config.ProviderConfig) repository.Provi
 		SupportsImages:           true,
 		SupportsStructuredOutput: providerType != "anthropic",
 		SupportsLongContext:      cfg.MaxTokens >= 32000,
-		SupportsEmbeddings:       providerType == "openai" || providerType == "azure" || providerType == "",
+		SupportsEmbeddings:       endpoint == "embeddings",
 		RuntimeConfig:            runtimeConfigFromProviderConfig(cfg),
 	}
 
@@ -53,13 +54,44 @@ func DefaultRegistryRecordFromConfig(cfg config.ProviderConfig) repository.Provi
 		record.SupportsChat = true
 	}
 
+	applyCapabilityOverrides(&record, cfg.Capabilities)
 	return record
+}
+
+func applyCapabilityOverrides(record *repository.ProviderRegistryRecord, caps config.ProviderCapabilitiesConfig) {
+	if caps.Chat != nil {
+		record.SupportsChat = *caps.Chat
+	}
+	if caps.Responses != nil {
+		record.SupportsResponses = *caps.Responses
+	}
+	if caps.Messages != nil {
+		record.SupportsMessages = *caps.Messages
+	}
+	if caps.Stream != nil {
+		record.SupportsStream = *caps.Stream
+	}
+	if caps.Tools != nil {
+		record.SupportsTools = *caps.Tools
+	}
+	if caps.Images != nil {
+		record.SupportsImages = *caps.Images
+	}
+	if caps.StructuredOutput != nil {
+		record.SupportsStructuredOutput = *caps.StructuredOutput
+	}
+	if caps.LongContext != nil {
+		record.SupportsLongContext = *caps.LongContext
+	}
+	if caps.Embeddings != nil {
+		record.SupportsEmbeddings = *caps.Embeddings
+	}
 }
 
 func runtimeConfigFromProviderConfig(cfg config.ProviderConfig) *repository.ProviderRuntimeConfig {
 	return &repository.ProviderRuntimeConfig{
-		APIKey:     cfg.APIKey,
-		PriceInput: cfg.PriceInput,
+		APIKey:      cfg.APIKey,
+		PriceInput:  cfg.PriceInput,
 		PriceOutput: cfg.PriceOutput,
 		MaxTokens:   cfg.MaxTokens,
 		Timeout:     cfg.Timeout,

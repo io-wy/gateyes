@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gateyes/gateway/internal/config"
+	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/auth"
 	"github.com/gateyes/gateway/internal/service/provider"
@@ -408,12 +408,12 @@ func providerNames(providers []provider.Provider) []string {
 
 func TestApplyRecoveredStreamUsage(t *testing.T) {
 	tests := []struct {
-		name      string
-		resp      *provider.Response
-		usage     *provider.Usage
-		wantPT    int
-		wantCT    int
-		wantTT    int
+		name   string
+		resp   *provider.Response
+		usage  *provider.Usage
+		wantPT int
+		wantCT int
+		wantTT int
 	}{
 		{"nil resp", nil, &provider.Usage{PromptTokens: 5}, 0, 0, 0},
 		{"nil usage", &provider.Response{}, nil, 0, 0, 0},

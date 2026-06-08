@@ -3,7 +3,7 @@ package provider
 import (
 	"strings"
 
-	"github.com/gateyes/gateway/internal/config"
+	"github.com/gateyes/gateway/internal/app/config"
 )
 
 type providerFactory func(config.ProviderConfig) Provider

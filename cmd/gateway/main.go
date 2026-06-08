@@ -4,34 +4,35 @@ import (
 	"context"
 	"flag"
 	"log/slog"
+	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/gateyes/gateway/internal/config"
-	"github.com/gateyes/gateway/internal/db"
-	"github.com/gateyes/gateway/internal/handler"
-	"github.com/gateyes/gateway/internal/middleware"
+	"github.com/gateyes/gateway/internal/app/config"
+	grpcplugin "github.com/gateyes/gateway/internal/extension/plugin/grpc"
+	wasmplugin "github.com/gateyes/gateway/internal/extension/plugin/wasm"
+	"github.com/gateyes/gateway/internal/platform/db"
+	"github.com/gateyes/gateway/internal/platform/eventbus"
+	redispkg "github.com/gateyes/gateway/internal/platform/redis"
+	"github.com/gateyes/gateway/internal/platform/sqlstore"
 	"github.com/gateyes/gateway/internal/plugin"
-	grpcplugin "github.com/gateyes/gateway/internal/plugin/grpc"
-	wasmplugin "github.com/gateyes/gateway/internal/plugin/wasm"
-	redispkg "github.com/gateyes/gateway/internal/redis"
-	"github.com/redis/go-redis/v9"
 	"github.com/gateyes/gateway/internal/repository"
-	"github.com/gateyes/gateway/internal/repository/sqlstore"
 	"github.com/gateyes/gateway/internal/service/alert"
 	"github.com/gateyes/gateway/internal/service/budget"
 	"github.com/gateyes/gateway/internal/service/cache"
 	"github.com/gateyes/gateway/internal/service/catalog"
-	"github.com/gateyes/gateway/internal/service/eventbus"
 	"github.com/gateyes/gateway/internal/service/guardrail"
 	"github.com/gateyes/gateway/internal/service/limiter"
 	"github.com/gateyes/gateway/internal/service/pricing"
 	"github.com/gateyes/gateway/internal/service/provider"
 	responseSvc "github.com/gateyes/gateway/internal/service/responses"
 	"github.com/gateyes/gateway/internal/service/router"
+	"github.com/gateyes/gateway/internal/transport/http/handler"
+	"github.com/gateyes/gateway/internal/transport/http/middleware"
+	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
@@ -335,6 +336,13 @@ func main() {
 	go metrics.StartProviderStatsExporter(ctx, providerMgr.Stats, 5*time.Second)
 
 	go func() {
+		slog.Info("pprof listening", "addr", ":6060")
+		if err := http.ListenAndServe(":6060", nil); err != nil {
+			slog.Error("pprof server stopped", "error", err)
+		}
+	}()
+
+	go func() {
 		slog.Info("gateway listening", "addr", cfg.Server.ListenAddr)
 		if err := srv.Start(); err != nil {
 			if err == handler.ErrServerClosed {
@@ -562,18 +570,17 @@ func buildGuardrails(cfgs []config.GuardrailConfig) *guardrail.Manager {
 
 func seedProviderRegistry(ctx context.Context, store repository.ProviderRegistryStore, providers []config.ProviderConfig) error {
 	for _, item := range providers {
+		record := provider.DefaultRegistryRecordFromConfig(item)
 		existing, err := store.GetProviderRegistry(ctx, item.Name)
 		if err == nil {
-			if existing.RuntimeConfig != nil {
-				continue
-			}
+			record.RuntimeConfig = existing.RuntimeConfig
+			record.CreatedAt = existing.CreatedAt
 		} else if err != repository.ErrNotFound {
 			return err
 		}
-		if err := store.UpsertProviderRegistry(ctx, provider.DefaultRegistryRecordFromConfig(item)); err != nil {
+		if err := store.UpsertProviderRegistry(ctx, record); err != nil {
 			return err
 		}
 	}
 	return nil
 }
-

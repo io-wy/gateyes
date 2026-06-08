@@ -10,27 +10,27 @@ import (
 )
 
 type fakeIdentityStore struct {
-	identity                    *repository.AuthIdentity
-	authenticateErr             error
-	touchErr                    error
-	consumeOK                   bool
-	consumeErr                  error
-	consumeKeyBudgetOK          bool
-	consumeKeyBudgetErr         error
-	consumeProjectBudgetOK      bool
-	consumeProjectBudgetErr     error
-	consumeTenantBudgetOK       bool
-	consumeTenantBudgetErr      error
-	consumeVirtualKeyBudgetOK   bool
-	consumeVirtualKeyBudgetErr  error
-	consumeBudgetsOK            bool
-	usageErr                    error
-	touchedAPIKeyID             string
-	consumedUserID              string
-	consumedTokens              int
-	usageRecords                []repository.UsageRecord
-	virtualKey                  *repository.VirtualKeyRecord
-	virtualKeyErr               error
+	identity                   *repository.AuthIdentity
+	authenticateErr            error
+	touchErr                   error
+	consumeOK                  bool
+	consumeErr                 error
+	consumeKeyBudgetOK         bool
+	consumeKeyBudgetErr        error
+	consumeProjectBudgetOK     bool
+	consumeProjectBudgetErr    error
+	consumeTenantBudgetOK      bool
+	consumeTenantBudgetErr     error
+	consumeVirtualKeyBudgetOK  bool
+	consumeVirtualKeyBudgetErr error
+	consumeBudgetsOK           bool
+	usageErr                   error
+	touchedAPIKeyID            string
+	consumedUserID             string
+	consumedTokens             int
+	usageRecords               []repository.UsageRecord
+	virtualKey                 *repository.VirtualKeyRecord
+	virtualKeyErr              error
 }
 
 func (f *fakeIdentityStore) CreateUser(ctx context.Context, params repository.CreateUserParams) (*repository.UserRecord, error) {
@@ -414,9 +414,10 @@ func (f *fakeIdentityStore) CommitBudgets(ctx context.Context, apiKeyID, project
 func (f *fakeIdentityStore) ReleaseBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, amount float64) error {
 	return nil
 }
-func (f *fakeIdentityStore) DeleteResponsesOlderThan(ctx context.Context, before time.Time) (int64, error) { return 0, nil }
+func (f *fakeIdentityStore) DeleteResponsesOlderThan(ctx context.Context, before time.Time) (int64, error) {
+	return 0, nil
+}
 func (f *fakeIdentityStore) Ping(ctx context.Context) error { return nil }
-
 
 func baseIdentity() *repository.AuthIdentity {
 	return &repository.AuthIdentity{
@@ -508,9 +509,9 @@ func TestTouchCheckModelHasQuotaRequireRoleAndExtractKey(t *testing.T) {
 func TestRecordUsageSuccessAndQuotaExceeded(t *testing.T) {
 	identity := baseIdentity()
 	store := &fakeIdentityStore{
-		identity:          identity,
-		consumeOK:         true,
-		consumeBudgetsOK:  true,
+		identity:         identity,
+		consumeOK:        true,
+		consumeBudgetsOK: true,
 	}
 	service := NewAuth(store)
 
@@ -531,9 +532,9 @@ func TestRecordUsageSuccessAndQuotaExceeded(t *testing.T) {
 	}
 
 	quotaStore := &fakeIdentityStore{
-		identity:          baseIdentity(),
-		consumeOK:         false,
-		consumeBudgetsOK:  true,
+		identity:         baseIdentity(),
+		consumeOK:        false,
+		consumeBudgetsOK: true,
 	}
 	quotaService := NewAuth(quotaStore)
 	if err := quotaService.RecordUsage(context.Background(), quotaStore.identity, "openai", "gpt-1", 1, 1, 2, 0.1, 10, "success", ""); !errors.Is(err, ErrQuotaExceeded) {
@@ -546,9 +547,9 @@ func TestRecordUsageSuccessAndQuotaExceeded(t *testing.T) {
 	projectIdentity := baseIdentity()
 	projectIdentity.ProjectID = "proj-1"
 	budgetStore := &fakeIdentityStore{
-		identity:          projectIdentity,
-		consumeOK:         true,
-		consumeBudgetsOK:  false,
+		identity:         projectIdentity,
+		consumeOK:        true,
+		consumeBudgetsOK: false,
 	}
 	budgetService := NewAuth(budgetStore)
 	if err := budgetService.RecordUsage(context.Background(), projectIdentity, "openai", "gpt-1", 1, 1, 2, 0.5, 10, "success", ""); !errors.Is(err, ErrBudgetExceeded) {
@@ -578,7 +579,7 @@ func TestAuthenticateVirtualKey_Overlay(t *testing.T) {
 	}
 
 	store := &fakeIdentityStore{
-		identity:  parent,
+		identity:   parent,
 		virtualKey: vk,
 	}
 	service := NewAuth(store)
@@ -661,9 +662,9 @@ func TestRecordUsage_VirtualKeyBudgetExceeded(t *testing.T) {
 	identity.VirtualKeySpentUSD = 90.0
 
 	store := &fakeIdentityStore{
-		identity:          identity,
-		consumeOK:         true,
-		consumeBudgetsOK:  false,
+		identity:         identity,
+		consumeOK:        true,
+		consumeBudgetsOK: false,
 	}
 	service := NewAuth(store)
 

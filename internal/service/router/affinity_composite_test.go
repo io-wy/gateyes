@@ -128,7 +128,7 @@ func TestCompositeAffinity_ConcurrentPin(t *testing.T) {
 	// Pre-promote some mappings
 	for i := 0; i < 100; i++ {
 		comp.Promote(RouteContext{SessionID: string(rune('a' + i%26))}, "p2")
-		comp.Promote(RouteContext{InputText: string(rune('a' + i%26)) + " world"}, "p3")
+		comp.Promote(RouteContext{InputText: string(rune('a'+i%26)) + " world"}, "p3")
 	}
 
 	var wg sync.WaitGroup
@@ -137,8 +137,8 @@ func TestCompositeAffinity_ConcurrentPin(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			ctx := RouteContext{
-				SessionID:   string(rune('a' + idx%26)),
-				InputText:   string(rune('a' + idx%26)) + " world",
+				SessionID: string(rune('a' + idx%26)),
+				InputText: string(rune('a'+idx%26)) + " world",
 			}
 			_ = comp.Pin(candidates, ctx)
 		}(i)

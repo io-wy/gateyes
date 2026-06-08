@@ -3,7 +3,7 @@ package responses
 import (
 	"testing"
 
-	"github.com/gateyes/gateway/internal/config"
+	"github.com/gateyes/gateway/internal/app/config"
 )
 
 func TestCircuitBreaker_IsAvailable(t *testing.T) {

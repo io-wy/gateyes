@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gateyes/gateway/internal/config"
+	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/cache"
 	"github.com/gateyes/gateway/internal/service/provider"
@@ -52,9 +52,9 @@ type mockCacheMetrics struct {
 	writes  []string
 }
 
-func (m *mockCacheMetrics) RecordCacheLookup(layer, result string) {}
-func (m *mockCacheMetrics) RecordCacheWrite(layer, result string)  {}
-func (m *mockCacheMetrics) ObserveCacheValueSize(layer string, size int) {}
+func (m *mockCacheMetrics) RecordCacheLookup(layer, result string)                {}
+func (m *mockCacheMetrics) RecordCacheWrite(layer, result string)                 {}
+func (m *mockCacheMetrics) ObserveCacheValueSize(layer string, size int)          {}
 func (m *mockCacheMetrics) ObserveCacheGetDuration(layer string, d time.Duration) {}
 
 func newCacheService(mc cache.Cache) *Service {

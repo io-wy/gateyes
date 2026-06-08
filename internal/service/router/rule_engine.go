@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"sync"
 
-	"github.com/gateyes/gateway/internal/config"
+	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/gateyes/gateway/internal/service/provider"
 )
 

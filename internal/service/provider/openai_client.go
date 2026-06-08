@@ -8,10 +8,10 @@ import (
 	"strings"
 
 	"github.com/openai/openai-go"
-	oairesponses "github.com/openai/openai-go/responses"
 	"github.com/openai/openai-go/option"
+	oairesponses "github.com/openai/openai-go/responses"
 
-	"github.com/gateyes/gateway/internal/config"
+	"github.com/gateyes/gateway/internal/app/config"
 )
 
 type openAIProvider struct {

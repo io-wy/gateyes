@@ -11,7 +11,7 @@ import (
 )
 
 // CacheMetrics is the subset of metrics methods used by the responses service.
-// It is defined here to avoid an import cycle with internal/handler.
+// It is defined here to avoid an import cycle with internal/transport/http/handler.
 type CacheMetrics interface {
 	RecordCacheLookup(layer, result string)
 	RecordCacheWrite(layer, result string)

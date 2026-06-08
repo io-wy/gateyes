@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gateyes/gateway/internal/config"
+	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/auth"
 	"github.com/gateyes/gateway/internal/service/budget"
@@ -65,8 +65,12 @@ func (m *mockStore) GetServiceSubscription(ctx context.Context, tenantID string,
 func (m *mockStore) UpdateServiceSubscription(ctx context.Context, tenantID string, id string, params repository.UpdateServiceSubscriptionParams) (*repository.ServiceSubscriptionRecord, error) {
 	return nil, nil
 }
-func (m *mockStore) CreateResponse(ctx context.Context, record repository.ResponseRecord) error     { return nil }
-func (m *mockStore) UpdateResponse(ctx context.Context, record repository.ResponseRecord) error     { return nil }
+func (m *mockStore) CreateResponse(ctx context.Context, record repository.ResponseRecord) error {
+	return nil
+}
+func (m *mockStore) UpdateResponse(ctx context.Context, record repository.ResponseRecord) error {
+	return nil
+}
 func (m *mockStore) GetResponse(ctx context.Context, tenantID string, id string) (*repository.ResponseRecord, error) {
 	return nil, nil
 }
@@ -79,18 +83,24 @@ func (m *mockStore) CountResponses(ctx context.Context, tenantID string, filter 
 func (m *mockStore) CreateUser(ctx context.Context, params repository.CreateUserParams) (*repository.UserRecord, error) {
 	return &repository.UserRecord{ID: "user-1"}, nil
 }
-func (m *mockStore) ListUsers(ctx context.Context, tenantID string) ([]repository.UserRecord, error) { return nil, nil }
+func (m *mockStore) ListUsers(ctx context.Context, tenantID string) ([]repository.UserRecord, error) {
+	return nil, nil
+}
 func (m *mockStore) GetUser(ctx context.Context, tenantID string, idOrAPIKey string) (*repository.UserRecord, error) {
 	return nil, nil
 }
 func (m *mockStore) UpdateUser(ctx context.Context, tenantID string, idOrAPIKey string, params repository.UpdateUserParams) (*repository.UserRecord, error) {
 	return nil, nil
 }
-func (m *mockStore) DeleteUser(ctx context.Context, tenantID string, idOrAPIKey string) error { return nil }
+func (m *mockStore) DeleteUser(ctx context.Context, tenantID string, idOrAPIKey string) error {
+	return nil
+}
 func (m *mockStore) ResetUserUsage(ctx context.Context, tenantID string, idOrAPIKey string) (*repository.UserRecord, error) {
 	return nil, nil
 }
-func (m *mockStore) Stats(ctx context.Context, tenantID string) (*repository.UserStats, error) { return nil, nil }
+func (m *mockStore) Stats(ctx context.Context, tenantID string) (*repository.UserStats, error) {
+	return nil, nil
+}
 func (m *mockStore) CreateAPIKey(ctx context.Context, params repository.CreateAPIKeyParams) (*repository.APIKeyRecord, error) {
 	return &repository.APIKeyRecord{ID: "key-1", Key: "api-key"}, nil
 }
@@ -106,12 +116,16 @@ func (m *mockStore) UpdateAPIKey(ctx context.Context, tenantID string, idOrKey s
 func (m *mockStore) RotateAPIKey(ctx context.Context, tenantID string, idOrKey string, params repository.RotateAPIKeyParams) (*repository.APIKeyRecord, error) {
 	return nil, nil
 }
-func (m *mockStore) DeleteAPIKey(ctx context.Context, tenantID string, idOrKey string) error { return nil }
+func (m *mockStore) DeleteAPIKey(ctx context.Context, tenantID string, idOrKey string) error {
+	return nil
+}
 func (m *mockStore) Authenticate(ctx context.Context, key string) (*repository.AuthIdentity, error) {
 	return nil, nil
 }
 func (m *mockStore) TouchAPIKey(ctx context.Context, apiKeyID string, at time.Time) error { return nil }
-func (m *mockStore) ConsumeQuota(ctx context.Context, userID string, tokens int) (bool, error) { return true, nil }
+func (m *mockStore) ConsumeQuota(ctx context.Context, userID string, tokens int) (bool, error) {
+	return true, nil
+}
 func (m *mockStore) ConsumeAPIKeyBudget(ctx context.Context, apiKeyID string, cost float64) (bool, error) {
 	return true, nil
 }
@@ -151,13 +165,21 @@ func (m *mockStore) ReleaseBudgets(ctx context.Context, apiKeyID, projectID, ten
 func (m *mockStore) GetBudgetStatus(ctx context.Context, tenantID, projectID, apiKeyID string) ([]repository.BudgetStatus, error) {
 	return nil, nil
 }
-func (m *mockStore) EnsureBootstrapKey(ctx context.Context, params repository.BootstrapAPIKeyParams) error { return nil }
-func (m *mockStore) CreateUsageRecord(ctx context.Context, record repository.UsageRecord) error { return nil }
-func (m *mockStore) GetUsageSummary(ctx context.Context, tenantID string) (*repository.UsageStats, error) { return nil, nil }
+func (m *mockStore) EnsureBootstrapKey(ctx context.Context, params repository.BootstrapAPIKeyParams) error {
+	return nil
+}
+func (m *mockStore) CreateUsageRecord(ctx context.Context, record repository.UsageRecord) error {
+	return nil
+}
+func (m *mockStore) GetUsageSummary(ctx context.Context, tenantID string) (*repository.UsageStats, error) {
+	return nil, nil
+}
 func (m *mockStore) GetProviderUsageSummary(ctx context.Context, tenantID string) (map[string]repository.ProviderUsageStats, error) {
 	return nil, nil
 }
-func (m *mockStore) GetProjectUsageSummary(ctx context.Context, tenantID, projectID string) (*repository.UsageStats, error) { return nil, nil }
+func (m *mockStore) GetProjectUsageSummary(ctx context.Context, tenantID, projectID string) (*repository.UsageStats, error) {
+	return nil, nil
+}
 func (m *mockStore) GetUserUsageDetail(ctx context.Context, tenantID, userID string, startTime, endTime time.Time) ([]repository.UsageRecord, error) {
 	return nil, nil
 }
@@ -182,7 +204,9 @@ func (m *mockStore) GetUsageTimeBuckets(ctx context.Context, filter repository.U
 func (m *mockStore) EnsureTenant(ctx context.Context, params repository.EnsureTenantParams) (*repository.TenantRecord, error) {
 	return nil, nil
 }
-func (m *mockStore) ListTenants(ctx context.Context) ([]repository.TenantRecord, error) { return nil, nil }
+func (m *mockStore) ListTenants(ctx context.Context) ([]repository.TenantRecord, error) {
+	return nil, nil
+}
 func (m *mockStore) GetTenant(ctx context.Context, idOrSlug string) (*repository.TenantRecord, error) {
 	return &repository.TenantRecord{ID: "tenant-1", Status: repository.StatusActive}, nil
 }
@@ -190,24 +214,36 @@ func (m *mockStore) UpdateTenant(ctx context.Context, idOrSlug string, params re
 	return nil, nil
 }
 func (m *mockStore) DeleteTenant(ctx context.Context, idOrSlug string) error { return nil }
-func (m *mockStore) ReplaceTenantProviders(ctx context.Context, tenantID string, providers []string) error { return nil }
-func (m *mockStore) ListTenantProviders(ctx context.Context, tenantID string) ([]string, error) { return nil, nil }
+func (m *mockStore) ReplaceTenantProviders(ctx context.Context, tenantID string, providers []string) error {
+	return nil
+}
+func (m *mockStore) ListTenantProviders(ctx context.Context, tenantID string) ([]string, error) {
+	return nil, nil
+}
 func (m *mockStore) CreateProject(ctx context.Context, params repository.CreateProjectParams) (*repository.ProjectRecord, error) {
 	return &repository.ProjectRecord{ID: "project-1", Status: repository.StatusActive}, nil
 }
-func (m *mockStore) ListProjects(ctx context.Context, tenantID string) ([]repository.ProjectRecord, error) { return nil, nil }
+func (m *mockStore) ListProjects(ctx context.Context, tenantID string) ([]repository.ProjectRecord, error) {
+	return nil, nil
+}
 func (m *mockStore) GetProject(ctx context.Context, tenantID string, idOrSlug string) (*repository.ProjectRecord, error) {
 	return &repository.ProjectRecord{ID: "project-1", Status: repository.StatusActive}, nil
 }
 func (m *mockStore) UpdateProject(ctx context.Context, tenantID string, idOrSlug string, params repository.UpdateProjectParams) (*repository.ProjectRecord, error) {
 	return nil, nil
 }
-func (m *mockStore) DeleteProject(ctx context.Context, tenantID string, idOrSlug string) error { return nil }
-func (m *mockStore) UpsertProviderRegistry(ctx context.Context, record repository.ProviderRegistryRecord) error { return nil }
+func (m *mockStore) DeleteProject(ctx context.Context, tenantID string, idOrSlug string) error {
+	return nil
+}
+func (m *mockStore) UpsertProviderRegistry(ctx context.Context, record repository.ProviderRegistryRecord) error {
+	return nil
+}
 func (m *mockStore) GetProviderRegistry(ctx context.Context, name string) (*repository.ProviderRegistryRecord, error) {
 	return nil, nil
 }
-func (m *mockStore) ListProviderRegistry(ctx context.Context) ([]repository.ProviderRegistryRecord, error) { return nil, nil }
+func (m *mockStore) ListProviderRegistry(ctx context.Context) ([]repository.ProviderRegistryRecord, error) {
+	return nil, nil
+}
 func (m *mockStore) UpdateProviderRegistry(ctx context.Context, name string, params repository.UpdateProviderRegistryParams) (*repository.ProviderRegistryRecord, error) {
 	return nil, nil
 }
@@ -224,18 +260,23 @@ func (m *mockStore) GetVirtualKey(ctx context.Context, tenantID string, idOrKey 
 func (m *mockStore) UpdateVirtualKey(ctx context.Context, tenantID string, idOrKey string, params repository.UpdateVirtualKeyParams) (*repository.VirtualKeyRecord, error) {
 	return nil, nil
 }
-func (m *mockStore) DeleteVirtualKey(ctx context.Context, tenantID string, idOrKey string) error { return nil }
+func (m *mockStore) DeleteVirtualKey(ctx context.Context, tenantID string, idOrKey string) error {
+	return nil
+}
 func (m *mockStore) Ping(ctx context.Context) error { return nil }
 func (m *mockStore) AuthenticateVirtualKey(ctx context.Context, key string) (*repository.VirtualKeyRecord, error) {
 	return nil, nil
 }
-func (m *mockStore) CreateAuditLog(ctx context.Context, record repository.AuditLogRecord) error { return nil }
+func (m *mockStore) CreateAuditLog(ctx context.Context, record repository.AuditLogRecord) error {
+	return nil
+}
 func (m *mockStore) ListAuditLogs(ctx context.Context, tenantID string, filter repository.AuditLogFilter) ([]repository.AuditLogRecord, error) {
 	return nil, nil
 
 }
-	func (m *mockStore) DeleteResponsesOlderThan(ctx context.Context, before time.Time) (int64, error) { return 0, nil }
-
+func (m *mockStore) DeleteResponsesOlderThan(ctx context.Context, before time.Time) (int64, error) {
+	return 0, nil
+}
 
 func newMockCatalogService(store repository.Store) *Service {
 	authSvc := auth.NewAuth(store)

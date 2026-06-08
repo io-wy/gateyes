@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/gateyes/gateway/internal/config"
+	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/openai/openai-go"
 	oairesponses "github.com/openai/openai-go/responses"
 )
@@ -156,12 +156,12 @@ func TestJSONOutput(t *testing.T) {
 	streamResp := ResponseEvent{
 		Type: EventResponseCompleted,
 		Response: &Response{
-			ID:      "stream-test",
-			Object:  "response",
-			Model:   "gpt-4",
-			Status:  "completed",
-			Output:  []ResponseOutput{{Type: "message", Role: "assistant", Content: []ResponseContent{{Type: "output_text", Text: "Streamed response."}}}},
-			Usage:   Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+			ID:     "stream-test",
+			Object: "response",
+			Model:  "gpt-4",
+			Status: "completed",
+			Output: []ResponseOutput{{Type: "message", Role: "assistant", Content: []ResponseContent{{Type: "output_text", Text: "Streamed response."}}}},
+			Usage:  Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
 		},
 	}
 	b, _ = json.MarshalIndent(streamResp, "", "  ")

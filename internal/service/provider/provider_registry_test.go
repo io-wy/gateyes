@@ -3,7 +3,7 @@ package provider
 import (
 	"testing"
 
-	"github.com/gateyes/gateway/internal/config"
+	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/gateyes/gateway/internal/repository"
 )
 
@@ -21,6 +21,27 @@ func TestDefaultRegistryRecordFromConfigAndManagerFiltering(t *testing.T) {
 	record := DefaultRegistryRecordFromConfig(openaiCfg)
 	if !record.SupportsChat || !record.SupportsResponses || !record.SupportsMessages || !record.SupportsLongContext || record.RoutingWeight != 7 {
 		t.Fatalf("DefaultRegistryRecordFromConfig(openai) = %+v, want openai capability defaults", record)
+	}
+	if record.SupportsEmbeddings {
+		t.Fatalf("DefaultRegistryRecordFromConfig(openai responses) SupportsEmbeddings = true, want false unless explicitly configured")
+	}
+
+	embeddingsEnabled := true
+	toolsDisabled := false
+	overridden := DefaultRegistryRecordFromConfig(config.ProviderConfig{
+		Name:     "openai-embeddings",
+		Type:     "openai",
+		BaseURL:  "https://openai.example",
+		Endpoint: "responses",
+		Model:    "gpt-test",
+		Enabled:  true,
+		Capabilities: config.ProviderCapabilitiesConfig{
+			Embeddings: &embeddingsEnabled,
+			Tools:      &toolsDisabled,
+		},
+	})
+	if !overridden.SupportsEmbeddings || overridden.SupportsTools {
+		t.Fatalf("DefaultRegistryRecordFromConfig(capability override) = %+v, want embeddings true and tools false", overridden)
 	}
 
 	anthropicCfg := config.ProviderConfig{

@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	gateerror "github.com/gateyes/gateway/utils/error"
+	gateerror "github.com/gateyes/gateway/internal/platform/gateerror"
 )
 
 // UpstreamError represents an error from the upstream provider.

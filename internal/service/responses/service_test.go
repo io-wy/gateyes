@@ -14,10 +14,10 @@ import (
 
 	"github.com/gateyes/gateway/internal/testutil"
 
-	"github.com/gateyes/gateway/internal/config"
-	"github.com/gateyes/gateway/internal/db"
+	"github.com/gateyes/gateway/internal/app/config"
+	"github.com/gateyes/gateway/internal/platform/db"
+	"github.com/gateyes/gateway/internal/platform/sqlstore"
 	"github.com/gateyes/gateway/internal/repository"
-	"github.com/gateyes/gateway/internal/repository/sqlstore"
 	"github.com/gateyes/gateway/internal/service/auth"
 	"github.com/gateyes/gateway/internal/service/provider"
 	"github.com/gateyes/gateway/internal/service/router"

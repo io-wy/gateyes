@@ -2,6 +2,8 @@ package guardrail
 
 import (
 	_ "embed"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -64,7 +66,13 @@ func TestWASMGuardrail_PreCallTransform(t *testing.T) {
 	}
 	gr := g.(Guardrail)
 
-	req := &provider.ResponseRequest{Model: "m1", Input: "hello"}
+	req := &provider.ResponseRequest{
+		Model:           "m1",
+		Input:           "hello",
+		Surface:         "responses",
+		MaxOutputTokens: 16,
+		Tools:           []any{map[string]any{"type": "function"}},
+	}
 	res := gr.PreCall(t.Context(), req)
 	if res.Verdict != Transform {
 		t.Fatalf("expected Transform, got %v", res.Verdict)
@@ -74,6 +82,33 @@ func TestWASMGuardrail_PreCallTransform(t *testing.T) {
 	}
 	if res.Request.Model != "transformed-model" {
 		t.Fatalf("expected model 'transformed-model', got %q", res.Request.Model)
+	}
+	if got := res.Request.InputText(); got != "rewritten" {
+		t.Fatalf("expected rewritten input text, got %q", got)
+	}
+	if res.Request.Surface != req.Surface || res.Request.MaxOutputTokens != req.MaxOutputTokens || len(res.Request.Tools) != 1 {
+		t.Fatalf("transformed request lost original fields: %+v", res.Request)
+	}
+}
+
+func TestWASMGuardrail_PIIGuardTransformsRequest(t *testing.T) {
+	wasmBytes, err := os.ReadFile(filepath.Join("..", "..", "..", "plugins", "examples", "pii_guard", "pii_guard.wasm"))
+	if err != nil {
+		t.Fatalf("read pii wasm guardrail: %v", err)
+	}
+	g, err := NewWASMGuardrailFromBytes("pii", wasmBytes, 0, 0)
+	if err != nil {
+		t.Fatalf("create pii wasm guardrail: %v", err)
+	}
+	gr := g.(Guardrail)
+
+	req := &provider.ResponseRequest{Model: "m1", Input: "Please echo 123-45-6789"}
+	res := gr.PreCall(t.Context(), req)
+	if res.Verdict != Transform {
+		t.Fatalf("expected Transform, got %v", res.Verdict)
+	}
+	if got := res.Request.InputText(); got != "Please echo [REDACTED-SSN]" {
+		t.Fatalf("expected redacted request, got %q", got)
 	}
 }
 

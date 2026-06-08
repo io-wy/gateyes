@@ -9,11 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gateyes/gateway/internal/middleware"
+	"github.com/gateyes/gateway/internal/platform/trace"
 	pluginSvc "github.com/gateyes/gateway/internal/plugin"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/provider"
-	"github.com/gateyes/gateway/internal/trace"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -97,7 +96,7 @@ func (s *Service) callWithRetry(ctx context.Context, identity *repository.AuthId
 		"model":    exec.provider.Model(),
 	})
 
-	ctx, otelSpan := middleware.StartSpan(ctx, "provider_call",
+	ctx, otelSpan := trace.StartOTelSpan(ctx, "provider_call",
 		attribute.String("provider", exec.provider.Name()),
 		attribute.String("model", exec.provider.Model()),
 	)

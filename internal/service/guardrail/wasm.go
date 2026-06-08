@@ -59,8 +59,8 @@ type wasmGuardrail struct {
 
 // wasmEnvelope is the JSON payload sent to the WASM guest.
 type wasmEnvelope struct {
-	Phase    string         `json:"phase"`
-	Request  *wasmRequest   `json:"request,omitempty"`
+	Phase    string             `json:"phase"`
+	Request  *wasmRequest       `json:"request,omitempty"`
 	Response *provider.Response `json:"response,omitempty"`
 }
 
@@ -76,10 +76,10 @@ type wasmRequest struct {
 
 // wasmVerdict is the JSON payload expected from the WASM guest.
 type wasmVerdict struct {
-	Verdict  string                   `json:"verdict"`
-	Reason   string                   `json:"reason,omitempty"`
-	Request  *provider.ResponseRequest `json:"request,omitempty"`
-	Response *provider.Response        `json:"response,omitempty"`
+	Verdict  string             `json:"verdict"`
+	Reason   string             `json:"reason,omitempty"`
+	Request  *wasmRequest       `json:"request,omitempty"`
+	Response *provider.Response `json:"response,omitempty"`
 }
 
 // NewWASMGuardrail creates a WASM-backed guardrail from a file path.
@@ -277,10 +277,30 @@ func (g *wasmGuardrail) toPreResult(out wasmVerdict, original *provider.Response
 		return PreResult{Verdict: Block, Reason: out.Reason}
 	case "transform":
 		if out.Request != nil {
-			return PreResult{Verdict: Transform, Request: out.Request}
+			return PreResult{Verdict: Transform, Request: mergeWASMRequest(original, out.Request)}
 		}
 	}
 	return PreResult{Verdict: Allow, Request: original}
+}
+
+func mergeWASMRequest(original *provider.ResponseRequest, rewritten *wasmRequest) *provider.ResponseRequest {
+	if original == nil || rewritten == nil {
+		return original
+	}
+	merged := *original
+	if rewritten.Model != "" {
+		merged.Model = rewritten.Model
+	}
+	merged.Stream = rewritten.Stream
+	text := rewritten.Input
+	if text == "" {
+		text = rewritten.Body
+	}
+	if text != "" && text != original.InputText() {
+		merged.Messages = []provider.Message{{Role: "user", Content: provider.TextBlocks(text)}}
+		merged.Input = text
+	}
+	return &merged
 }
 
 func (g *wasmGuardrail) toPostResult(out wasmVerdict, original *provider.Response) PostResult {

@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/gateyes/gateway/internal/config"
-	"github.com/gateyes/gateway/internal/db"
+	"github.com/gateyes/gateway/internal/app/config"
+	"github.com/gateyes/gateway/internal/platform/db"
 )
 
 func main() {

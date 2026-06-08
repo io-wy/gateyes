@@ -182,8 +182,8 @@ func (m *Manager) Close() error {
 // guardrail (Lakera, Aporia, your own classifier) that implements the
 // same interface.
 type RegexBlocklist struct {
-	name      string
-	requestRe []*regexp.Regexp
+	name       string
+	requestRe  []*regexp.Regexp
 	responseRe []*regexp.Regexp
 }
 

@@ -99,7 +99,7 @@ func TestCloneOutputFormat(t *testing.T) {
 		t.Fatal("cloneOutputFormat(nil) should return nil")
 	}
 	original := &provider.OutputFormat{
-		Type: "json_schema",
+		Type:   "json_schema",
 		Schema: map[string]any{"key": "value"},
 		Raw:    map[string]any{"raw": true},
 	}

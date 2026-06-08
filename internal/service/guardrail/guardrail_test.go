@@ -32,7 +32,7 @@ func TestRegexBlocklistBlocksMatchingResponse(t *testing.T) {
 	g := NewRegexBlocklist("test", nil, []string{`hidden token`})
 	resp := &provider.Response{
 		Output: []provider.ResponseOutput{{
-			Type: "message",
+			Type:    "message",
 			Content: []provider.ResponseContent{{Type: "output_text", Text: "the hidden token is X"}},
 		}},
 	}
@@ -55,9 +55,9 @@ func TestRegexBlocklistInvalidPatternIsSkipped(t *testing.T) {
 }
 
 type stubGuardrail struct {
-	name      string
-	pre       PreResult
-	postFn    func(*provider.Response) PostResult
+	name   string
+	pre    PreResult
+	postFn func(*provider.Response) PostResult
 }
 
 func (g *stubGuardrail) Name() string { return g.name }

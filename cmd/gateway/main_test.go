@@ -5,13 +5,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gateyes/gateway/internal/config"
+	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/gateyes/gateway/internal/repository"
 )
 
 type fakeIdentityStore struct {
-	params []repository.BootstrapAPIKeyParams
-	err    error
+	params           []repository.BootstrapAPIKeyParams
+	providerRegistry map[string]repository.ProviderRegistryRecord
+	err              error
 }
 
 func (f *fakeIdentityStore) Authenticate(ctx context.Context, key string) (*repository.AuthIdentity, error) {
@@ -82,7 +83,9 @@ func (f *fakeIdentityStore) EnsureBootstrapKey(ctx context.Context, params repos
 func (f *fakeIdentityStore) EnsureTenant(ctx context.Context, params repository.EnsureTenantParams) (*repository.TenantRecord, error) {
 	return &repository.TenantRecord{ID: params.ID}, nil
 }
-func (f *fakeIdentityStore) ListTenants(ctx context.Context) ([]repository.TenantRecord, error) { return nil, nil }
+func (f *fakeIdentityStore) ListTenants(ctx context.Context) ([]repository.TenantRecord, error) {
+	return nil, nil
+}
 func (f *fakeIdentityStore) GetTenant(ctx context.Context, idOrSlug string) (*repository.TenantRecord, error) {
 	return &repository.TenantRecord{ID: idOrSlug}, nil
 }
@@ -97,18 +100,35 @@ func (f *fakeIdentityStore) ReplaceTenantProviders(ctx context.Context, tenantID
 	return nil
 }
 func (f *fakeIdentityStore) ListProviderRegistry(ctx context.Context) ([]repository.ProviderRegistryRecord, error) {
-	return nil, nil
+	items := make([]repository.ProviderRegistryRecord, 0, len(f.providerRegistry))
+	for _, item := range f.providerRegistry {
+		items = append(items, item)
+	}
+	return items, nil
 }
 func (f *fakeIdentityStore) GetProviderRegistry(ctx context.Context, name string) (*repository.ProviderRegistryRecord, error) {
-	return nil, repository.ErrNotFound
+	if f.providerRegistry == nil {
+		return nil, repository.ErrNotFound
+	}
+	record, ok := f.providerRegistry[name]
+	if !ok {
+		return nil, repository.ErrNotFound
+	}
+	return &record, nil
 }
 func (f *fakeIdentityStore) UpsertProviderRegistry(ctx context.Context, record repository.ProviderRegistryRecord) error {
+	if f.providerRegistry == nil {
+		f.providerRegistry = make(map[string]repository.ProviderRegistryRecord)
+	}
+	f.providerRegistry[record.Name] = record
 	return nil
 }
 func (f *fakeIdentityStore) UpdateProviderRegistry(ctx context.Context, name string, params repository.UpdateProviderRegistryParams) (*repository.ProviderRegistryRecord, error) {
 	return nil, nil
 }
-func (f *fakeIdentityStore) DeleteProviderRegistry(ctx context.Context, name string) error { return nil }
+func (f *fakeIdentityStore) DeleteProviderRegistry(ctx context.Context, name string) error {
+	return nil
+}
 
 func TestSeedTenantProviders(t *testing.T) {
 	store := &fakeIdentityStore{}
@@ -122,14 +142,36 @@ func TestSeedTenantProviders(t *testing.T) {
 }
 
 func TestSeedProviderRegistry(t *testing.T) {
-	store := &fakeIdentityStore{}
+	store := &fakeIdentityStore{
+		providerRegistry: map[string]repository.ProviderRegistryRecord{
+			"p1": {
+				Name:               "p1",
+				SupportsEmbeddings: true,
+				RuntimeConfig:      &repository.ProviderRuntimeConfig{APIKey: "existing-key"},
+				CreatedAt:          time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+			},
+		},
+	}
 	ctx := context.Background()
 	providers := []config.ProviderConfig{
-		{Name: "p1", Type: "openai", Enabled: true},
+		{Name: "p1", Type: "openai", Endpoint: "responses", Enabled: true},
 		{Name: "p2", Type: "anthropic", Enabled: false},
 	}
 	if err := seedProviderRegistry(ctx, store, providers); err != nil {
 		t.Fatalf("seedProviderRegistry() error: %v", err)
+	}
+	p1 := store.providerRegistry["p1"]
+	if p1.SupportsEmbeddings {
+		t.Fatalf("seedProviderRegistry() kept stale SupportsEmbeddings=true for p1")
+	}
+	if p1.RuntimeConfig == nil || p1.RuntimeConfig.APIKey != "existing-key" {
+		t.Fatalf("seedProviderRegistry() RuntimeConfig = %+v, want existing runtime config preserved", p1.RuntimeConfig)
+	}
+	if p1.CreatedAt.IsZero() {
+		t.Fatalf("seedProviderRegistry() should preserve existing CreatedAt")
+	}
+	if _, ok := store.providerRegistry["p2"]; !ok {
+		t.Fatalf("seedProviderRegistry() did not insert p2")
 	}
 }
 

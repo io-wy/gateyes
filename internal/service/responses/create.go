@@ -267,9 +267,9 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 		}, responseID, identity.TenantID, identity.UserID, req.Model, req.Stream)
 		body, _ := json.Marshal(resp)
 		s.writeCache(ctx, identity, req, &cache.Entry{
-			Response:  body,
-			Model:     req.Model,
-			Provider:  providerName,
+			Response: body,
+			Model:    req.Model,
+			Provider: providerName,
 			Usage: cache.Usage{
 				PromptTokens:     resp.Usage.PromptTokens,
 				CompletionTokens: resp.Usage.CompletionTokens,

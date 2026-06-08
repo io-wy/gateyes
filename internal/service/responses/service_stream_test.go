@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gateyes/gateway/internal/config"
+	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/provider"
 )
@@ -19,13 +19,13 @@ type streamMockProvider struct {
 	events    []provider.ResponseEvent
 }
 
-func (m *streamMockProvider) Name() string                     { return m.name }
-func (m *streamMockProvider) Type() string                     { return "openai" }
-func (m *streamMockProvider) BaseURL() string                  { return "" }
-func (m *streamMockProvider) Model() string                    { return m.modelName }
-func (m *streamMockProvider) Weight() int                      { return 1 }
-func (m *streamMockProvider) UnitCost() float64                { return 0 }
-func (m *streamMockProvider) Cost(_, _ int) float64            { return 0 }
+func (m *streamMockProvider) Name() string          { return m.name }
+func (m *streamMockProvider) Type() string          { return "openai" }
+func (m *streamMockProvider) BaseURL() string       { return "" }
+func (m *streamMockProvider) Model() string         { return m.modelName }
+func (m *streamMockProvider) Weight() int           { return 1 }
+func (m *streamMockProvider) UnitCost() float64     { return 0 }
+func (m *streamMockProvider) Cost(_, _ int) float64 { return 0 }
 func (m *streamMockProvider) CreateEmbedding(context.Context, *provider.EmbeddingRequest) (*provider.EmbeddingResponse, error) {
 	return nil, errors.New("not implemented")
 }

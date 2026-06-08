@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/gateyes/gateway/internal/config"
+	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/openai/openai-go"
 	oairesponses "github.com/openai/openai-go/responses"
 )

@@ -29,18 +29,18 @@ func loadFeedFromMockHTTP(t *testing.T, body string) *pricing.Feed {
 
 // pricingMockProvider lets us drive computeCost from a known provider.
 type pricingMockProvider struct {
-	name      string
-	model     string
-	priceIn   float64
-	priceOut  float64
+	name     string
+	model    string
+	priceIn  float64
+	priceOut float64
 }
 
-func (p *pricingMockProvider) Name() string                 { return p.name }
-func (p *pricingMockProvider) Type() string                 { return "mock" }
-func (p *pricingMockProvider) Model() string                { return p.model }
-func (p *pricingMockProvider) BaseURL() string              { return "" }
-func (p *pricingMockProvider) Weight() int                  { return 1 }
-func (p *pricingMockProvider) UnitCost() float64            { return p.priceIn + p.priceOut }
+func (p *pricingMockProvider) Name() string      { return p.name }
+func (p *pricingMockProvider) Type() string      { return "mock" }
+func (p *pricingMockProvider) Model() string     { return p.model }
+func (p *pricingMockProvider) BaseURL() string   { return "" }
+func (p *pricingMockProvider) Weight() int       { return 1 }
+func (p *pricingMockProvider) UnitCost() float64 { return p.priceIn + p.priceOut }
 func (p *pricingMockProvider) Cost(prompt, completion int) float64 {
 	return float64(prompt)*p.priceIn + float64(completion)*p.priceOut
 }

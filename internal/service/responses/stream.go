@@ -267,10 +267,10 @@ providerLoop:
 				if err := json.Unmarshal(cmd.Payload, &cached); err == nil {
 					body, _ := json.Marshal(cached)
 					s.writeCache(ctx, identity, req, &cache.Entry{
-						Response:  body,
-						Stream:    true,
-						Model:     req.Model,
-						Provider:  providerName,
+						Response: body,
+						Stream:   true,
+						Model:    req.Model,
+						Provider: providerName,
 						Usage: cache.Usage{
 							PromptTokens:     cached.Usage.PromptTokens,
 							CompletionTokens: cached.Usage.CompletionTokens,
@@ -333,10 +333,10 @@ providerLoop:
 					}
 					body, _ := json.Marshal(finalResponse)
 					s.writeCache(ctx, identity, req, &cache.Entry{
-						Response:  body,
-						Stream:    true,
-						Model:     req.Model,
-						Provider:  providerName,
+						Response: body,
+						Stream:   true,
+						Model:    req.Model,
+						Provider: providerName,
 						Usage: cache.Usage{
 							PromptTokens:     finalResponse.Usage.PromptTokens,
 							CompletionTokens: finalResponse.Usage.CompletionTokens,
@@ -365,7 +365,7 @@ providerLoop:
 						return
 					}
 
-										s.finalizeStream(ctx, identity, responseID, providerName, req.Model, finalResponse, latencyMs, trace, out, !hasSentPayload)
+					s.finalizeStream(ctx, identity, responseID, providerName, req.Model, finalResponse, latencyMs, trace, out, !hasSentPayload)
 
 					// Async audit.
 					s.invokePluginsAsync(pluginSvc.Audit, map[string]any{
@@ -376,7 +376,7 @@ providerLoop:
 						"latency":  latencyMs,
 					}, responseID, tenantID, identity.UserID, req.Model, req.Stream)
 
-										s.providerMgr.Stats.DecrementLoad(providerName)
+					s.providerMgr.Stats.DecrementLoad(providerName)
 					if s.circuitBreaker != nil {
 						s.circuitBreaker.RecordSuccess(tenantID, providerName)
 					}
@@ -484,10 +484,10 @@ providerLoop:
 						appendRouteAttempt(trace, providerName, retryCfg.MaxRetries, "success", nil)
 						body, _ := json.Marshal(finalResponse)
 						s.writeCache(ctx, identity, req, &cache.Entry{
-							Response:  body,
-							Stream:    true,
-							Model:     req.Model,
-							Provider:  providerName,
+							Response: body,
+							Stream:   true,
+							Model:    req.Model,
+							Provider: providerName,
 							Usage: cache.Usage{
 								PromptTokens:     finalResponse.Usage.PromptTokens,
 								CompletionTokens: finalResponse.Usage.CompletionTokens,
@@ -516,7 +516,7 @@ providerLoop:
 							return
 						}
 
-												s.finalizeStream(ctx, identity, responseID, providerName, req.Model, finalResponse, latencyMs, trace, out, !hasSentPayload)
+						s.finalizeStream(ctx, identity, responseID, providerName, req.Model, finalResponse, latencyMs, trace, out, !hasSentPayload)
 
 						// Async audit.
 						s.invokePluginsAsync(pluginSvc.Audit, map[string]any{
@@ -527,7 +527,7 @@ providerLoop:
 							"latency":  latencyMs,
 						}, responseID, tenantID, identity.UserID, req.Model, req.Stream)
 
-												if s.router != nil {
+						if s.router != nil {
 							s.router.PromoteAffinity(router.RouteContext{
 								Model:        req.Model,
 								SessionID:    sessionID,
@@ -609,7 +609,6 @@ providerLoop:
 	errCh <- ErrNoProvider
 }
 
-
 // runStreamPostChecks runs guardrail post-call and plugin post-upstream checks
 // for stream responses. Returns the (possibly transformed) response.
 func (s *Service) runStreamPostChecks(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, resp *provider.Response, traceID, tenantID, userID, model string, stream bool, hasSentPayload bool) (*provider.Response, error) {
@@ -638,7 +637,6 @@ func (s *Service) runStreamPostChecks(ctx context.Context, identity *repository.
 
 	return resp, nil
 }
-
 
 func (s *Service) prepare(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*execution, error) {
 	selected, err := s.selectProvider(ctx, identity, sessionID, req)

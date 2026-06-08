@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/gateyes/gateway/internal/config"
-	"github.com/gateyes/gateway/internal/db"
+	"github.com/gateyes/gateway/internal/app/config"
+	"github.com/gateyes/gateway/internal/platform/db"
 	"github.com/redis/go-redis/v9"
 )
 

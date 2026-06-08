@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gateyes/gateway/internal/config"
+	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/provider"
 )
@@ -15,18 +15,18 @@ import (
 // sfMockProvider counts CreateResponse invocations and sleeps so concurrent
 // callers can pile up while the first one is still in flight.
 type sfMockProvider struct {
-	name      string
-	model     string
-	delay     time.Duration
-	calls     atomic.Int64
-	respText  string
+	name     string
+	model    string
+	delay    time.Duration
+	calls    atomic.Int64
+	respText string
 }
 
-func (p *sfMockProvider) Name() string    { return p.name }
-func (p *sfMockProvider) Type() string    { return "mock" }
-func (p *sfMockProvider) Model() string   { return p.model }
-func (p *sfMockProvider) BaseURL() string { return "" }
-func (p *sfMockProvider) Weight() int     { return 1 }
+func (p *sfMockProvider) Name() string      { return p.name }
+func (p *sfMockProvider) Type() string      { return "mock" }
+func (p *sfMockProvider) Model() string     { return p.model }
+func (p *sfMockProvider) BaseURL() string   { return "" }
+func (p *sfMockProvider) Weight() int       { return 1 }
 func (p *sfMockProvider) UnitCost() float64 { return 0 }
 func (p *sfMockProvider) Cost(promptTokens, completionTokens int) float64 {
 	return 0
@@ -57,8 +57,8 @@ func (p *sfMockProvider) CreateResponse(ctx context.Context, req *provider.Respo
 		Model:  p.model,
 		Status: "completed",
 		Output: []provider.ResponseOutput{{
-			Type: "message",
-			Role: "assistant",
+			Type:    "message",
+			Role:    "assistant",
 			Content: []provider.ResponseContent{{Type: "output_text", Text: p.respText}},
 		}},
 		Usage: provider.Usage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3},
