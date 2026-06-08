@@ -1,0 +1,22 @@
+{
+  "module": "github.com/gateyes/gateway",
+  "layers": [
+    {"pattern": "pkg/plugin", "layer": 0, "name": "plugin-contracts"},
+    {"pattern": "internal/platform/gateerror", "layer": 1, "name": "gateerror"},
+    {"pattern": "internal/app", "layer": 2, "name": "app-config"},
+    {"pattern": "internal/platform/db", "layer": 2, "name": "db"},
+    {"pattern": "internal/platform/redis", "layer": 2, "name": "redis"},
+    {"pattern": "internal/platform/trace", "layer": 2, "name": "trace"},
+    {"pattern": "internal/platform/eventbus", "layer": 2, "name": "eventbus"},
+    {"pattern": "internal/repository", "layer": 3, "name": "repository-contracts"},
+    {"pattern": "internal/platform/sqlstore", "layer": 4, "name": "sqlstore"},
+    {"pattern": "internal/plugin", "layer": 3, "name": "plugin-contracts"},
+    {"pattern": "internal/service", "layer": 5, "name": "service"},
+    {"pattern": "internal/extension", "layer": 6, "name": "extension-runtime"},
+    {"pattern": "internal/transport", "layer": 7, "name": "transport"},
+    {"pattern": "internal/testutil", "layer": 8, "name": "testutil"},
+    {"pattern": "cmd", "layer": 8, "name": "cmd"}
+  ],
+  "ignoreDirs": ["vendor", "third_party", "tmp", "scripts", ".claude", ".codegraph", "plugins"],
+  "allowCyclic": []
+}

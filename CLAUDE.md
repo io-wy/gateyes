@@ -253,3 +253,48 @@ Why: 协议漂移是最危险的 bug——上游/下游都按文档实现，你�
 2. 同类 PIT 出现 >= 2 次 → 提炼为本文件的新约束规则
 3. 约束验证有效 >= 2 次 → 考虑固化为独立 Skill
 4. 效果有限 → 标注「通用知识可覆盖」
+
+## Coding-Vibe-Go 模板扩展
+
+### 本地覆盖
+
+会话启动时检查根目录是否存在 `claude.local.md`。如果存在，Read 该文件并将其中的约束/偏好作为本文件的补充；local 覆盖 > 本文件默认值。`claude.local.md` 不进 git，按人定制。
+
+### Harness —— 架构机械执法
+
+每次结构性操作（创建新文件/目录、添加跨包 import、修改公共接口）前后执行模板 Harness 验证：
+
+- 操作前：参考 `pre-verify` Skill，创建文件/import 前检查层级方向是否合法。
+- 操作后：参考 `change-impact-scan` Skill，扫描调用点，防止改不全。
+- 定期健康度审计：`make lint-arch`、`make lint-quality` 和 `make harness-audit`。`make lint-quality` 会扫描既有质量债，适合作为专项治理入口。
+
+架构层级规则由 `harness.json` 定义。高层可 import 低层，反方向禁止。
+
+### 目录与输出路径约定
+
+| 目录 | 用途 | 进 git? |
+|------|------|---------|
+| `docs/docs-project/` | 项目自有产出文档 | 是 |
+| `docs/docs-ref/` | 跨项目规范参考 | 是 |
+| `docs/docs-tmp/` | 临时缓存（Skill 自动写入） | 仅保留 README/.gitignore |
+| `docs/docs-project/specs/` | 规格工件（spec 体系） | 是 |
+| `.claude/skills/core/` | 核心 Skill | 是 |
+| `.claude/skills/plugins/` | 插件 Skill | 是 |
+| `docs/docs-ref/templates/init/` | Starter 骨架模板参考 | 是 |
+| `docs/docs-ref/templates/global-skills/` | 全局 Skill 参考 | 是 |
+
+### Skill 输出物默认路径
+
+| 输出类型 | 默认路径 |
+|---------|----------|
+| 协议/三方 API 文档 | `docs/docs-tmp/protocols/<api-name>.md` |
+| 调研报告/竞品分析 | `docs/docs-tmp/research/<topic>-<YYYY-MM-DD>.md` |
+| 代码审查/影响分析报告 | `docs/docs-tmp/analysis/<task-id>-<YYYY-MM-DD>.md` |
+| 架构决策(ADR) | `docs/docs-project/architecture/<topic>.md` |
+| API 契约 | `docs/docs-project/api/<service>.md` |
+| 运维手册 | `docs/docs-project/runbook/<service>.md` |
+| 规格工件 | `docs/docs-project/specs/<YYYYMMDD-slug>/` |
+| 通用规范 | `docs/docs-ref/<topic>.md` |
+| 踩坑日志 | `.claude/skills/core/pitfall-journal.md` |
+
+Skills 索引见 `.claude/skills/README.md`，工作流选择见 `docs/docs-ref/workflow-bridge.md`，模板协作指南见 `claude.template.md`。
