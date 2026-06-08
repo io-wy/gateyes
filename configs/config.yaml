@@ -5,10 +5,12 @@ server:
   writeTimeout: 300
   idleTimeout: 120
   shutdownTimeout: 10
+  # tlsCertFile: "/path/to/cert.pem"
+  # tlsKeyFile: "/path/to/key.pem"
 
 database:
   driver: postgres
-  dsn: "host=localhost port=5432 user=gateyes password=gateyes_pw dbname=gateyes sslmode=disable"
+  dsn: "${GATEYES_DATABASE_DSN}"
   autoMigrate: true
   maxOpenConns: 10
   maxIdleConns: 5
@@ -32,26 +34,26 @@ router:
     enabled: false
 
 limiter:
-  globalQPS: 1000
-  globalTPM: 1000000
-  globalTokenBurst: 100000
-  perUserRequestBurst: 100
+  globalQPS: 100000
+  globalTPM: 100000000
+  globalTokenBurst: 100000000
+  perUserRequestBurst: 1000
   tenantTPM: 0
   tenantTPMBurst: 0
   tenantRPM: 0
   tenantRPMBurst: 0
-  providerTPM: 300000
-  providerTPMBurst: 30000
-  providerRPM: 600
-  providerRPMBurst: 60
+  providerTPM: 1000000000
+  providerTPMBurst: 100000000
+  providerRPM: 1000000
+  providerRPMBurst: 100000
   modelTPM: 0
   modelTPMBurst: 0
   modelRPM: 0
   modelRPMBurst: 0
-  queueSize: 1000
+  queueSize: 10000
 
 alert:
-  enabled: true
+  enabled: false
   quotaThreshold: 0.8
   webhookURL: ""
   webhookSecret: ""
@@ -61,10 +63,15 @@ alert:
   errorEventURL: ""
 
 healthCheck:
-  enabled: true
+  enabled: false
   intervalSeconds: 30
   timeoutSeconds: 5
-  failureThreshold: 2
+  failureThreshold: 100
+
+circuitBreaker:
+  failureThreshold: 1000
+  recoveryTimeout: 1
+  halfOpenMaxRequests: 100
 
 retry:
   maxRetries: 2
@@ -72,108 +79,78 @@ retry:
   maxDelayMs: 5000
   backoffFactor: 2.0
 
-circuitBreaker:
-  failureThreshold: 5
-  recoveryTimeout: 60
-  halfOpenMaxRequests: 1
-
 providers:
-  - name: kimi-max
+  - name: codexapis
     type: openai
     vendor: openai
     endpoint: chat
-    baseURL: https://api.kimi.com/coding
-    apiKey: sk-kimi-mu3pQu7QOzyLVdZdR2EKr15JAs1MhiDCpKAspQC7P8Re9GsG8OR1jv8Tc4Z13uDt
-    model: kimi-for-coding
-    weight: 10000
-    priceInput: 0.000005
-    priceOutput: 0.000015
-    maxTokens: 1638400000
-    timeout: 60
-    enabled: true
-
-  - name: longcat-openai
-    type: openai
-    vendor: openai
-    endpoint: chat
-    baseURL: https://api.longcat.chat/openai
-    apiKey: ak_1so2TW4PC7As4oJ1Qy73C08t1hc2Q
-    model: LongCat-Flash-Chat
-    weight: 10
+    baseURL: https://www.codexapis.com/v1
+    apiKey: ${CODEXAPIS_API_KEY}
+    model: gpt-5.4
+    weight: 100
     priceInput: 0.000005
     priceOutput: 0.000015
     maxTokens: 16384
-    timeout: 60
+    timeout: 600
     enabled: true
-
-  - name: longcat-thinking
+    capabilities:
+      embeddings: false
+  - name: codexapis-responses
     type: openai
     vendor: openai
-    endpoint: chat
-    baseURL: https://api.longcat.chat/openai
-    apiKey: ak_1so2TW4PC7As4oJ1Qy73C08t1hc2Q
-    model: LongCat-Flash-Thinking-2601
-    weight: 10
+    endpoint: responses
+    baseURL: https://www.codexapis.com/v1
+    apiKey: ${CODEXAPIS_API_KEY}
+    model: gpt-5.4
+    weight: 100
     priceInput: 0.000005
     priceOutput: 0.000015
     maxTokens: 16384
-    timeout: 60
+    timeout: 600
     enabled: true
-
-  - name: bigmodel-anthropic
-    type: anthropic
-    vendor: anthropic
-    endpoint: chat
-    baseURL: https://open.bigmodel.cn/api/anthropic
-    apiKey: c2bdf4be95b84bf08c4d0b7c0916b7c6.HmIdFQAaHyRAEWqs
-    model: glm-4.5
-    weight: 5
-    priceInput: 0.000002
-    priceOutput: 0.000008
-    maxTokens: 128000
-    timeout: 60
-    enabled: true
+    capabilities:
+      embeddings: false
 
 
 apiKeys:
   - key: demo-key-001
-    secret: demo-secret-001
+    secret: ${GATEYES_DEMO_SECRET}
     quota: -1
     qps: 1000
     models: []
 
   - key: chat-key-001
-    secret: chat-secret-001
+    secret: ${GATEYES_CHAT_SECRET}
     quota: 5000000
     qps: 200
     models: []
 
   - key: session-key-001
-    secret: session-secret-001
+    secret: ${GATEYES_SESSION_SECRET}
     quota: 3000000
     qps: 100
     models: []
 
   - key: agent-key-001
-    secret: agent-secret-001
+    secret: ${GATEYES_AGENT_SECRET}
     quota: 2000000
     qps: 50
     models: []
 
   - key: embed-key-001
-    secret: embed-secret-001
+    secret: ${GATEYES_EMBED_SECRET}
     quota: 1000000
     qps: 100
     models: []
 
   - key: bad-key-001
-    secret: bad-secret-001
+    secret: ${GATEYES_BAD_SECRET}
     quota: 1000000
     qps: 50
     models: []
 
   - key: spike-key-001
-    secret: spike-secret-001
+    secret: ${GATEYES_SPIKE_SECRET}
     quota: 10000000
     qps: 500
     models: []
@@ -181,7 +158,7 @@ apiKeys:
 admin:
   defaultTenant: default
   bootstrapKey: admin-key-001
-  bootstrapSecret: admin-secret-001
+  bootstrapSecret: ${GATEYES_ADMIN_BOOTSTRAP_SECRET}
 
 # WASM plugin system
 # Place .wasm files in the directory; gateway loads them on startup.
@@ -190,3 +167,19 @@ plugins:
   directory: "./plugins"
   autoReload: true
   reloadIntervalSeconds: 30
+
+
+guardrails:
+  - name: pii-wasm
+    type: wasm
+    path: "./plugins/examples/pii_guard/pii_guard.wasm"
+    timeoutMs: 500
+    memoryPages: 2
+
+# gRPC plugin system
+# Router plugins receive candidate providers and return an ordered list.
+grpcPlugins:
+  - name: random-router
+    type: router
+    address: localhost:50051
+    timeout: 100

@@ -1,49 +1,73 @@
+# Local editor and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+nul
+
+# Claude/local tool caches
 .ace-tool/
+.codegraph/
 .gocache/
 .gofmt/
 .gopls/
-.idea/
-.vscode/
-.claude/
-*.log
-*.tmp
-nul
+.gomodcache/
+.gotools/
+.uv-cache/
+
+# Local environment and secrets
+.env
+*.env
+.env.local
+.env.*.local
+*.secret
+!.env.example
+claude.local.md
+
+# Build artifacts and binaries
 bin/
-TESTING.md
-temp.md
+/gateyes
+/gateyes~
 *.exe
 *.exe~
-gateyes.db
-*.cover.out
-test/
-.gotools/
-tmp/
-test_doc/
-.gomodcache/
-.uv-cache/
-# 环境变量文件（根目录保留 .env.example，其他忽略）
-*.env
-.env
-!.env.example
+*.dll
+*.so
+*.dylib
+*.test
 
-# 运行时文件
+# Runtime data
 *.pid
 *.db
 *.sqlite
 *.db-wal
 *.db-shm
+gateyes.db
 
-# 压测运行时目录生成的文件
-benchmark/runtime/*.exe
-benchmark/runtime/*.exe~
-benchmark/runtime/*.log
-benchmark/runtime/*.pid
-benchmark/runtime/*.db
-
-# 测试覆盖率临时文件
+# Test and coverage output
 coverage.out
+coverage.html
 handler-coverage.out
+*.cover.out
 
-# 编译产物（根目录）
-/gateyes
-/gateyes~
+# Temporary work directories
+tmp/
+test/
+test_doc/
+temp.md
+*.tmp
+*.log
+
+# Go workspace/vendor state
+vendor/
+go.work
+go.work.sum
+
+# Documentation cache; keep docs-tmp metadata and migrated design notes
+/docs/docs-tmp/*
+!/docs/docs-tmp/.gitignore
+!/docs/docs-tmp/README.md
+!/docs/docs-tmp/design/
+!/docs/docs-tmp/design/**

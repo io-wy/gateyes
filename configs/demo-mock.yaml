@@ -1,7 +1,7 @@
 # Gateyes 完整体验配置 —— 基于 mock upstream，零 API 成本
 # 使用方式：
 #   1. docker compose up postgres redis prometheus grafana -d
-#   2. go run ./benchmark/mockupstream/main.go -port 19999
+#   2. Wire any local mock provider URL here
 #   3. go run ./cmd/gateway/main.go -config ./configs/demo-mock.yaml
 
 server:
@@ -46,7 +46,7 @@ limiter:
   globalQPS: 1000
   globalTPM: 1000000
   globalTokenBurst: 100000
-  perUserRequestBurst: 100
+  perUserRequestBurst: 5
   tenantTPM: 500000
   tenantTPMBurst: 50000
   tenantRPM: 1000

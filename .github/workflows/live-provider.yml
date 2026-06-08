@@ -43,4 +43,4 @@ jobs:
 
       - name: Run env-gated live provider matrix
         if: ${{ env.GATEYES_LIVE == '1' }}
-        run: go test ./internal/handler -run TestLiveProviderCompatibility -count=1 -v
+        run: go test ./internal/transport/http/handler -run TestLiveProviderCompatibility -count=1 -v

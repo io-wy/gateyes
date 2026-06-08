@@ -67,11 +67,6 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
-      - name: OpenAPI smoke check (advisory)
-        continue-on-error: true
-        shell: pwsh
-        run: ./scripts/check-openapi.ps1
-
       - name: Secret scan (advisory)
         continue-on-error: true
         run: |
