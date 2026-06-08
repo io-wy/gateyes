@@ -1,0 +1,6 @@
+# Temporary cache files stay local by default.
+*
+!.gitignore
+!README.md
+!design/
+!design/**

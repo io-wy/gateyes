@@ -216,6 +216,19 @@ wasmPlugins:
 
 ---
 
+
+## gRPC 协议文件位置
+
+插件协议源码统一放在 `proto/plugin/v1/`：
+
+- `plugin.proto`：通用插件健康检查与能力声明
+- `router.proto`：RouterPlugin 排序协议
+- `gateway.proto`：GatewayPlugin 生命周期事件/命令协议
+
+Go 生成代码统一放在 `pkg/plugin/v1/`，作为跨进程插件合约包被 gateway 和外部插件服务引用。修改 proto 后运行 `make proto`，不要手写 `pkg/plugin/v1/*.pb.go`。
+
+---
+
 ## gRPC 插件开发（Go）
 
 ### 1. 项目结构

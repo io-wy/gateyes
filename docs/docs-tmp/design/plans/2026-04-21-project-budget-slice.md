@@ -15,23 +15,23 @@
 ### Task 1: Add project and budget schema
 
 **Files:**
-- Create: `internal/db/migrations/011_init_projects_and_key_budgets.sql`
+- Create: `internal/platform/db/migrations/011_init_projects_and_key_budgets.sql`
 - Modify: `internal/repository/interfaces.go`
-- Modify: `internal/repository/sqlstore/store_test.go`
+- Modify: `internal/platform/sqlstore/store_test.go`
 
 - [x] **Step 1: Add failing repository tests for project CRUD and scoped key metadata**
 - [x] **Step 2: Add schema for `projects` plus `project_id/budget_usd/spent_usd` on keys and usage-bearing tables**
 - [x] **Step 3: Extend repository interfaces and identity/record structs**
-- [x] **Step 4: Run `go test -count=1 ./internal/repository/sqlstore`**
+- [x] **Step 4: Run `go test -count=1 ./internal/platform/sqlstore`**
 
 ### Task 2: Implement sqlstore project and scoped-key persistence
 
 **Files:**
-- Create: `internal/repository/sqlstore/project.go`
-- Modify: `internal/repository/sqlstore/identity.go`
-- Modify: `internal/repository/sqlstore/usage.go`
-- Modify: `internal/repository/sqlstore/responses.go`
-- Modify: `internal/repository/sqlstore/store_extra_test.go`
+- Create: `internal/platform/sqlstore/project.go`
+- Modify: `internal/platform/sqlstore/identity.go`
+- Modify: `internal/platform/sqlstore/usage.go`
+- Modify: `internal/platform/sqlstore/responses.go`
+- Modify: `internal/platform/sqlstore/store_extra_test.go`
 
 - [x] **Step 1: Implement project CRUD and query methods**
 - [x] **Step 2: Load project metadata in `Authenticate`**
@@ -51,14 +51,14 @@
 ### Task 4: Add minimal admin APIs for projects and scoped keys
 
 **Files:**
-- Modify: `internal/handler/admin.go`
-- Modify: `internal/handler/server.go`
-- Modify: `internal/handler/admin_extra_test.go`
-- Modify: `internal/handler/handler_test.go`
+- Modify: `internal/transport/http/handler/admin.go`
+- Modify: `internal/transport/http/handler/server.go`
+- Modify: `internal/transport/http/handler/admin_extra_test.go`
+- Modify: `internal/transport/http/handler/handler_test.go`
 
 - [x] **Step 1: Add project create/list/get/update APIs**
 - [x] **Step 2: Extend user/key creation/update flow with `project_id` and `budget_usd`**
-- [x] **Step 3: Re-run `go test -count=1 ./internal/handler`**
+- [x] **Step 3: Re-run `go test -count=1 ./internal/transport/http/handler`**
 
 ### Task 5: Wire startup and docs
 

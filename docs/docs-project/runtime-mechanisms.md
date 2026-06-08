@@ -31,8 +31,8 @@ Authorization header
 
 **关键代码**：
 - `internal/service/auth/auth.go` — 认证逻辑
-- `internal/middleware/middleware.go` — `mw.Auth()`
-- `internal/repository/sqlstore/identity.go` — 身份查询
+- `internal/transport/http/middleware/middleware.go` — `mw.Auth()`
+- `internal/platform/sqlstore/identity.go` — 身份查询
 
 ---
 
@@ -184,7 +184,7 @@ tracing:
   serviceName: "gateyes"
 ```
 
-**关键代码**：`internal/middleware/otel.go`
+**关键代码**：`internal/transport/http/middleware/otel.go`
 
 ### 审计日志
 

@@ -7,13 +7,13 @@ Use SQLite only for local/dev or very small single-instance deployments.
 ### Backup
 
 ```bash
-./scripts/db-backup.sh ./gateyes.db ./backups
+mkdir -p ./backups && cp ./gateyes.db ./backups/gateyes.db.$(date -u +%Y%m%dT%H%M%SZ).bak
 ```
 
 ### Restore
 
 ```bash
-./scripts/db-restore.sh ./backups/gateyes.db.<timestamp>.bak ./gateyes.db
+cp ./backups/gateyes.db.<timestamp>.bak ./gateyes.db
 ```
 
 ### Notes

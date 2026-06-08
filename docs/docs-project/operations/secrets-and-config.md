@@ -49,7 +49,7 @@ Production choices:
 
 ## 5. Validation
 
-`internal/config` now validates:
+`internal/app/config` now validates:
 
 1. database driver whitelist
 2. router strategy whitelist

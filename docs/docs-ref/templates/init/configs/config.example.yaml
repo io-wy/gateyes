@@ -1,0 +1,19 @@
+app:
+  name: go-backend-starter
+  env: development
+  port: 8080
+
+database:
+  host: localhost
+  port: 5432
+  name: app
+  user: app
+  password: ${DB_PASSWORD}
+
+redis:
+  host: localhost
+  port: 6379
+
+log:
+  level: info
+  format: json
