@@ -57,6 +57,9 @@ func (p *pricingMockProvider) StreamResponse(ctx context.Context, req *provider.
 func (p *pricingMockProvider) CreateEmbedding(ctx context.Context, req *provider.EmbeddingRequest) (*provider.EmbeddingResponse, error) {
 	return nil, nil
 }
+func (p *pricingMockProvider) CreateImageGeneration(ctx context.Context, req *provider.ImageGenerationRequest) (*provider.ImageGenerationResponse, error) {
+	return nil, nil
+}
 
 func TestComputeCostUsesProviderConfigWhenAvailable(t *testing.T) {
 	svc := &Service{}

@@ -264,6 +264,89 @@ func (p *openAIProvider) streamResponses(ctx context.Context, req *ResponseReque
 	}
 }
 
+func (p *openAIProvider) CreateImageGeneration(ctx context.Context, req *ImageGenerationRequest) (*ImageGenerationResponse, error) {
+	params := openai.ImageGenerateParams{
+		Prompt: req.Prompt,
+	}
+	model := strings.TrimSpace(req.Model)
+	if model == "" {
+		model = p.cfg.Model
+	}
+	if model != "" {
+		params.Model = openai.ImageModel(model)
+	}
+	if req.N > 0 {
+		params.N = openai.Int(int64(req.N))
+	}
+	if req.OutputCompression > 0 {
+		params.OutputCompression = openai.Int(int64(req.OutputCompression))
+	}
+	if req.PartialImages > 0 {
+		params.PartialImages = openai.Int(int64(req.PartialImages))
+	}
+	if req.User != "" {
+		params.User = openai.String(req.User)
+	}
+	if req.Background != "" {
+		params.Background = openai.ImageGenerateParamsBackground(req.Background)
+	}
+	if req.Moderation != "" {
+		params.Moderation = openai.ImageGenerateParamsModeration(req.Moderation)
+	}
+	if req.OutputFormat != "" {
+		params.OutputFormat = openai.ImageGenerateParamsOutputFormat(req.OutputFormat)
+	}
+	if req.Quality != "" {
+		params.Quality = openai.ImageGenerateParamsQuality(req.Quality)
+	}
+	if req.ResponseFormat != "" {
+		params.ResponseFormat = openai.ImageGenerateParamsResponseFormat(req.ResponseFormat)
+	}
+	if req.Size != "" {
+		params.Size = openai.ImageGenerateParamsSize(req.Size)
+	}
+	if req.Style != "" {
+		params.Style = openai.ImageGenerateParamsStyle(req.Style)
+	}
+
+	if len(p.cfg.ExtraBody) > 0 {
+		params.SetExtraFields(p.cfg.ExtraBody)
+	}
+
+	resp, err := p.client.Images.Generate(ctx, params)
+	if err != nil {
+		return nil, p.mapError(err)
+	}
+
+	return convertSDKImagesResponse(*resp), nil
+}
+
+func convertSDKImagesResponse(resp openai.ImagesResponse) *ImageGenerationResponse {
+	result := &ImageGenerationResponse{
+		Created: resp.Created,
+		Data:    make([]ImageGenerationData, 0, len(resp.Data)),
+	}
+	for _, item := range resp.Data {
+		result.Data = append(result.Data, ImageGenerationData{
+			B64JSON:       item.B64JSON,
+			RevisedPrompt: item.RevisedPrompt,
+			URL:           item.URL,
+		})
+	}
+	if resp.Usage.TotalTokens > 0 || resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0 {
+		result.Usage = &ImageGenerationUsage{
+			InputTokens:  int(resp.Usage.InputTokens),
+			OutputTokens: int(resp.Usage.OutputTokens),
+			TotalTokens:  int(resp.Usage.TotalTokens),
+			InputTokensDetails: &ImageGenerationUsageInputTokensDetails{
+				ImageTokens: int(resp.Usage.InputTokensDetails.ImageTokens),
+				TextTokens:  int(resp.Usage.InputTokensDetails.TextTokens),
+			},
+		}
+	}
+	return result
+}
+
 func (p *openAIProvider) CreateEmbedding(ctx context.Context, req *EmbeddingRequest) (*EmbeddingResponse, error) {
 	params := openai.EmbeddingNewParams{
 		Model: openai.EmbeddingModel(req.Model),

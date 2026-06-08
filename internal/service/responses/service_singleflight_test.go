@@ -41,6 +41,9 @@ func (p *sfMockProvider) StreamResponse(ctx context.Context, req *provider.Respo
 func (p *sfMockProvider) CreateEmbedding(ctx context.Context, req *provider.EmbeddingRequest) (*provider.EmbeddingResponse, error) {
 	return nil, nil
 }
+func (p *sfMockProvider) CreateImageGeneration(ctx context.Context, req *provider.ImageGenerationRequest) (*provider.ImageGenerationResponse, error) {
+	return nil, nil
+}
 
 func (p *sfMockProvider) CreateResponse(ctx context.Context, req *provider.ResponseRequest) (*provider.Response, error) {
 	p.calls.Add(1)

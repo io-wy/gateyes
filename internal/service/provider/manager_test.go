@@ -27,6 +27,9 @@ func (p *closableProviderStub) StreamResponse(ctx context.Context, req *Response
 func (p *closableProviderStub) CreateEmbedding(ctx context.Context, req *EmbeddingRequest) (*EmbeddingResponse, error) {
 	return nil, nil
 }
+func (p *closableProviderStub) CreateImageGeneration(ctx context.Context, req *ImageGenerationRequest) (*ImageGenerationResponse, error) {
+	return nil, nil
+}
 func (p *closableProviderStub) Weight() int { return 0 }
 func (p *closableProviderStub) CloseIdleConnections() {
 	p.closed = true

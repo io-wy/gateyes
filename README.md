@@ -4,7 +4,7 @@ Gateyes is a production-oriented LLM API gateway. It exposes OpenAI-compatible a
 
 ## What It Provides
 
-- Unified API surfaces: `/v1/responses`, `/v1/chat/completions`, `/v1/messages`, `/v1/embeddings`
+- Unified API surfaces: `/v1/responses`, `/v1/chat/completions`, `/v1/messages`, `/v1/embeddings`, `/v1/images/generations`
 - Multi-tenant auth and RBAC with API-key based identities
 - Provider routing with fallback, retry, circuit breaker, and health checks
 - Redis-backed distributed rate limiting with in-memory fallback
@@ -64,6 +64,7 @@ go run ./cmd/gateway -config configs/demo-mock.yaml
 | `/v1/chat/completions` | OpenAI Chat Completions | Existing OpenAI SDK clients |
 | `/v1/messages` | Anthropic Messages | Anthropic SDK clients |
 | `/v1/embeddings` | OpenAI Embeddings | Text embeddings |
+| `/v1/images/generations` | OpenAI Images | Image generation |
 
 All request surfaces share provider selection, retry/fallback, usage persistence, budgets, rate limits, tracing, and metrics.
 

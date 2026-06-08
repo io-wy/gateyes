@@ -29,6 +29,9 @@ func (m *streamMockProvider) Cost(_, _ int) float64 { return 0 }
 func (m *streamMockProvider) CreateEmbedding(context.Context, *provider.EmbeddingRequest) (*provider.EmbeddingResponse, error) {
 	return nil, errors.New("not implemented")
 }
+func (m *streamMockProvider) CreateImageGeneration(context.Context, *provider.ImageGenerationRequest) (*provider.ImageGenerationResponse, error) {
+	return nil, errors.New("not implemented")
+}
 func (m *streamMockProvider) CreateResponse(context.Context, *provider.ResponseRequest) (*provider.Response, error) {
 	return nil, errors.New("not implemented")
 }

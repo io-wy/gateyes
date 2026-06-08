@@ -58,3 +58,7 @@ func (p *baseProvider) CloseIdleConnections() {
 func (p *baseProvider) CreateEmbedding(ctx context.Context, req *EmbeddingRequest) (*EmbeddingResponse, error) {
 	return nil, fmt.Errorf("provider %s does not support embeddings", p.cfg.Name)
 }
+
+func (p *baseProvider) CreateImageGeneration(ctx context.Context, req *ImageGenerationRequest) (*ImageGenerationResponse, error) {
+	return nil, fmt.Errorf("provider %s does not support image generation", p.cfg.Name)
+}

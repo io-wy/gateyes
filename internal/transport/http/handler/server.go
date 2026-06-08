@@ -46,6 +46,7 @@ func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mwSvc 
 		llm.POST("/chat/completions", h.Chat)
 		llm.POST("/messages", h.AnthropicMessages)
 		llm.POST("/embeddings", h.Embeddings)
+		llm.POST("/images/generations", h.ImageGenerations)
 	}
 
 	serviceRoutes := engine.Group("/service/:prefix")

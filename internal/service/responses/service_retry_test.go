@@ -30,6 +30,9 @@ func (m *retryMockProvider) Cost(_, _ int) float64 { return 0 }
 func (m *retryMockProvider) CreateEmbedding(ctx context.Context, req *provider.EmbeddingRequest) (*provider.EmbeddingResponse, error) {
 	return nil, errors.New("not implemented")
 }
+func (m *retryMockProvider) CreateImageGeneration(ctx context.Context, req *provider.ImageGenerationRequest) (*provider.ImageGenerationResponse, error) {
+	return nil, errors.New("not implemented")
+}
 
 func (m *retryMockProvider) CreateResponse(ctx context.Context, req *provider.ResponseRequest) (*provider.Response, error) {
 	m.callCount++

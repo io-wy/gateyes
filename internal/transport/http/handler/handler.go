@@ -280,6 +280,69 @@ func (h *Handler) Embeddings(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
+func (h *Handler) ImageGenerations(c *gin.Context) {
+	start := time.Now()
+	defer h.metrics.TrackInFlight(metricsSurfaceImages)()
+
+	var req provider.ImageGenerationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.metrics.RecordError(metricsSurfaceImages, "", metricsResultClientError, "invalid_request")
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": err.Error(), "type": "invalid_request_error"}})
+		return
+	}
+
+	identity, ok := h.requireIdentity(c, metricsSurfaceImages)
+	if !ok {
+		return
+	}
+
+	providerNames, err := h.deps.Store.ListTenantProviders(c.Request.Context(), identity.TenantID)
+	if err != nil {
+		h.logRequestFailed(c, metricsSurfaceImages, "", http.StatusInternalServerError, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error(), "type": "internal_error"}})
+		return
+	}
+
+	var selected provider.Provider
+	for _, name := range providerNames {
+		p, ok := h.deps.ProviderMgr.Get(name)
+		if !ok {
+			continue
+		}
+		record, hasRegistry := h.deps.ProviderMgr.Registry(name)
+		if !registryBool(hasRegistry, record.SupportsImages) {
+			continue
+		}
+		if len(identity.APIKeyProviders) > 0 && !slices.Contains(identity.APIKeyProviders, p.Name()) {
+			continue
+		}
+		model := strings.TrimSpace(req.Model)
+		if model == "" {
+			model = p.Model()
+		}
+		if len(identity.APIKeyModels) > 0 && !slices.Contains(identity.APIKeyModels, model) {
+			continue
+		}
+		selected = p
+		break
+	}
+
+	if selected == nil {
+		h.metrics.RecordError(metricsSurfaceImages, "", metricsResultUpstream, "no_image_provider")
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "no image generation provider available for this request", "type": "invalid_request_error"}})
+		return
+	}
+
+	result, err := selected.CreateImageGeneration(c.Request.Context(), &req)
+	if err != nil {
+		h.renderServiceError(c, metricsSurfaceImages, selected.Name(), err)
+		return
+	}
+
+	h.logRequestCompleted(c, metricsSurfaceImages, selected.Name(), http.StatusOK, time.Since(start))
+	c.JSON(http.StatusOK, result)
+}
+
 func (h *Handler) Metrics(c *gin.Context) {
 	h.metrics.Handler().ServeHTTP(c.Writer, c.Request)
 }

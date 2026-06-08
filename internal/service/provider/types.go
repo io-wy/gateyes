@@ -147,6 +147,7 @@ type Provider interface {
 	CreateResponse(ctx context.Context, req *ResponseRequest) (*Response, error)
 	StreamResponse(ctx context.Context, req *ResponseRequest) (<-chan ResponseEvent, <-chan error)
 	CreateEmbedding(ctx context.Context, req *EmbeddingRequest) (*EmbeddingResponse, error)
+	CreateImageGeneration(ctx context.Context, req *ImageGenerationRequest) (*ImageGenerationResponse, error)
 }
 
 type EmbeddingRequest struct {
@@ -165,4 +166,44 @@ type EmbeddingResponse struct {
 	Data   []EmbeddingData `json:"data"`
 	Model  string          `json:"model"`
 	Usage  Usage           `json:"usage"`
+}
+
+type ImageGenerationRequest struct {
+	Model             string `json:"model,omitempty"`
+	Prompt            string `json:"prompt"`
+	N                 int    `json:"n,omitempty"`
+	Quality           string `json:"quality,omitempty"`
+	ResponseFormat    string `json:"response_format,omitempty"`
+	Size              string `json:"size,omitempty"`
+	Style             string `json:"style,omitempty"`
+	Background        string `json:"background,omitempty"`
+	Moderation        string `json:"moderation,omitempty"`
+	OutputCompression int    `json:"output_compression,omitempty"`
+	OutputFormat      string `json:"output_format,omitempty"`
+	PartialImages     int    `json:"partial_images,omitempty"`
+	User              string `json:"user,omitempty"`
+}
+
+type ImageGenerationData struct {
+	B64JSON       string `json:"b64_json,omitempty"`
+	RevisedPrompt string `json:"revised_prompt,omitempty"`
+	URL           string `json:"url,omitempty"`
+}
+
+type ImageGenerationUsageInputTokensDetails struct {
+	ImageTokens int `json:"image_tokens,omitempty"`
+	TextTokens  int `json:"text_tokens,omitempty"`
+}
+
+type ImageGenerationUsage struct {
+	InputTokens        int                                     `json:"input_tokens,omitempty"`
+	OutputTokens       int                                     `json:"output_tokens,omitempty"`
+	TotalTokens        int                                     `json:"total_tokens,omitempty"`
+	InputTokensDetails *ImageGenerationUsageInputTokensDetails `json:"input_tokens_details,omitempty"`
+}
+
+type ImageGenerationResponse struct {
+	Created int64                 `json:"created"`
+	Data    []ImageGenerationData `json:"data"`
+	Usage   *ImageGenerationUsage `json:"usage,omitempty"`
 }

@@ -52,6 +52,7 @@ const (
 	metricsSurfaceChatCompletions = "chat_completions"
 	metricsSurfaceMessages        = "messages"
 	metricsSurfaceEmbeddings      = "embeddings"
+	metricsSurfaceImages          = "images"
 	metricsSurfaceModels          = "models"
 	metricsSurfaceAdmin           = "admin"
 

@@ -2915,7 +2915,7 @@
                 "models": [
                   "LongCat-Flash-Chat"
                 ],
-                "budget_usd": 50.0,
+                "budget_usd": 50,
                 "user_id": ""
               }
             }
@@ -3063,7 +3063,7 @@
                   "LongCat-Flash-Chat",
                   "glm-5.1"
                 ],
-                "budget_usd": 100.0,
+                "budget_usd": 100,
                 "status": "active"
               }
             }
@@ -3256,7 +3256,7 @@
                 "allowed_providers": [
                   "longcat-openai"
                 ],
-                "budget_usd": 10.0,
+                "budget_usd": 10,
                 "budget_policy": "hard_reject",
                 "rate_limit_qps": 10,
                 "user_id": ""
@@ -3409,7 +3409,7 @@
                 "allowed_providers": [
                   "longcat-openai"
                 ],
-                "budget_usd": 20.0,
+                "budget_usd": 20,
                 "budget_policy": "soft_alert",
                 "rate_limit_qps": 20,
                 "status": "active"
@@ -3543,7 +3543,7 @@
                 "name": "My Project",
                 "slug": "my-project",
                 "tenant_id": "default",
-                "budget_usd": 1000.0,
+                "budget_usd": 1000,
                 "budget_policy": "hard_reject"
               }
             }
@@ -3665,7 +3665,7 @@
               },
               "example": {
                 "name": "My Project Updated",
-                "budget_usd": 2000.0,
+                "budget_usd": 2000,
                 "budget_policy": "soft_alert",
                 "status": "active"
               }
@@ -4183,6 +4183,159 @@
         "responses": {
           "200": {
             "description": "配置已重载"
+          }
+        }
+      }
+    },
+    "/v1/images/generations": {
+      "post": {
+        "tags": [
+          "Images API"
+        ],
+        "summary": "OpenAI Image Generations API",
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "prompt"
+                ],
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "example": "gpt-image-1"
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "example": "a small red cube"
+                  },
+                  "n": {
+                    "type": "integer",
+                    "example": 1
+                  },
+                  "quality": {
+                    "type": "string",
+                    "example": "auto"
+                  },
+                  "response_format": {
+                    "type": "string",
+                    "enum": [
+                      "url",
+                      "b64_json"
+                    ]
+                  },
+                  "size": {
+                    "type": "string",
+                    "example": "1024x1024"
+                  },
+                  "style": {
+                    "type": "string",
+                    "enum": [
+                      "vivid",
+                      "natural"
+                    ]
+                  },
+                  "background": {
+                    "type": "string",
+                    "enum": [
+                      "transparent",
+                      "opaque",
+                      "auto"
+                    ]
+                  },
+                  "moderation": {
+                    "type": "string",
+                    "enum": [
+                      "low",
+                      "auto"
+                    ]
+                  },
+                  "output_compression": {
+                    "type": "integer",
+                    "example": 100
+                  },
+                  "output_format": {
+                    "type": "string",
+                    "enum": [
+                      "png",
+                      "jpeg",
+                      "webp"
+                    ]
+                  },
+                  "partial_images": {
+                    "type": "integer",
+                    "example": 0
+                  },
+                  "user": {
+                    "type": "string"
+                  }
+                },
+                "example": {
+                  "model": "gpt-image-1",
+                  "prompt": "a small red cube",
+                  "n": 1,
+                  "size": "1024x1024",
+                  "response_format": "b64_json"
+                }
+              },
+              "example": {
+                "model": "gpt-image-1",
+                "prompt": "a small red cube",
+                "n": 1,
+                "size": "1024x1024",
+                "response_format": "b64_json"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Image generation result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "created": {
+                      "type": "integer"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "url": {
+                            "type": "string"
+                          },
+                          "b64_json": {
+                            "type": "string"
+                          },
+                          "revised_prompt": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "usage": {
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid API key"
           }
         }
       }

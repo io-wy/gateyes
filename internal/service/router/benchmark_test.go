@@ -34,6 +34,9 @@ func (m *benchProvider) StreamResponse(ctx context.Context, req *provider.Respon
 func (m *benchProvider) CreateEmbedding(ctx context.Context, req *provider.EmbeddingRequest) (*provider.EmbeddingResponse, error) {
 	return nil, nil
 }
+func (m *benchProvider) CreateImageGeneration(ctx context.Context, req *provider.ImageGenerationRequest) (*provider.ImageGenerationResponse, error) {
+	return nil, nil
+}
 
 func makeBenchProviders(n int) []provider.Provider {
 	providers := make([]provider.Provider, n)

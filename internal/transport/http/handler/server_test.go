@@ -28,6 +28,7 @@ func TestNewServer_RoutesRegistered(t *testing.T) {
 		"POST /v1/chat/completions":         "POST",
 		"POST /v1/messages":                 "POST",
 		"POST /v1/embeddings":               "POST",
+		"POST /v1/images/generations":       "POST",
 		"GET /admin/dashboard":              "GET",
 		"GET /admin/providers":              "GET",
 		"POST /admin/providers":             "POST",

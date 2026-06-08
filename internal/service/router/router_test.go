@@ -34,6 +34,9 @@ func (m *mockProvider) StreamResponse(ctx context.Context, req *provider.Respons
 func (m *mockProvider) CreateEmbedding(ctx context.Context, req *provider.EmbeddingRequest) (*provider.EmbeddingResponse, error) {
 	return nil, nil
 }
+func (m *mockProvider) CreateImageGeneration(ctx context.Context, req *provider.ImageGenerationRequest) (*provider.ImageGenerationResponse, error) {
+	return nil, nil
+}
 
 func TestRouter_RoundRobin(t *testing.T) {
 	cfg := config.RouterConfig{
