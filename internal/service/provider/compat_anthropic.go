@@ -29,6 +29,7 @@ type AnthropicSystemBlock struct {
 type AnthropicThinking struct {
 	Type         string `json:"type"`
 	BudgetTokens int    `json:"budget_tokens,omitempty"`
+	Display      string `json:"display,omitempty"`
 }
 
 type AnthropicCacheControl struct {

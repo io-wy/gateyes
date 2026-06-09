@@ -6,11 +6,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gateyes/gateway/internal/platform/trace"
-	pluginSvc "github.com/gateyes/gateway/internal/plugin"
+	pluginSvc "github.com/gateyes/gateway/internal/domain/plugin"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/provider"
 	routeSvc "github.com/gateyes/gateway/internal/service/router"
+	"github.com/gateyes/gateway/pkg/trace"
 )
 
 type routeTrace struct {

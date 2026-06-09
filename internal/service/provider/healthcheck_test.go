@@ -9,8 +9,8 @@ import (
 	"github.com/gateyes/gateway/internal/testutil"
 
 	"github.com/gateyes/gateway/internal/app/config"
-	"github.com/gateyes/gateway/internal/platform/sqlstore"
 	"github.com/gateyes/gateway/internal/repository"
+	"github.com/gateyes/gateway/internal/repository/sqlstore"
 )
 
 func TestHealthCheckerUpdatesRegistryStatus(t *testing.T) {

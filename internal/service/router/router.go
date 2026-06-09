@@ -253,9 +253,6 @@ func (r *Router) orderByStrategyLocked(candidates []provider.Provider, sessionID
 			ordered[i], ordered[j] = ordered[j], ordered[i]
 		})
 		return ordered
-	case "ml_rank":
-		// TODO(io-wy): once ranker is implemented, let strategy delegate to it or remove this alias.
-		return ordered
 	default:
 		return ordered
 	}

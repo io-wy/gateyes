@@ -12,8 +12,8 @@ import (
 	"github.com/gateyes/gateway/internal/testutil"
 
 	"github.com/gateyes/gateway/internal/app/config"
-	"github.com/gateyes/gateway/internal/platform/sqlstore"
 	"github.com/gateyes/gateway/internal/repository"
+	"github.com/gateyes/gateway/internal/repository/sqlstore"
 	"github.com/gateyes/gateway/internal/service/auth"
 	"github.com/gateyes/gateway/internal/service/limiter"
 	"github.com/gateyes/gateway/internal/service/provider"

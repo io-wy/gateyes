@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gateyes/gateway/internal/platform/trace"
-	pluginSvc "github.com/gateyes/gateway/internal/plugin"
+	pluginSvc "github.com/gateyes/gateway/internal/domain/plugin"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/provider"
+	"github.com/gateyes/gateway/pkg/trace"
 	"go.opentelemetry.io/otel/attribute"
 )
 

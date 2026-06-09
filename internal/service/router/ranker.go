@@ -11,7 +11,6 @@ func (r *Router) applyRankerLocked(candidates []provider.Provider, ctx RouteCont
 	case "", "none":
 		return candidates
 	case "ml_rank":
-		// TODO(io-wy): add LightGBM/BERT based ranking once features, labels and online feedback are defined.
 		return candidates
 	default:
 		return candidates

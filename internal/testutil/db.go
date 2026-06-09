@@ -6,7 +6,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gateyes/gateway/internal/app/config"
-	"github.com/gateyes/gateway/internal/platform/db"
+	"github.com/gateyes/gateway/internal/repository/db"
 	"github.com/redis/go-redis/v9"
 )
 

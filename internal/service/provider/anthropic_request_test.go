@@ -108,6 +108,26 @@ func TestBuildAnthropicParamsWithOptions(t *testing.T) {
 	if len(params.System) != 1 || params.System[0].Text != "be concise" {
 		t.Fatalf("buildAnthropicParams(options) system = %+v, want typed system option", params.System)
 	}
+	if params.Thinking.OfEnabled == nil || params.Thinking.OfEnabled.BudgetTokens != 32 {
+		t.Fatalf("buildAnthropicParams(options) thinking = %+v, want enabled budget 32", params.Thinking)
+	}
+}
+
+func TestBuildAnthropicThinkingParam(t *testing.T) {
+	adaptive := buildAnthropicThinkingParam(&AnthropicThinking{Type: "adaptive", Display: "summarized"})
+	if adaptive.OfAdaptive == nil || adaptive.OfAdaptive.Display != "summarized" {
+		t.Fatalf("buildAnthropicThinkingParam(adaptive) = %+v, want adaptive summarized", adaptive)
+	}
+
+	disabled := buildAnthropicThinkingParam(&AnthropicThinking{Type: "disabled"})
+	if disabled.OfDisabled == nil {
+		t.Fatalf("buildAnthropicThinkingParam(disabled) = %+v, want disabled", disabled)
+	}
+
+	fallback := buildAnthropicThinkingParam(&AnthropicThinking{Type: "enabled"})
+	if fallback.OfAdaptive == nil {
+		t.Fatalf("buildAnthropicThinkingParam(enabled without budget) = %+v, want adaptive fallback", fallback)
+	}
 }
 
 func TestBuildAnthropicParamsWithVendorProfile(t *testing.T) {

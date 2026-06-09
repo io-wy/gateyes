@@ -8,7 +8,7 @@ import (
 	"os"
 
 	"github.com/gateyes/gateway/internal/app/config"
-	"github.com/gateyes/gateway/internal/platform/db"
+	"github.com/gateyes/gateway/internal/repository/db"
 )
 
 func main() {
@@ -39,8 +39,16 @@ func main() {
 		}
 		slog.Info("migrations applied")
 	case "status":
-		if err := database.Migrate(context.Background()); err != nil {
+		pending, err := database.MigrationStatus(context.Background())
+		if err != nil {
 			slog.Error("migration status check failed", "error", err)
+			os.Exit(1)
+		}
+		if len(pending) > 0 {
+			slog.Warn("database schema has pending migrations", "pending", pending)
+			for _, name := range pending {
+				fmt.Fprintf(os.Stderr, "pending migration: %s\n", name)
+			}
 			os.Exit(1)
 		}
 		slog.Info("database schema is up to date")

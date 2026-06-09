@@ -364,7 +364,7 @@ func buildAnthropicParams(req *ResponseRequest, cfg config.ProviderConfig) (anth
 			params.System = []anthropic.TextBlockParam{{Text: req.Options.System}}
 		}
 		if req.Options.Thinking != nil {
-			// TODO: map thinking config to SDK ThinkingConfigParamUnion
+			params.Thinking = buildAnthropicThinkingParam(req.Options.Thinking)
 		}
 	}
 
@@ -413,6 +413,34 @@ func buildAnthropicParams(req *ResponseRequest, cfg config.ProviderConfig) (anth
 	}
 
 	return params, nil
+}
+
+func buildAnthropicThinkingParam(thinking *AnthropicThinking) anthropic.ThinkingConfigParamUnion {
+	if thinking == nil {
+		return anthropic.ThinkingConfigParamUnion{}
+	}
+
+	switch strings.ToLower(thinking.Type) {
+	case "adaptive":
+		adaptive := anthropic.ThinkingConfigAdaptiveParam{}
+		switch strings.ToLower(thinking.Display) {
+		case "summarized":
+			adaptive.Display = anthropic.ThinkingConfigAdaptiveDisplaySummarized
+		case "omitted":
+			adaptive.Display = anthropic.ThinkingConfigAdaptiveDisplayOmitted
+		}
+		return anthropic.ThinkingConfigParamUnion{OfAdaptive: &adaptive}
+	case "disabled":
+		disabled := anthropic.NewThinkingConfigDisabledParam()
+		return anthropic.ThinkingConfigParamUnion{OfDisabled: &disabled}
+	case "enabled":
+		if thinking.BudgetTokens > 0 {
+			return anthropic.ThinkingConfigParamOfEnabled(int64(thinking.BudgetTokens))
+		}
+	}
+
+	adaptive := anthropic.ThinkingConfigAdaptiveParam{}
+	return anthropic.ThinkingConfigParamUnion{OfAdaptive: &adaptive}
 }
 
 func buildAnthropicMessages(msgs []Message) ([]anthropic.MessageParam, string, error) {

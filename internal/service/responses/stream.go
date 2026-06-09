@@ -10,7 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
-	pluginSvc "github.com/gateyes/gateway/internal/plugin"
+	pluginSvc "github.com/gateyes/gateway/internal/domain/plugin"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/cache"
 	"github.com/gateyes/gateway/internal/service/guardrail"

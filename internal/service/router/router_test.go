@@ -364,7 +364,21 @@ func TestRouter_OrderCandidatesMLRankPlaceholderIsNoop(t *testing.T) {
 
 	ordered := r.OrderCandidates(r.List(), RouteContext{})
 	if len(ordered) != 2 || ordered[0].Name() != "p1" || ordered[1].Name() != "p2" {
-		t.Fatalf("OrderCandidates(ml_rank placeholder) = %v, want [p1 p2]", providerNames(ordered))
+		t.Fatalf("OrderCandidates(ml_rank ranker placeholder) = %v, want [p1 p2]", providerNames(ordered))
+	}
+}
+
+func TestRouter_StrategyMLRankAliasIsNoop(t *testing.T) {
+	cfg := config.RouterConfig{Strategy: "ml_rank"}
+	r := NewRouter(cfg, nil)
+	r.SetProviders([]provider.Provider{
+		&mockProvider{name: "p1", model: "m1", cost: 1.0},
+		&mockProvider{name: "p2", model: "m2", cost: 1.0},
+	})
+
+	ordered := r.OrderCandidates(r.List(), RouteContext{})
+	if len(ordered) != 2 || ordered[0].Name() != "p1" || ordered[1].Name() != "p2" {
+		t.Fatalf("OrderCandidates(strategy ml_rank alias) = %v, want [p1 p2]", providerNames(ordered))
 	}
 }
 

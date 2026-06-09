@@ -12,26 +12,27 @@ import (
 	"time"
 
 	"github.com/gateyes/gateway/internal/app/config"
-	grpcplugin "github.com/gateyes/gateway/internal/extension/plugin/grpc"
-	wasmplugin "github.com/gateyes/gateway/internal/extension/plugin/wasm"
-	"github.com/gateyes/gateway/internal/platform/db"
-	"github.com/gateyes/gateway/internal/platform/eventbus"
-	redispkg "github.com/gateyes/gateway/internal/platform/redis"
-	"github.com/gateyes/gateway/internal/platform/sqlstore"
-	"github.com/gateyes/gateway/internal/plugin"
+	"github.com/gateyes/gateway/internal/domain/plugin"
+	"github.com/gateyes/gateway/internal/handler"
+	"github.com/gateyes/gateway/internal/handler/middleware"
 	"github.com/gateyes/gateway/internal/repository"
+	"github.com/gateyes/gateway/internal/repository/db"
+	"github.com/gateyes/gateway/internal/repository/sqlstore"
 	"github.com/gateyes/gateway/internal/service/alert"
 	"github.com/gateyes/gateway/internal/service/budget"
 	"github.com/gateyes/gateway/internal/service/cache"
 	"github.com/gateyes/gateway/internal/service/catalog"
+	grpcplugin "github.com/gateyes/gateway/internal/service/extension/plugin/grpc"
+	wasmplugin "github.com/gateyes/gateway/internal/service/extension/plugin/wasm"
 	"github.com/gateyes/gateway/internal/service/guardrail"
 	"github.com/gateyes/gateway/internal/service/limiter"
 	"github.com/gateyes/gateway/internal/service/pricing"
 	"github.com/gateyes/gateway/internal/service/provider"
 	responseSvc "github.com/gateyes/gateway/internal/service/responses"
 	"github.com/gateyes/gateway/internal/service/router"
-	"github.com/gateyes/gateway/internal/transport/http/handler"
-	"github.com/gateyes/gateway/internal/transport/http/middleware"
+	"github.com/gateyes/gateway/pkg/eventbus"
+	"github.com/gateyes/gateway/pkg/logging"
+	redispkg "github.com/gateyes/gateway/pkg/redis"
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -87,7 +88,7 @@ func main() {
 	configPath := flag.String("config", "configs/config.yaml", "path to config file")
 	flag.Parse()
 
-	slog.SetDefault(slog.New(middleware.NewTraceHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))))
+	slog.SetDefault(slog.New(logging.NewTraceHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))))
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -189,7 +190,7 @@ func main() {
 	var redisClient *redis.Client
 	if cfg.Redis.Enabled() {
 		var err error
-		redisClient, err = redispkg.NewClient(cfg.Redis)
+		redisClient, err = redispkg.NewClient(redisClientConfig(cfg.Redis))
 		if err != nil {
 			slog.Error("failed to connect to Redis", "error", err)
 			os.Exit(1)
@@ -424,6 +425,20 @@ func main() {
 	}
 	if pm := httpMiddleware.PluginManager(); pm != nil {
 		pm.Close()
+	}
+}
+
+func redisClientConfig(cfg config.RedisConfig) redispkg.Config {
+	return redispkg.Config{
+		Addr:           cfg.Addr,
+		Password:       cfg.Password,
+		DB:             cfg.DB,
+		MinIdleConns:   cfg.MinIdleConns,
+		MaxRetries:     cfg.MaxRetries,
+		PoolSize:       cfg.PoolSize,
+		DialTimeoutMs:  cfg.DialTimeoutMs,
+		ReadTimeoutMs:  cfg.ReadTimeoutMs,
+		WriteTimeoutMs: cfg.WriteTimeoutMs,
 	}
 }
 
