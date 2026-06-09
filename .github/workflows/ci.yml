@@ -16,6 +16,7 @@ jobs:
       ANTHROPIC_BASE_URL: https://api.anthropic.com
       ANTHROPIC_API_KEY: test-anthropic-key
       ANTHROPIC_MODEL: claude-3-5-sonnet-latest
+      GATEYES_DATABASE_DSN: postgres://gateyes:gateyes_pw@localhost:5432/gateyes?sslmode=disable
       GATEYES_BOOTSTRAP_TEST_KEY: test-key-001
       GATEYES_BOOTSTRAP_TEST_SECRET: test-secret
       GATEYES_ADMIN_BOOTSTRAP_KEY: admin-key-001
