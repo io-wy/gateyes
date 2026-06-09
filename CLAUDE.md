@@ -6,12 +6,12 @@
 
 本项目的上下文分四层递进，按需加载：
 
-| 层级 | 位置 | 内容 | 加载时机 |
-|------|------|------|----------|
-| L1 项目宪法 | `CLAUDE.md`（本文件） | 操作原则、编码约束、流程约束 | 每次会话 |
-| L2 全局规则 | `~/.claude/rules/*.md` | 不可变性、测试要求、性能策略 | 每次会话 |
-| L3 项目领域知识 | `docs/` | 架构决策、API 契约、运行时机制 | 涉及对应模块时 |
-| L4 专业 Skill | `.claude/skills/` | Go 审查、变更影响扫描、协议开发、踩坑进化 | 任务级匹配 |
+| 层级            | 位置                     | 内容                                      | 加载时机       |
+| --------------- | ------------------------ | ----------------------------------------- | -------------- |
+| L1 项目宪法     | `CLAUDE.md`（本文件）  | 操作原则、编码约束、流程约束              | 每次会话       |
+| L2 全局规则     | `~/.claude/rules/*.md` | 不可变性、测试要求、性能策略              | 每次会话       |
+| L3 项目领域知识 | `docs/`                | 架构决策、API 契约、运行时机制            | 涉及对应模块时 |
+| L4 专业 Skill   | `.claude/skills/`      | Go 审查、变更影响扫描、协议开发、踩坑进化 | 任务级匹配     |
 
 **加载规则**：遇到不确定的实现细节时，按 L3→L4 顺序查找，禁止凭训练记忆编造。
 
@@ -31,6 +31,7 @@ if err != nil {
     return fmt.Errorf("create record: %w", err)
 }
 ```
+
 Why: 吞错误会让故障定位从分钟级变成小时级。后端服务常驻运行，隐藏的错误会累积爆发。
 
 ### C-02：context 传递——禁止创建孤儿 context
@@ -46,6 +47,7 @@ func (s *Service) Process(ctx context.Context) error {
     // ...
 }
 ```
+
 Why: 用户断开连接后必须立即停止下游请求，否则浪费连接资源和计算。
 
 ### C-03：并发安全——禁止对共享状态裸读写
@@ -59,6 +61,7 @@ s.mu.Lock()
 stats[name] = value
 s.mu.Unlock()
 ```
+
 Why: 并发 bug 难复现难定位，在线上表现为偶发的数据竞争或 panic。
 
 ### C-04：资源释放——每个 Open/Close 必须配对
@@ -74,6 +77,7 @@ if err != nil {
 }
 defer resp.Body.Close()
 ```
+
 Why: 后端长运行，资源泄漏随时间累积最终 OOM。insert 必须有 cleanup，open 必须有 close。
 
 ### C-05：外部数据——所有入参必须校验
@@ -88,6 +92,7 @@ if userID == "" {
 }
 row := db.QueryRowContext(ctx, "SELECT * FROM users WHERE id = ?", userID)
 ```
+
 Why: OWASP Top 1 注入攻击。所有来自 HTTP 请求的数据都不可信。
 
 ### C-06：魔法数字——必须提取为命名常量或配置
@@ -100,6 +105,7 @@ client := &http.Client{Timeout: 60 * time.Second}
 const defaultTimeout = 60 * time.Second
 // 或从 config: cfg.Server.Timeout
 ```
+
 Why: 3 个月后你不知道 60 是什么。超时、限流阈值、重试次数等都是敏感参数。
 
 ### C-07：日志——热路径只打 Warn/Error
@@ -113,11 +119,13 @@ if err != nil {
     slog.Error("request failed", "requestID", reqID, "error", err)
 }
 ```
+
 Why: 后端 QPS 高时，过多日志 I/O 成为性能瓶颈。用 requestID + 结构化日志替代全量打印。
 
 ### C-08：依赖引入——标准库 > 已有依赖 > 新依赖
 
 引入新依赖前必须检查：
+
 1. Go 标准库是否已有等价能力？
 2. go.mod 中已有依赖是否已提供？
 3. 如果必须引入，评估：维护活跃度、许可证、已知 CVE。
@@ -136,6 +144,7 @@ func TestCalculatePrice(t *testing.T) {
     }
 }
 ```
+
 Why: 没有测试的代码下次修改时无法确认行为是否正确。
 
 ### C-10：协议实现——必须对照参考文档，禁止漂移
@@ -159,6 +168,7 @@ type Response struct {
     Created int64     `json:"created"` // doc: unix timestamp
 }
 ```
+
 Why: 协议漂移是最危险的 bug——上游/下游都按文档实现，你却偷偷改了行为，所有调用方都会出问题。详见 `protocol-driven-development` Skill。
 
 ## 流程阻塞约束
@@ -187,6 +197,7 @@ Why: 协议漂移是最危险的 bug——上游/下游都按文档实现，你�
 6. **Migration 同步**：修改了数据模型 → 检查是否需要新增数据库 migration
 
 执行方式：
+
 - 单文件修改：自主检查，结果随 commit 输出
 - 多文件修改：先列影响范围，io-wy 确认后再改
 - 接口变更：Plan 模式，先出影响分析报告
@@ -202,6 +213,7 @@ Why: 协议漂移是最危险的 bug——上游/下游都按文档实现，你�
 - 安全判断：无法确认某个模式是否存在安全风险
 
 禁止行为：
+
 - 禁止编造函数签名或方法
 - 禁止编造 Go 标准库行为
 - 禁止在无源码时声称「已分析源码」
@@ -227,12 +239,14 @@ Why: 协议漂移是最危险的 bug——上游/下游都按文档实现，你�
 ## 多模型对抗式代码审查
 
 触发条件（满足任一）：
+
 - 变更涉及核心业务逻辑
 - 变更文件数 >= 5
 - 变更行数 >= 200
 - io-wy 明确要求
 
 流程：
+
 1. 主模型（当前模型）自审一轮
 2. 调用 `/codex-review` 进行独立审查
 3. 交叉验证：两个模型都发现 → 高置信度
@@ -242,6 +256,7 @@ Why: 协议漂移是最危险的 bug——上游/下游都按文档实现，你�
 ## 踩坑进化闭环
 
 触发条件：
+
 - AI 生成了错误代码且被 io-wy 纠正
 - AI 遗漏了边界条件导致 bug
 - AI 使用了不存在的 API
@@ -249,6 +264,7 @@ Why: 协议漂移是最危险的 bug——上游/下游都按文档实现，你�
 - AI 在不确定时编造了信息
 
 闭环步骤：
+
 1. 记录 PIT-xxx 到 `.claude/skills/pitfall-journal.md`
 2. 同类 PIT 出现 >= 2 次 → 提炼为本文件的新约束规则
 3. 约束验证有效 >= 2 次 → 考虑固化为独立 Skill
@@ -272,29 +288,29 @@ Why: 协议漂移是最危险的 bug——上游/下游都按文档实现，你�
 
 ### 目录与输出路径约定
 
-| 目录 | 用途 | 进 git? |
-|------|------|---------|
-| `docs/docs-project/` | 项目自有产出文档 | 是 |
-| `docs/docs-ref/` | 跨项目规范参考 | 是 |
-| `docs/docs-tmp/` | 临时缓存（Skill 自动写入） | 仅保留 README/.gitignore |
-| `docs/docs-project/specs/` | 规格工件（spec 体系） | 是 |
-| `.claude/skills/core/` | 核心 Skill | 是 |
-| `.claude/skills/plugins/` | 插件 Skill | 是 |
-| `docs/docs-ref/templates/init/` | Starter 骨架模板参考 | 是 |
-| `docs/docs-ref/templates/global-skills/` | 全局 Skill 参考 | 是 |
+| 目录                                       | 用途                       | 进 git?                  |
+| ------------------------------------------ | -------------------------- | ------------------------ |
+| `docs/docs-project/`                     | 项目自有产出文档           | 是                       |
+| `docs/docs-ref/`                         | 跨项目规范参考             | 是                       |
+| `docs/docs-tmp/`                         | 临时缓存（Skill 自动写入） | 仅保留 README/.gitignore |
+| `docs/docs-project/specs/`               | 规格工件（spec 体系）      | 是                       |
+| `.claude/skills/core/`                   | 核心 Skill                 | 是                       |
+| `.claude/skills/plugins/`                | 插件 Skill                 | 是                       |
+| `docs/docs-ref/templates/init/`          | Starter 骨架模板参考       | 是                       |
+| `docs/docs-ref/templates/global-skills/` | 全局 Skill 参考            | 是                       |
 
 ### Skill 输出物默认路径
 
-| 输出类型 | 默认路径 |
-|---------|----------|
-| 协议/三方 API 文档 | `docs/docs-tmp/protocols/<api-name>.md` |
-| 调研报告/竞品分析 | `docs/docs-tmp/research/<topic>-<YYYY-MM-DD>.md` |
+| 输出类型              | 默认路径                                             |
+| --------------------- | ---------------------------------------------------- |
+| 协议/三方 API 文档    | `docs/docs-tmp/protocols/<api-name>.md`            |
+| 调研报告/竞品分析     | `docs/docs-tmp/research/<topic>-<YYYY-MM-DD>.md`   |
 | 代码审查/影响分析报告 | `docs/docs-tmp/analysis/<task-id>-<YYYY-MM-DD>.md` |
-| 架构决策(ADR) | `docs/docs-project/architecture/<topic>.md` |
-| API 契约 | `docs/docs-project/api/<service>.md` |
-| 运维手册 | `docs/docs-project/runbook/<service>.md` |
-| 规格工件 | `docs/docs-project/specs/<YYYYMMDD-slug>/` |
-| 通用规范 | `docs/docs-ref/<topic>.md` |
-| 踩坑日志 | `.claude/skills/core/pitfall-journal.md` |
+| 架构决策(ADR)         | `docs/docs-project/architecture/<topic>.md`        |
+| API 契约              | `docs/docs-project/api/<service>.md`               |
+| 运维手册              | `docs/docs-project/runbook/<service>.md`           |
+| 规格工件              | `docs/docs-project/specs/<YYYYMMDD-slug>/`         |
+| 通用规范              | `docs/docs-ref/<topic>.md`                         |
+| 踩坑日志              | `.claude/skills/core/pitfall-journal.md`           |
 
 Skills 索引见 `.claude/skills/README.md`，工作流选择见 `docs/docs-ref/workflow-bridge.md`，模板协作指南见 `claude.template.md`。

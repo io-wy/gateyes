@@ -17,6 +17,9 @@ nul
 .gomodcache/
 .gotools/
 .uv-cache/
+.claude/scheduled_tasks.lock
+skills-lock.json
+claude.template.md
 
 # Local environment and secrets
 .env
@@ -26,6 +29,7 @@ nul
 *.secret
 !.env.example
 claude.local.md
+.apifox/
 
 # Build artifacts and binaries
 bin/

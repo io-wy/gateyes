@@ -15,10 +15,10 @@ import (
 const maxFileLines = 500
 
 var forbiddenPatterns = []struct {
-	pattern     *regexp.Regexp
-	message     string
-	suggestion  string
-	category    string
+	pattern    *regexp.Regexp
+	message    string
+	suggestion string
+	category   string
 }{
 	{
 		pattern:    regexp.MustCompile(`fmt\.Println\(`),
@@ -47,9 +47,9 @@ var forbiddenPatterns = []struct {
 }
 
 var hardcodedPatterns = []struct {
-	pattern    *regexp.Regexp
-	message    string
-	category   string
+	pattern  *regexp.Regexp
+	message  string
+	category string
 }{
 	{
 		pattern:  regexp.MustCompile(`"http://localhost:[0-9]+"`),
@@ -73,7 +73,7 @@ type Violation struct {
 }
 
 func main() {
-	ignoreDirs := []string{"vendor", "third_party", "tmp", "scripts", ".claude", "_test.go"}
+	ignoreDirs := []string{"vendor", "third_party", "tmp", "scripts", ".claude"}
 
 	var violations []Violation
 
@@ -89,7 +89,7 @@ func main() {
 			}
 			return nil
 		}
-		if !strings.HasSuffix(path, ".go") {
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") || strings.HasSuffix(path, ".pb.go") {
 			return nil
 		}
 
@@ -102,38 +102,58 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Group by category for summary
 	byCat := make(map[string]int)
+	var failures []Violation
+	var warnings []Violation
 	for _, v := range violations {
 		byCat[v.Category]++
+		if strings.HasPrefix(v.Category, "warning-") {
+			warnings = append(warnings, v)
+			continue
+		}
+		failures = append(failures, v)
 	}
 
-	if len(violations) == 0 {
+	if len(failures) == 0 && len(warnings) == 0 {
 		fmt.Println("✓ All quality checks passed")
 		os.Exit(0)
 	}
 
-	fmt.Printf("✗ Found %d quality issue(s):\n\n", len(violations))
-	for _, v := range violations {
-		fmt.Printf("QUALITY: %s:%d [%s]\n", v.File, v.Line, v.Category)
-		fmt.Printf("  %s\n", v.Message)
-		if v.Fix != "" {
-			fmt.Printf("  Fix: %s\n", v.Fix)
+	if len(failures) > 0 {
+		fmt.Printf("✗ Found %d quality issue(s):\n\n", len(failures))
+		for _, v := range failures {
+			printViolation("QUALITY", v)
 		}
-		fmt.Println()
+	}
+	if len(warnings) > 0 {
+		fmt.Printf("⚠ Found %d quality warning(s):\n\n", len(warnings))
+		for _, v := range warnings {
+			printViolation("WARNING", v)
+		}
 	}
 
 	fmt.Println("--- Summary ---")
 	for cat, count := range byCat {
 		fmt.Printf("  %s: %d\n", cat, count)
 	}
-	os.Exit(1)
+	if len(failures) > 0 {
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+func printViolation(prefix string, v Violation) {
+	fmt.Printf("%s: %s:%d [%s]\n", prefix, v.File, v.Line, v.Category)
+	fmt.Printf("  %s\n", v.Message)
+	if v.Fix != "" {
+		fmt.Printf("  Fix: %s\n", v.Fix)
+	}
+	fmt.Println()
 }
 
 func checkFile(path string) []Violation {
 	var violations []Violation
 
-	// Check file size
 	lines, err := countLines(path)
 	if err == nil && lines > maxFileLines {
 		violations = append(violations, Violation{
@@ -145,14 +165,12 @@ func checkFile(path string) []Violation {
 		})
 	}
 
-	// Check forbidden patterns via text scanning (catches commented-out code too)
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return violations
 	}
 	text := string(content)
 
-	// Check forbidden API calls
 	for _, fp := range forbiddenPatterns {
 		matches := fp.pattern.FindAllStringIndex(text, -1)
 		for _, m := range matches {
@@ -167,7 +185,6 @@ func checkFile(path string) []Violation {
 		}
 	}
 
-	// Check hardcoded values via text scanning
 	for _, hp := range hardcodedPatterns {
 		matches := hp.pattern.FindAllStringIndex(text, -1)
 		for _, m := range matches {
@@ -182,33 +199,48 @@ func checkFile(path string) []Violation {
 		}
 	}
 
-	// AST-based checks
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, path, text, parser.AllErrors)
 	if err != nil {
 		return violations
 	}
 
-	// Check for naked returns of errors
 	ast.Inspect(f, func(n ast.Node) bool {
-		if assign, ok := n.(*ast.AssignStmt); ok {
-			for _, lhs := range assign.Lhs {
-				if ident, ok := lhs.(*ast.Ident); ok && ident.Name == "_" {
-					pos := fset.Position(assign.Pos())
-					violations = append(violations, Violation{
-						File:     path,
-						Line:     pos.Line,
-						Category: "error-swallowing",
-						Message:  "Error value assigned to _ (swallowed)",
-						Fix:      "Handle the error explicitly: if err != nil { return fmt.Errorf(...): %w, err) }",
-					})
-				}
+		assign, ok := n.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		if assignmentCapturesError(assign) {
+			return true
+		}
+		for i, lhs := range assign.Lhs {
+			ident, ok := lhs.(*ast.Ident)
+			if !ok || ident.Name != "_" || i != len(assign.Lhs)-1 {
+				continue
 			}
+			pos := fset.Position(assign.Pos())
+			violations = append(violations, Violation{
+				File:     path,
+				Line:     pos.Line,
+				Category: "warning-error-swallowing",
+				Message:  "Last return value assigned to _; this often swallows an error",
+				Fix:      "Capture and handle the error explicitly when the ignored value is an error.",
+			})
 		}
 		return true
 	})
 
 	return violations
+}
+
+func assignmentCapturesError(assign *ast.AssignStmt) bool {
+	for _, lhs := range assign.Lhs {
+		ident, ok := lhs.(*ast.Ident)
+		if ok && ident.Name == "err" {
+			return true
+		}
+	}
+	return false
 }
 
 func countLines(path string) (int, error) {

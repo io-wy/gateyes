@@ -82,15 +82,21 @@ func runAudit(module string) AuditResult {
 
 	// 3. Lint Scripts (20 pts)
 	lintScore := 0
-	if fileExists(".claude/skills/harness-go/scripts/lint-deps.go") {
+	if firstExistingPath(
+		".claude/skills/plugins/harness-go/scripts/lint-deps.go",
+		".claude/skills/harness-go/scripts/lint-deps.go",
+	) != "" {
 		lintScore += 10
 	} else {
-		result.Suggestions = append(result.Suggestions, "Add .claude/skills/harness-go/scripts/lint-deps.go for layer dependency checking")
+		result.Suggestions = append(result.Suggestions, "Add .claude/skills/plugins/harness-go/scripts/lint-deps.go for layer dependency checking")
 	}
-	if fileExists(".claude/skills/harness-go/scripts/lint-quality.go") {
+	if firstExistingPath(
+		".claude/skills/plugins/harness-go/scripts/lint-quality.go",
+		".claude/skills/harness-go/scripts/lint-quality.go",
+	) != "" {
 		lintScore += 10
 	} else {
-		result.Suggestions = append(result.Suggestions, "Add .claude/skills/harness-go/scripts/lint-quality.go for code quality checking")
+		result.Suggestions = append(result.Suggestions, "Add .claude/skills/plugins/harness-go/scripts/lint-quality.go for code quality checking")
 	}
 	result.Breakdown["Lint Scripts"] = lintScore
 
@@ -156,6 +162,15 @@ func runAudit(module string) AuditResult {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return !os.IsNotExist(err)
+}
+
+func firstExistingPath(paths ...string) string {
+	for _, path := range paths {
+		if fileExists(path) {
+			return path
+		}
+	}
+	return ""
 }
 
 func dirExists(path string) bool {
