@@ -1,4 +1,4 @@
-module github.com/gateyes/gateway/plugins/examples/wasm_auditor
+module github.com/gateyes/gateway/plugins/examples/wasm_transform
 
 go 1.21
 
