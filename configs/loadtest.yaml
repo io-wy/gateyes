@@ -1,0 +1,88 @@
+# Gateyes load-test configuration.
+# Points all providers at the local mock upstream so load tests exercise the
+# gateway, not real LLM endpoints.
+server:
+  listenAddr: ":8028"
+  readTimeout: 30
+  writeTimeout: 300
+  idleTimeout: 120
+  shutdownTimeout: 10
+
+database:
+  driver: postgres
+  dsn: "postgres://gateyes:gateyes_pw@localhost:5432/gateyes?sslmode=disable"
+  autoMigrate: true
+  maxOpenConns: 50
+  maxIdleConns: 20
+  connMaxLifetimeSeconds: 300
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+
+metrics:
+  namespace: gateway
+  enabled: true
+
+router:
+  strategy: least_load
+
+limiter:
+  globalQPS: 50000
+  globalTPM: 50000000
+  globalTokenBurst: 5000000
+  perUserRequestBurst: 10000
+  tenantTPM: 50000000
+  tenantTPMBurst: 5000000
+  tenantRPM: 50000
+  tenantRPMBurst: 5000
+  providerTPM: 50000000
+  providerTPMBurst: 5000000
+  providerRPM: 50000
+  providerRPMBurst: 5000
+  modelTPM: 50000000
+  modelTPMBurst: 5000000
+  modelRPM: 50000
+  modelRPMBurst: 5000
+  queueSize: 10000
+
+retry:
+  maxRetries: 2
+  initialDelayMs: 100
+  maxDelayMs: 5000
+  backoffFactor: 2.0
+
+circuitBreaker:
+  failureThreshold: 5
+  recoveryTimeout: 60
+  halfOpenMaxRequests: 1
+
+providers:
+  - name: mock-openai
+    type: openai
+    vendor: openai
+    endpoint: chat
+    baseURL: http://localhost:18080
+    apiKey: mock-key
+    model: mock-model
+    weight: 10
+    priceInput: 0.000001
+    priceOutput: 0.000001
+    maxTokens: 4096
+    timeout: 60
+    enabled: true
+    capabilities:
+      embeddings: false
+
+apiKeys:
+  - key: demo-key-001
+    secret: demo-secret
+    quota: -1
+    qps: 0
+    models: []
+
+admin:
+  defaultTenant: default
+  bootstrapKey: admin-key-001
+  bootstrapSecret: admin-secret

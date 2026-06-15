@@ -53,6 +53,43 @@ lint-quality:
 harness-audit:
 	$(GO) run .claude/skills/plugins/harness-go/scripts/harness-audit.go $(GO_MOD)
 
+# ---------------------------------------------------------------------------
+# Load testing / Performance profiling
+# ---------------------------------------------------------------------------
+
+GATEYES_URL ?= http://localhost:8028
+GATEYES_API_KEY ?= demo-key-001
+GATEYES_MODEL ?= mock-model
+MOCK_UPSTREAM_ADDR ?= :18080
+
+## Run the mock upstream server used for load tests.
+load-mock-upstream:
+	$(GO) run ./tests/load/mock_upstream/main.go -addr $(MOCK_UPSTREAM_ADDR)
+
+## Run a k6 non-streaming chat-completions load test.
+load-chat:
+	GATEYES_URL=$(GATEYES_URL) \
+	GATEYES_API_KEY=$(GATEYES_API_KEY) \
+	GATEYES_MODEL=$(GATEYES_MODEL) \
+	k6 run tests/load/k6/chat-completions.js
+
+## Run a k6 streaming chat-completions load test.
+load-chat-stream:
+	GATEYES_URL=$(GATEYES_URL) \
+	GATEYES_API_KEY=$(GATEYES_API_KEY) \
+	GATEYES_MODEL=$(GATEYES_MODEL) \
+	k6 run tests/load/k6/chat-completions-stream.js
+
+## Capture a 30-second CPU profile from the running gateway.
+pprof-cpu:
+	curl -s -o /tmp/gateyes-cpu.pb.gz http://localhost:6060/debug/pprof/profile?seconds=30
+	go tool pprof /tmp/gateyes-cpu.pb.gz
+
+## Capture a heap profile from the running gateway.
+pprof-heap:
+	curl -s -o /tmp/gateyes-heap.pb.gz http://localhost:6060/debug/pprof/heap
+	go tool pprof /tmp/gateyes-heap.pb.gz
+
 help:
 	@echo "=== Build & Quality ==="
 	@echo "  make fmt           Format Go code"
@@ -69,4 +106,11 @@ help:
 	@echo "  make lint-arch     Run harness architecture lint"
 	@echo "  make lint-quality  Run template quality scanner"
 	@echo "  make harness-audit Run harness audit"
+	@echo ""
+	@echo "=== Load Testing & Profiling ==="
+	@echo "  make load-mock-upstream  Run mock LLM upstream for load tests"
+	@echo "  make load-chat           Run k6 non-streaming chat load test"
+	@echo "  make load-chat-stream    Run k6 streaming chat load test"
+	@echo "  make pprof-cpu           Capture 30s CPU profile from :6060"
+	@echo "  make pprof-heap          Capture heap profile from :6060"
 	@echo ""
