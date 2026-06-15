@@ -130,7 +130,9 @@ func (g *GatewayPlugin) newInstance(ctx context.Context) (api.Module, error) {
 	mod, err := g.runtime.InstantiateModule(ctx, g.code,
 		wazero.NewModuleConfig().
 			WithName(fmt.Sprintf("%s_%d", g.name, time.Now().UnixNano())).
-			WithStartFunctions())
+			WithStartFunctions().
+			WithStdout(os.Stdout).
+			WithStderr(os.Stderr))
 	if err != nil {
 		return nil, err
 	}
@@ -234,9 +236,19 @@ func (g *GatewayPlugin) Process(ctx context.Context, phase plugin.Phase, payload
 
 	g.returnInstance(mod)
 
+	// WASM SDK serializes []byte fields as base64 strings. Try to decode
+	// a base64-encoded payload so TRANSFORM/CACHE_HIT commands carry raw JSON.
+	pluginPayload := out.Payload
+	if len(pluginPayload) > 0 {
+		var decoded []byte
+		if err = json.Unmarshal(pluginPayload, &decoded); err == nil {
+			pluginPayload = decoded
+		}
+	}
+
 	cmd := plugin.Command{
 		Action:  out.Action,
-		Payload: []byte(out.Payload),
+		Payload: pluginPayload,
 		Reason:  out.Reason,
 	}
 	return []plugin.Command{cmd}, nil

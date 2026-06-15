@@ -146,14 +146,15 @@ func (s *Service) invokePlugins(ctx context.Context, phase pluginSvc.Phase, payl
 		if err != nil {
 			continue // fail-open
 		}
-		for _, cmd := range cmds {
+		for i := range cmds {
+			cmd := &cmds[i]
 			switch cmd.Action {
 			case "BLOCK":
-				return &cmd
+				return cmd
 			case "TRANSFORM":
-				return &cmd
+				return cmd
 			case "CACHE_HIT":
-				return &cmd
+				return cmd
 			case "SKIP":
 				return nil
 			}

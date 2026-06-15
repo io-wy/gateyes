@@ -14,6 +14,7 @@ import (
 
 	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/gateyes/gateway/internal/service/provider"
+	"github.com/gateyes/gateway/internal/service/router"
 	responseSvc "github.com/gateyes/gateway/internal/service/responses"
 )
 
@@ -29,20 +30,29 @@ type Metrics struct {
 	llmActiveStreams     *prometheus.GaugeVec
 	llmStreamDuration    *prometheus.HistogramVec
 	llmTokens            *prometheus.CounterVec
+	llmPromptCacheRatio  *prometheus.HistogramVec
 	llmErrors            *prometheus.CounterVec
 	llmRetries           *prometheus.CounterVec
 	llmFallbacks         *prometheus.CounterVec
 	providerRequests     *prometheus.CounterVec
 	providerCircuitState *prometheus.GaugeVec
 
-	providerCurrentLoad  *prometheus.GaugeVec
-	providerTPM          *prometheus.GaugeVec
-	providerHealthStatus *prometheus.GaugeVec
+	providerCurrentLoad    *prometheus.GaugeVec
+	providerTPM            *prometheus.GaugeVec
+	providerHealthStatus   *prometheus.GaugeVec
+	providerGPUCacheUsage  *prometheus.GaugeVec
+	providerCPUCacheUsage  *prometheus.GaugeVec
+	providerCacheHitRate   *prometheus.GaugeVec
+	providerCacheQueries   *prometheus.GaugeVec
+	providerCacheHits      *prometheus.GaugeVec
 
 	cacheLookups     *prometheus.CounterVec
 	cacheWrites      *prometheus.CounterVec
 	cacheValueSize   *prometheus.HistogramVec
 	cacheGetDuration *prometheus.HistogramVec
+
+	inferenceScraper *router.InferenceScraper
+	scraperMu        sync.RWMutex
 }
 
 var registerGoCollectorOnce sync.Once
@@ -116,6 +126,12 @@ func NewMetricsFromConfig(cfg config.MetricsConfig) *Metrics {
 		Buckets:   []float64{0.1, 0.5, 1, 2.5, 5, 10, 30, 60},
 	}, []string{"surface", "provider", "result"})
 	metrics.llmTokens = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "llm_tokens_total"}, []string{"provider", "token_type"})
+	metrics.llmPromptCacheRatio = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: namespace,
+		Name:      "llm_prompt_cache_ratio",
+		Help:      "Ratio of cached prompt tokens to total prompt tokens per request, reported by the upstream provider.",
+		Buckets:   []float64{0, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99, 1},
+	}, []string{"provider"})
 	metrics.llmErrors = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "llm_errors_total"}, []string{"surface", "provider", "error_class"})
 	metrics.llmRetries = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "llm_retries_total"}, []string{"provider"})
 	metrics.llmFallbacks = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "llm_fallbacks_total"}, []string{"provider"})
@@ -124,6 +140,11 @@ func NewMetricsFromConfig(cfg config.MetricsConfig) *Metrics {
 	metrics.providerCurrentLoad = promauto.NewGaugeVec(prometheus.GaugeOpts{Namespace: namespace, Name: "provider_current_load"}, []string{"provider"})
 	metrics.providerTPM = promauto.NewGaugeVec(prometheus.GaugeOpts{Namespace: namespace, Name: "provider_tpm"}, []string{"provider"})
 	metrics.providerHealthStatus = promauto.NewGaugeVec(prometheus.GaugeOpts{Namespace: namespace, Name: "provider_health_status"}, []string{"provider"})
+	metrics.providerGPUCacheUsage = promauto.NewGaugeVec(prometheus.GaugeOpts{Namespace: namespace, Name: "provider_gpu_cache_usage_ratio", Help: "vLLM GPU KV-cache fill ratio scraped from the provider's /metrics endpoint."}, []string{"provider"})
+	metrics.providerCPUCacheUsage = promauto.NewGaugeVec(prometheus.GaugeOpts{Namespace: namespace, Name: "provider_cpu_cache_usage_ratio", Help: "vLLM CPU KV-cache fill ratio scraped from the provider's /metrics endpoint."}, []string{"provider"})
+	metrics.providerCacheHitRate = promauto.NewGaugeVec(prometheus.GaugeOpts{Namespace: namespace, Name: "provider_prefix_cache_hit_rate_ratio", Help: "vLLM prefix-cache hit rate scraped from the provider's /metrics endpoint."}, []string{"provider"})
+	metrics.providerCacheQueries = promauto.NewGaugeVec(prometheus.GaugeOpts{Namespace: namespace, Name: "provider_prefix_cache_queries", Help: "vLLM prefix-cache total queries scraped from the provider's /metrics endpoint."}, []string{"provider"})
+	metrics.providerCacheHits = promauto.NewGaugeVec(prometheus.GaugeOpts{Namespace: namespace, Name: "provider_prefix_cache_hits", Help: "vLLM prefix-cache hits scraped from the provider's /metrics endpoint."}, []string{"provider"})
 	metrics.cacheLookups = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "cache_lookups_total"}, []string{"layer", "result"})
 	metrics.cacheWrites = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: namespace, Name: "cache_writes_total"}, []string{"layer", "result"})
 	metrics.cacheValueSize = promauto.NewHistogramVec(prometheus.HistogramOpts{
@@ -224,6 +245,10 @@ func (m *Metrics) recordTokens(providerName string, usage provider.Usage) {
 	if usage.CachedTokens > 0 {
 		m.llmTokens.WithLabelValues(providerName, "cached").Add(float64(usage.CachedTokens))
 	}
+	if usage.PromptTokens > 0 {
+		ratio := float64(usage.CachedTokens) / float64(usage.PromptTokens)
+		m.llmPromptCacheRatio.WithLabelValues(providerName).Observe(ratio)
+	}
 }
 
 func normalizeMetricsProvider(providerName string) string {
@@ -265,6 +290,24 @@ func (m *Metrics) ObserveCacheGetDuration(layer string, d time.Duration) {
 	m.cacheGetDuration.WithLabelValues(layer).Observe(d.Seconds())
 }
 
+func (m *Metrics) SetInferenceScraper(scraper *router.InferenceScraper) {
+	if m == nil {
+		return
+	}
+	m.scraperMu.Lock()
+	defer m.scraperMu.Unlock()
+	m.inferenceScraper = scraper
+}
+
+func (m *Metrics) inferenceScraperGet(name string) (router.InferenceState, bool) {
+	m.scraperMu.RLock()
+	defer m.scraperMu.RUnlock()
+	if m.inferenceScraper == nil {
+		return router.InferenceState{}, false
+	}
+	return m.inferenceScraper.Get(name)
+}
+
 func (m *Metrics) StartProviderStatsExporter(ctx context.Context, stats *provider.Stats, interval time.Duration) {
 	if m == nil || !m.enabled || stats == nil {
 		return
@@ -291,6 +334,14 @@ func (m *Metrics) exportProviderStats(stats *provider.Stats) {
 		m.providerTPM.WithLabelValues(providerLabel).Set(float64(stats.TPM(item.Name)))
 		statusValue := providerHealthStatusValue(item.Status)
 		m.providerHealthStatus.WithLabelValues(providerLabel).Set(float64(statusValue))
+
+		if inf, ok := m.inferenceScraperGet(item.Name); ok {
+			m.providerGPUCacheUsage.WithLabelValues(providerLabel).Set(inf.GPUCacheUsagePerc)
+			m.providerCPUCacheUsage.WithLabelValues(providerLabel).Set(inf.CPUCacheUsagePerc)
+			m.providerCacheHitRate.WithLabelValues(providerLabel).Set(inf.CacheHitRate())
+			m.providerCacheQueries.WithLabelValues(providerLabel).Set(inf.CacheQueryTotal)
+			m.providerCacheHits.WithLabelValues(providerLabel).Set(inf.CacheQueryHit)
+		}
 	}
 }
 

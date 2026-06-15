@@ -3,12 +3,16 @@
 // in their scoring — pattern from Envoy AI Gateway's endpoint-picker.
 //
 // We currently target vLLM's Prometheus exposition format. The relevant
-// gauges:
+// gauges/counters:
 //
 //	vllm:num_requests_running         — in-flight decode steps
 //	vllm:num_requests_waiting         — queued requests
-//	vllm:gpu_cache_usage_perc         — KV cache fill ratio (0-1)
+//	vllm:gpu_cache_usage_perc         — GPU KV cache fill ratio (0-1)
+//	vllm:cpu_cache_usage_perc         — CPU KV cache fill ratio (0-1)
+//	cache_query_total                 — prefix-cache lookups (cumulative)
+//	cache_query_hit                   — prefix-cache hits (cumulative)
 //
+// Prefix-cache hit rate is computed as rate(cache_query_hit) / rate(cache_query_total).
 // When a provider exposes none of these, the signal stays zero and the
 // router falls back to in-process CurrentLoad — fail-open semantics.
 
@@ -32,19 +36,32 @@ type InferenceState struct {
 	NumRequestsRunning float64
 	NumRequestsWaiting float64
 	GPUCacheUsagePerc  float64
+	CPUCacheUsagePerc  float64
+	CacheQueryTotal    float64
+	CacheQueryHit      float64
 	UpdatedAt          time.Time
 	Stale              bool
+}
+
+// CacheHitRate returns the prefix-cache hit rate in [0,1], or 0 when no
+// queries have been observed yet. It is a point-in-time ratio of the
+// cumulative counters scraped from vLLM.
+func (s InferenceState) CacheHitRate() float64 {
+	if s.CacheQueryTotal <= 0 {
+		return 0
+	}
+	return s.CacheQueryHit / s.CacheQueryTotal
 }
 
 // LoadScore computes a synthetic load metric used by least-load routing.
 // Higher = more loaded. Tunable weights match Envoy AI Gateway intuition:
 // queue depth dominates (you want to push to under-utilised endpoints),
-// running count is secondary, cache utilisation tips the tie at saturation.
+// running count is secondary, GPU cache utilisation tips the tie at saturation.
 func (s InferenceState) LoadScore() float64 {
 	if s.Stale {
 		return 0
 	}
-	return s.NumRequestsWaiting*4 + s.NumRequestsRunning*1 + s.GPUCacheUsagePerc*2
+	return s.NumRequestsWaiting*4 + s.NumRequestsRunning*1 + s.GPUCacheUsagePerc*2 + s.CPUCacheUsagePerc*1
 }
 
 // InferenceScraper periodically polls each registered endpoint for vLLM-
@@ -185,6 +202,12 @@ func parseVLLMMetrics(r io.Reader) (InferenceState, error) {
 			state.NumRequestsWaiting += val
 		case "vllm:gpu_cache_usage_perc":
 			state.GPUCacheUsagePerc = val
+		case "vllm:cpu_cache_usage_perc":
+			state.CPUCacheUsagePerc = val
+		case "cache_query_total":
+			state.CacheQueryTotal += val
+		case "cache_query_hit":
+			state.CacheQueryHit += val
 		}
 	}
 	if err := scanner.Err(); err != nil {

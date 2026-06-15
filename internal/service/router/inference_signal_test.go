@@ -19,6 +19,15 @@ vllm:num_requests_waiting 7
 # HELP vllm:gpu_cache_usage_perc GPU KV-cache usage. 1 means 100 percent usage
 # TYPE vllm:gpu_cache_usage_perc gauge
 vllm:gpu_cache_usage_perc 0.62
+# HELP vllm:cpu_cache_usage_perc CPU KV-cache usage. 1 means 100 percent usage
+# TYPE vllm:cpu_cache_usage_perc gauge
+vllm:cpu_cache_usage_perc 0.10
+# HELP cache_query_total Total number of prefix cache queries
+# TYPE cache_query_total counter
+cache_query_total{model_name="llama"} 100
+# HELP cache_query_hit Total number of prefix cache hits
+# TYPE cache_query_hit counter
+cache_query_hit{model_name="llama"} 73
 unrelated_metric 9999
 `
 
@@ -35,6 +44,18 @@ func TestParseVLLMMetricsExtractsGauges(t *testing.T) {
 	}
 	if state.GPUCacheUsagePerc != 0.62 {
 		t.Fatalf("GPUCacheUsagePerc = %v, want 0.62", state.GPUCacheUsagePerc)
+	}
+	if state.CPUCacheUsagePerc != 0.10 {
+		t.Fatalf("CPUCacheUsagePerc = %v, want 0.10", state.CPUCacheUsagePerc)
+	}
+	if state.CacheQueryTotal != 100 {
+		t.Fatalf("CacheQueryTotal = %v, want 100", state.CacheQueryTotal)
+	}
+	if state.CacheQueryHit != 73 {
+		t.Fatalf("CacheQueryHit = %v, want 73", state.CacheQueryHit)
+	}
+	if got, want := state.CacheHitRate(), 0.73; got != want {
+		t.Fatalf("CacheHitRate() = %v, want %v", got, want)
 	}
 }
 

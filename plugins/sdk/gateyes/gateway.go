@@ -1,10 +1,12 @@
 package gateyes
 
+import "encoding/json"
+
 // GatewayEvent is the JSON payload a host sends to a WASM gateway plugin.
 type GatewayEvent struct {
-	Phase   string          `json:"phase"`
-	Context GatewayContext  `json:"context"`
-	Payload []byte          `json:"payload"`
+	Phase   string         `json:"phase"`
+	Context GatewayContext `json:"context"`
+	Payload json.RawMessage `json:"payload"`
 }
 
 // GatewayContext carries request metadata.

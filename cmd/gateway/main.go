@@ -180,6 +180,7 @@ func main() {
 			interval := time.Duration(cfg.Router.InferenceMetrics.ScrapeIntervalSeconds) * time.Second
 			scraper := router.NewInferenceScraper(endpoints, interval)
 			routerSvc.SetInferenceScraper(scraper)
+			metrics.SetInferenceScraper(scraper)
 			defer scraper.Stop()
 			// Started below once we have the signal-aware ctx.
 			go scraper.Start(context.Background())

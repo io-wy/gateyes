@@ -27,6 +27,9 @@ metrics:
 
 router:
   strategy: least_load
+  inferenceMetrics:
+    enabled: true
+    scrapeIntervalSeconds: 5
   ranker:
     enabled: false
     method: none
@@ -79,6 +82,15 @@ retry:
   maxDelayMs: 5000
   backoffFactor: 2.0
 
+cache:
+  enabled: true
+  backend: memory
+  defaultTTL: 300
+  capacity: 1000
+  skipStream: false
+  skipTools: true
+  singleflight: true
+
 providers:
   - name: codexapis
     type: openai
@@ -109,6 +121,58 @@ providers:
     timeout: 600
     enabled: true
     capabilities:
+      embeddings: false
+  - name: deepseek
+    type: openai
+    vendor: openai
+    endpoint: chat
+    baseURL: https://api.deepseek.com/v1
+    apiKey: ${DEEPSEEK_API_KEY}
+    model: deepseek-v4-flash
+    weight: 100
+    priceInput: 0.000005
+    priceOutput: 0.000015
+    maxTokens: 16384
+    timeout: 600
+    enabled: true
+    capabilities:
+      embeddings: false
+
+  # Local vLLM instances for cache-hit experiments.
+  # Start them first with:
+  #   go run ./cmd/vllm --model Qwen/Qwen3-0.6B --instances 2 --base-port 8001 --enable-prefix-caching
+  # Then set enabled: true below and restart gateway.
+  - name: vllm-qwen3-0.6B-8001
+    type: openai
+    vendor: vllm
+    endpoint: chat
+    baseURL: http://127.0.0.1:8001/v1
+    apiKey: sk-vllm-local
+    model: Qwen/Qwen3-0.6B
+    weight: 100
+    maxTokens: 16384
+    timeout: 600
+    enabled: false
+    metricsURL: http://127.0.0.1:8001/metrics
+    capabilities:
+      chat: true
+      stream: true
+      embeddings: false
+  - name: vllm-qwen3-0.6B-8002
+    type: openai
+    vendor: vllm
+    endpoint: chat
+    baseURL: http://127.0.0.1:8002/v1
+    apiKey: sk-vllm-local
+    model: Qwen/Qwen3-0.6B
+    weight: 100
+    maxTokens: 16384
+    timeout: 600
+    enabled: false
+    metricsURL: http://127.0.0.1:8002/metrics
+    capabilities:
+      chat: true
+      stream: true
       embeddings: false
 
 
@@ -160,20 +224,36 @@ admin:
   bootstrapKey: admin-key-001
   bootstrapSecret: ${GATEYES_ADMIN_BOOTSTRAP_SECRET}
 
-# WASM plugin system
-# Place .wasm files in the directory; gateway loads them on startup.
-plugins:
-  enabled: false
-  directory: "./plugins"
-  autoReload: true
-  reloadIntervalSeconds: 30
-
-
+# Guardrails (legacy pre-/post-call validators)
 guardrails:
   - name: pii-wasm
     type: wasm
     path: "./plugins/examples/pii_guard/pii_guard.wasm"
     timeoutMs: 500
+    memoryPages: 2
+
+# WASM plugin system
+# Place .wasm files in the directory; gateway loads them on startup.
+plugins:
+  enabled: true
+  directory: "./plugins"
+  autoReload: true
+  reloadIntervalSeconds: 30
+
+wasmPlugins:
+  - name: wasm-auditor
+    path: ./plugins/examples/wasm_auditor/wasm_auditor.wasm
+    phases:
+      - pre_upstream
+      - post_upstream
+      - audit
+    timeoutMs: 50
+    memoryPages: 2
+  - name: wasm-transform
+    path: ./plugins/examples/wasm_transform/wasm_transform.wasm
+    phases:
+      - post_upstream
+    timeoutMs: 50
     memoryPages: 2
 
 # gRPC plugin system
