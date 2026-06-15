@@ -1,0 +1,11 @@
+apiVersion: 1
+providers:
+  - name: 'gateyes-dashboards'
+    orgId: 1
+    folder: 'Gateyes'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /Users/io/workplace/gateyes/deploy/grafana/dashboards
