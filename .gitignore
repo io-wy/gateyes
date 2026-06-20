@@ -41,6 +41,8 @@ bin/
 *.so
 *.dylib
 *.test
+# Plugin example Go binaries (compiled in-place, no extension — escapes *.exe/*.so/*.dylib)
+plugins/examples/*/grpc_router_plugin
 
 # Runtime data
 *.pid
