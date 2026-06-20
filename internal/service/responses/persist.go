@@ -403,7 +403,14 @@ func (s *Service) finalizeStream(ctx context.Context, identity *repository.AuthI
 		RouteTraceBody: routeTraceBytes(trace),
 	})
 
-	_ = s.auth.RecordUsage(persistCtx, identity, providerName, model, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens, cost, latencyMs, "success", "")
+	if err := s.auth.RecordUsage(persistCtx, identity, providerName, model, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens, cost, latencyMs, "success", ""); err != nil {
+		// The stream is already delivered to the client and cannot be rolled
+		// back, so we keep the response "completed" and never reject. But a
+		// post-hoc budget/quota overage must not be silent — surface an alert
+		// so operators can see streaming overspend (parity with the
+		// non-streaming recordBudgetExceeded path).
+		s.alertStreamingOverage(persistCtx, identity, providerName, model, cost, latencyMs, err)
+	}
 	if s.alert != nil {
 		s.alert.CheckQuotaUsage(persistCtx, identity)
 		s.alert.NotifyRequestEvent(persistCtx, map[string]any{
@@ -445,6 +452,50 @@ func (s *Service) finalizeStream(ctx context.Context, identity *repository.AuthI
 		s.emitStreamPayloadFromResponse(out, resp)
 	}
 	out <- provider.ResponseEvent{Type: provider.EventResponseCompleted, Response: resp}
+}
+
+// alertStreamingOverage surfaces a budget/quota alert when post-hoc usage
+// recording for an already-delivered streaming response fails. Unlike
+// recordBudgetExceeded it never flips the response to "error" and never
+// rejects — the client already received the full stream — it only makes the
+// overage observable. Non-budget/quota errors (e.g. transient store errors)
+// are left to best-effort recording and not alerted here.
+func (s *Service) alertStreamingOverage(ctx context.Context, identity *repository.AuthIdentity, providerName, model string, cost float64, latencyMs int64, recordErr error) {
+	if s.alert == nil {
+		return
+	}
+	isBudget := errors.Is(recordErr, auth.ErrBudgetExceeded)
+	isQuota := errors.Is(recordErr, auth.ErrQuotaExceeded)
+	if !isBudget && !isQuota {
+		return
+	}
+	status := "budget_exceeded"
+	scope := "api_key"
+	if identity.ProjectID != "" {
+		scope = "project_or_api_key"
+	}
+	if isQuota {
+		status = "quota_exceeded"
+		scope = "quota"
+	}
+	s.alert.NotifyBudgetExhausted(ctx, alert.BudgetExhausted{
+		TenantID:     identity.TenantID,
+		ProjectID:    identity.ProjectID,
+		APIKeyID:     identity.APIKeyID,
+		ProviderName: providerName,
+		Model:        model,
+		CostUSD:      cost,
+		BudgetScope:  scope,
+	})
+	s.alert.NotifyErrorEvent(ctx, map[string]any{
+		"tenant_id":     identity.TenantID,
+		"project_id":    identity.ProjectID,
+		"api_key_id":    identity.APIKeyID,
+		"provider_name": providerName,
+		"model":         model,
+		"status":        status,
+		"latency_ms":    latencyMs,
+	})
 }
 
 func (s *Service) handleStreamCancellation(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, responseID string, currentProvider provider.Provider, trace *routeTrace, finalResponse *provider.Response, assistantText string, streamedOutputs []provider.ResponseOutput, streamUsage *provider.Usage, startedAt time.Time) {

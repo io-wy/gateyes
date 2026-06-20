@@ -6,9 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/gateyes/gateway/internal/repository"
+	"github.com/gateyes/gateway/internal/service/alert"
+	"github.com/gateyes/gateway/internal/service/auth"
 	"github.com/gateyes/gateway/internal/service/provider"
 )
 
@@ -171,6 +174,33 @@ func TestFinalizeStream(t *testing.T) {
 	}
 	if summary.TotalCostUSD != 0.5 {
 		t.Fatalf("usage TotalCostUSD = %v, want 0.5 (streaming success must record cost)", summary.TotalCostUSD)
+	}
+}
+
+func TestAlertStreamingOverage(t *testing.T) {
+	// A nil alert service must be a no-op, never panic.
+	(&Service{}).alertStreamingOverage(context.Background(), &repository.AuthIdentity{}, "prov", "model", 0.5, 100, auth.ErrBudgetExceeded)
+
+	// A budget overage on an already-delivered stream must fire a webhook
+	// alert (parity with the non-streaming recordBudgetExceeded path).
+	requests := make(chan struct{}, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- struct{}{}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	alertSvc := alert.NewAlertService(config.AlertConfig{Enabled: true, WebhookURL: server.URL}, nil)
+	svc := &Service{alert: alertSvc}
+	identity := &repository.AuthIdentity{TenantID: "t1", APIKeyID: "k1"}
+
+	svc.alertStreamingOverage(context.Background(), identity, "prov", "model", 0.5, 100, auth.ErrBudgetExceeded)
+
+	select {
+	case <-requests:
+		// alert fired as expected
+	case <-time.After(2 * time.Second):
+		t.Fatal("alertStreamingOverage(ErrBudgetExceeded) did not fire an alert webhook")
 	}
 }
 
