@@ -15,6 +15,7 @@ import (
 type streamMockProvider struct {
 	name      string
 	modelName string
+	unitCost  float64
 	failErr   error
 	events    []provider.ResponseEvent
 }
@@ -25,7 +26,7 @@ func (m *streamMockProvider) BaseURL() string       { return "" }
 func (m *streamMockProvider) Model() string         { return m.modelName }
 func (m *streamMockProvider) Weight() int           { return 1 }
 func (m *streamMockProvider) UnitCost() float64     { return 0 }
-func (m *streamMockProvider) Cost(_, _ int) float64 { return 0 }
+func (m *streamMockProvider) Cost(_, _ int) float64 { return m.unitCost }
 func (m *streamMockProvider) CreateEmbedding(context.Context, *provider.EmbeddingRequest) (*provider.EmbeddingResponse, error) {
 	return nil, errors.New("not implemented")
 }
@@ -142,7 +143,8 @@ func TestFinalizeStream(t *testing.T) {
 	resp := provider.NewTextResponse("resp-1", "public-model", "final", provider.Usage{PromptTokens: 2, CompletionTokens: 1, TotalTokens: 3})
 	out := make(chan provider.ResponseEvent, 4)
 	trace := &routeTrace{}
-	env.service.finalizeStream(context.Background(), env.identity, "resp-1", "test-openai", "public-model", resp, 100, trace, out, true)
+	billingProvider := &streamMockProvider{name: "test-openai", modelName: "public-model", unitCost: 0.5}
+	env.service.finalizeStream(context.Background(), env.identity, "resp-1", "test-openai", "public-model", billingProvider, resp, 100, trace, out, true)
 	close(out)
 
 	var events []string
@@ -159,6 +161,16 @@ func TestFinalizeStream(t *testing.T) {
 	}
 	if record.Status != "completed" {
 		t.Fatalf("status = %q, want completed", record.Status)
+	}
+
+	// Regression: streaming success must bill USD cost (was hardcoded 0 before
+	// finalizeStream received the provider instance for computeCost).
+	summary, err := env.store.GetUsageSummary(context.Background(), env.identity.TenantID)
+	if err != nil {
+		t.Fatalf("GetUsageSummary() error: %v", err)
+	}
+	if summary.TotalCostUSD != 0.5 {
+		t.Fatalf("usage TotalCostUSD = %v, want 0.5 (streaming success must record cost)", summary.TotalCostUSD)
 	}
 }
 

@@ -365,7 +365,7 @@ providerLoop:
 						return
 					}
 
-					s.finalizeStream(ctx, identity, responseID, providerName, req.Model, finalResponse, latencyMs, trace, out, !hasSentPayload)
+					s.finalizeStream(ctx, identity, responseID, providerName, req.Model, p, finalResponse, latencyMs, trace, out, !hasSentPayload)
 
 					// Async audit.
 					s.invokePluginsAsync(pluginSvc.Audit, map[string]any{
@@ -516,7 +516,7 @@ providerLoop:
 							return
 						}
 
-						s.finalizeStream(ctx, identity, responseID, providerName, req.Model, finalResponse, latencyMs, trace, out, !hasSentPayload)
+						s.finalizeStream(ctx, identity, responseID, providerName, req.Model, p, finalResponse, latencyMs, trace, out, !hasSentPayload)
 
 						// Async audit.
 						s.invokePluginsAsync(pluginSvc.Audit, map[string]any{

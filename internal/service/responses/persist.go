@@ -373,7 +373,7 @@ func (s *Service) handleStreamError(ctx context.Context, identity *repository.Au
 	}
 }
 
-func (s *Service) finalizeStream(ctx context.Context, identity *repository.AuthIdentity, responseID, providerName, model string, resp *provider.Response, latencyMs int64, trace *routeTrace, out chan<- provider.ResponseEvent, emitOutputs bool) {
+func (s *Service) finalizeStream(ctx context.Context, identity *repository.AuthIdentity, responseID, providerName, model string, p provider.Provider, resp *provider.Response, latencyMs int64, trace *routeTrace, out chan<- provider.ResponseEvent, emitOutputs bool) {
 	if resp == nil {
 		resp = provider.NewTextResponse(responseID, model, "", provider.Usage{})
 	}
@@ -382,6 +382,11 @@ func (s *Service) finalizeStream(ctx context.Context, identity *repository.AuthI
 	resp.Created = time.Now().Unix()
 	resp.Status = "completed"
 	finalizeRouteTrace(trace, providerName, "success", nil)
+
+	// Streaming success must bill USD cost just like the non-streaming path
+	// (persistSuccess); finalizeStream now receives the provider instance so
+	// computeCost can consult provider pricing / the pricing feed.
+	cost := s.computeCost(p, model, resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
 
 	persistCtx, cancel := detachedPersistenceContext(ctx)
 	defer cancel()
@@ -398,7 +403,7 @@ func (s *Service) finalizeStream(ctx context.Context, identity *repository.AuthI
 		RouteTraceBody: routeTraceBytes(trace),
 	})
 
-	_ = s.auth.RecordUsage(persistCtx, identity, providerName, model, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens, 0, latencyMs, "success", "")
+	_ = s.auth.RecordUsage(persistCtx, identity, providerName, model, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens, cost, latencyMs, "success", "")
 	if s.alert != nil {
 		s.alert.CheckQuotaUsage(persistCtx, identity)
 		s.alert.NotifyRequestEvent(persistCtx, map[string]any{
@@ -410,7 +415,7 @@ func (s *Service) finalizeStream(ctx context.Context, identity *repository.AuthI
 			"status":         "success",
 			"latency_ms":     latencyMs,
 			"total_tokens":   resp.Usage.TotalTokens,
-			"total_cost_usd": 0,
+			"total_cost_usd": cost,
 		})
 	}
 
@@ -427,6 +432,7 @@ func (s *Service) finalizeStream(ctx context.Context, identity *repository.AuthI
 			"model":          model,
 			"status":         "success",
 			"latency_ms":     latencyMs,
+			"cost_usd":       cost,
 			"usage": map[string]any{
 				"prompt_tokens":     resp.Usage.PromptTokens,
 				"completion_tokens": resp.Usage.CompletionTokens,
