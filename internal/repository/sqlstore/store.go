@@ -13,7 +13,7 @@ import (
 
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/repository/db"
-	"github.com/gateyes/gateway/pkg/eventbus"
+	"github.com/gateyes/gateway/internal/pkg/eventbus"
 )
 
 const budgetCacheTTL = 5 * time.Second

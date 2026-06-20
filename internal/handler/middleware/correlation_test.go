@@ -7,7 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	gatewaytrace "github.com/gateyes/gateway/pkg/trace"
+	gatewaytrace "github.com/gateyes/gateway/internal/pkg/trace"
 )
 
 func TestCorrelation_SetsRequestID(t *testing.T) {

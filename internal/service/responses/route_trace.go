@@ -10,7 +10,7 @@ import (
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/provider"
 	routeSvc "github.com/gateyes/gateway/internal/service/router"
-	"github.com/gateyes/gateway/pkg/trace"
+	"github.com/gateyes/gateway/internal/pkg/trace"
 )
 
 type routeTrace struct {

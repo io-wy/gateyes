@@ -15,7 +15,7 @@ import (
 	"github.com/gateyes/gateway/internal/service/pricing"
 	"github.com/gateyes/gateway/internal/service/provider"
 	"github.com/gateyes/gateway/internal/service/router"
-	"github.com/gateyes/gateway/pkg/eventbus"
+	"github.com/gateyes/gateway/internal/pkg/eventbus"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
 

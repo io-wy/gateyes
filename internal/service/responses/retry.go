@@ -12,7 +12,7 @@ import (
 	pluginSvc "github.com/gateyes/gateway/internal/domain/plugin"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/provider"
-	"github.com/gateyes/gateway/pkg/trace"
+	"github.com/gateyes/gateway/internal/pkg/trace"
 	"go.opentelemetry.io/otel/attribute"
 )
 

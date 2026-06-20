@@ -7,7 +7,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 
-	gatewaytrace "github.com/gateyes/gateway/pkg/trace"
+	gatewaytrace "github.com/gateyes/gateway/internal/pkg/trace"
 )
 
 func OtelTrace() gin.HandlerFunc {
