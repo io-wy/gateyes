@@ -336,6 +336,12 @@ func budgetScopes(apiKeyID, projectID, tenantID, virtualKeyID string) []struct{ 
 
 // ReserveBudgets pre-authorizes budget across all scopes in a single transaction.
 // Returns true if all scopes have sufficient available budget (budget - reserved - spent >= amount).
+//
+// TODO: This reserve/commit/release mechanism is implemented and tested but not
+// yet wired into the request path. The current production flow uses ConsumeBudgets
+// after the response is delivered. To enable true budget pre-authorization,
+// replace the post-hoc ConsumeBudgets call in auth.recordUsage with
+// ReserveBudgets -> upstream request -> CommitBudgets/ReleaseBudgets.
 func (s *Store) ReserveBudgets(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID string, amount float64) (bool, error) {
 	if amount <= 0 {
 		return true, nil
