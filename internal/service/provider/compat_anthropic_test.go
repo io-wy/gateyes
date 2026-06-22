@@ -149,3 +149,40 @@ func TestConvertAnthropicRequestAndResponseCoverCompatibilityBranches(t *testing
 		t.Fatalf("convertAnthropicBlock(unknown) = %+v, want nil", got)
 	}
 }
+
+// TestConvertResponseToAnthropicEndTurnWithoutTools covers the no-tool branch:
+// a plain assistant message must map to stop_reason "end_turn" with a single
+// text block. The tool_use branch is covered by
+// TestConvertAnthropicRequestAndResponseCoverCompatibilityBranches above.
+func TestConvertResponseToAnthropicEndTurnWithoutTools(t *testing.T) {
+	resp := &Response{
+		ID:    "resp-2",
+		Model: "claude-public",
+		Output: []ResponseOutput{{
+			Type:    "message",
+			Role:    "assistant",
+			Content: []ResponseContent{{Type: "output_text", Text: "hello"}},
+		}},
+		Usage: Usage{PromptTokens: 4, CompletionTokens: 6},
+	}
+
+	converted := ConvertResponseToAnthropic(resp)
+	if converted == nil {
+		t.Fatal("ConvertResponseToAnthropic() = nil, want anthropic response")
+	}
+	if converted.StopReason != "end_turn" {
+		t.Fatalf("ConvertResponseToAnthropic() StopReason = %q, want end_turn", converted.StopReason)
+	}
+	if converted.Type != "message" || converted.Role != "assistant" {
+		t.Fatalf("ConvertResponseToAnthropic() = %+v, want message/assistant", converted)
+	}
+	if len(converted.Content) != 1 || converted.Content[0].Type != "text" || converted.Content[0].Text != "hello" {
+		t.Fatalf("ConvertResponseToAnthropic() content = %+v, want single text block", converted.Content)
+	}
+	if converted.Usage.InputTokens != 4 || converted.Usage.OutputTokens != 6 {
+		t.Fatalf("ConvertResponseToAnthropic() usage = %+v, want input=4 output=6", converted.Usage)
+	}
+	if ConvertResponseToAnthropic(nil) != nil {
+		t.Fatal("ConvertResponseToAnthropic(nil) != nil")
+	}
+}

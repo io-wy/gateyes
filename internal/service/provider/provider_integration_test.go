@@ -130,7 +130,6 @@ func TestAnthropicProviderCreateAndStream(t *testing.T) {
 		var reqBody map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&reqBody)
 		isStream := reqBody["stream"] == true
-		fmt.Printf("DEBUG SERVER: path=%s stream=%v\n", r.URL.Path, isStream)
 
 		if r.URL.Path != "/v1/messages" {
 			t.Fatalf("anthropic path = %q, want %q", r.URL.Path, "/v1/messages")

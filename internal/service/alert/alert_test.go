@@ -35,6 +35,12 @@ func TestWebhookChannel_ComputeSignature(t *testing.T) {
 	}
 }
 
+// The TestAlertService_* cases below exercise every branch of CheckQuotaUsage.
+// They assert the observable side effect — whether the user was recorded in
+// notifiedUsers — rather than merely "does not panic". notifiedUsers is written
+// synchronously inside CheckQuotaUsage (only the webhook POST is async), so it
+// is a stable, non-flaky signal for "an alert was triggered".
+
 func TestAlertService_Disabled(t *testing.T) {
 	cfg := config.AlertConfig{
 		Enabled: false,
@@ -50,8 +56,11 @@ func TestAlertService_Disabled(t *testing.T) {
 		UserName:   "test-user",
 	}
 
-	// disabled 时不应该 panic
+	// Disabled: must be a no-op, no alert recorded.
 	svc.CheckQuotaUsage(context.Background(), identity)
+	if len(svc.notifiedUsers) != 0 {
+		t.Errorf("CheckQuotaUsage(disabled) recorded %d notifications, want 0", len(svc.notifiedUsers))
+	}
 }
 
 func TestAlertService_NoWebhookURL(t *testing.T) {
@@ -71,8 +80,13 @@ func TestAlertService_NoWebhookURL(t *testing.T) {
 		UserName:   "test-user",
 	}
 
-	// 没有 webhook URL 时不应该 panic
+	// No webhook channel configured: send() is a no-op, but the threshold is still
+	// breached, so the user is still marked notified (this prevents a channel added
+	// later from replaying the same alert within the dedup window).
 	svc.CheckQuotaUsage(context.Background(), identity)
+	if len(svc.notifiedUsers) != 1 {
+		t.Errorf("CheckQuotaUsage(no webhook URL) recorded %d notifications, want 1", len(svc.notifiedUsers))
+	}
 }
 
 func TestAlertService_NoQuotaLimit(t *testing.T) {
@@ -92,8 +106,11 @@ func TestAlertService_NoQuotaLimit(t *testing.T) {
 		UserName:   "test-user",
 	}
 
-	// 无配额限制时不应该 panic
+	// Unlimited quota (Quota <= 0): never alerts.
 	svc.CheckQuotaUsage(context.Background(), identity)
+	if len(svc.notifiedUsers) != 0 {
+		t.Errorf("CheckQuotaUsage(unlimited quota) recorded %d notifications, want 0", len(svc.notifiedUsers))
+	}
 }
 
 func TestAlertService_UnderThreshold(t *testing.T) {
@@ -113,8 +130,11 @@ func TestAlertService_UnderThreshold(t *testing.T) {
 		UserName:   "test-user",
 	}
 
-	// 低于阈值时不应该 panic（不会触发 webhook）
+	// Below threshold (50% < 80%): no alert.
 	svc.CheckQuotaUsage(context.Background(), identity)
+	if len(svc.notifiedUsers) != 0 {
+		t.Errorf("CheckQuotaUsage(under threshold) recorded %d notifications, want 0", len(svc.notifiedUsers))
+	}
 }
 
 func TestAlertService_AtThreshold(t *testing.T) {
@@ -126,35 +146,36 @@ func TestAlertService_AtThreshold(t *testing.T) {
 	}
 	svc := NewAlertService(cfg, nil)
 
-	// 第一次触发（因为是异步的，这里只验证不 panic）
 	identity := &repository.AuthIdentity{
 		TenantID:   "tenant-new",
 		UserID:     "user-new",
 		Quota:      1000,
-		Used:       800, // 80% 使用率
+		Used:       800, // exactly at the 80% threshold
 		TenantSlug: "test",
 		UserName:   "test-user",
 	}
 
-	// 验证通知记录已添加（异步发送后）
+	// At threshold: the user must be recorded as notified. No sleep is needed —
+	// notifiedUsers is stamped synchronously; only the webhook POST is async.
 	svc.CheckQuotaUsage(context.Background(), identity)
-
-	// 等待一下让 goroutine 执行
-	time.Sleep(100 * time.Millisecond)
-
-	// 24小时内同一用户不应该再次触发
-	identity2 := &repository.AuthIdentity{
-		TenantID:   "tenant-new",
-		UserID:     "user-new",
-		Quota:      1000,
-		Used:       850,
-		TenantSlug: "test",
-		UserName:   "test-user",
+	if len(svc.notifiedUsers) != 1 {
+		t.Fatalf("CheckQuotaUsage(at threshold) recorded %d notifications, want 1", len(svc.notifiedUsers))
+	}
+	firstNotified := svc.notifiedUsers["tenant-new:user-new"]
+	if firstNotified.IsZero() {
+		t.Fatal("CheckQuotaUsage(at threshold) did not stamp a notification time")
 	}
 
-	// 这里测试重复通知被阻止（24小时内）
-	// 由于 webhook 是异步发送的，我们主要验证逻辑不会 panic
-	svc.CheckQuotaUsage(context.Background(), identity2)
+	// Same user again within the 24h window: must be deduplicated, not re-stamped.
+	identity2 := *identity
+	identity2.Used = 850
+	svc.CheckQuotaUsage(context.Background(), &identity2)
+	if len(svc.notifiedUsers) != 1 {
+		t.Fatalf("CheckQuotaUsage(dedup) recorded %d notifications, want 1", len(svc.notifiedUsers))
+	}
+	if got := svc.notifiedUsers["tenant-new:user-new"]; !got.Equal(firstNotified) {
+		t.Errorf("CheckQuotaUsage(dedup) re-stamped notification time: got %v, want unchanged %v", got, firstNotified)
+	}
 }
 
 func TestAlertService_AdditionalWebhookTypes(t *testing.T) {
