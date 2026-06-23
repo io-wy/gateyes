@@ -8,8 +8,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/gateyes/gateway/internal/service/provider"
 	"github.com/gateyes/gateway/internal/pkg/trace"
+	"github.com/gateyes/gateway/internal/service/provider"
 )
 
 func Correlation() gin.HandlerFunc {

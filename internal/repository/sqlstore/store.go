@@ -11,9 +11,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/gateyes/gateway/internal/pkg/eventbus"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/repository/db"
-	"github.com/gateyes/gateway/internal/pkg/eventbus"
 )
 
 const budgetCacheTTL = 5 * time.Second

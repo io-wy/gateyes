@@ -57,17 +57,17 @@ type choice struct {
 }
 
 type streamChunk struct {
-	ID      string        `json:"id"`
-	Object  string        `json:"object"`
-	Created int64         `json:"created"`
-	Model   string        `json:"model"`
+	ID      string         `json:"id"`
+	Object  string         `json:"object"`
+	Created int64          `json:"created"`
+	Model   string         `json:"model"`
 	Choices []streamChoice `json:"choices"`
 }
 
 type streamChoice struct {
-	Index        int          `json:"index"`
-	Delta        streamDelta  `json:"delta"`
-	FinishReason string       `json:"finish_reason,omitempty"`
+	Index        int         `json:"index"`
+	Delta        streamDelta `json:"delta"`
+	FinishReason string      `json:"finish_reason,omitempty"`
 }
 
 type streamDelta struct {

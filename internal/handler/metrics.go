@@ -14,8 +14,8 @@ import (
 
 	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/gateyes/gateway/internal/service/provider"
-	"github.com/gateyes/gateway/internal/service/router"
 	responseSvc "github.com/gateyes/gateway/internal/service/responses"
+	"github.com/gateyes/gateway/internal/service/router"
 )
 
 type Metrics struct {
@@ -37,14 +37,14 @@ type Metrics struct {
 	providerRequests     *prometheus.CounterVec
 	providerCircuitState *prometheus.GaugeVec
 
-	providerCurrentLoad    *prometheus.GaugeVec
-	providerTPM            *prometheus.GaugeVec
-	providerHealthStatus   *prometheus.GaugeVec
-	providerGPUCacheUsage  *prometheus.GaugeVec
-	providerCPUCacheUsage  *prometheus.GaugeVec
-	providerCacheHitRate   *prometheus.GaugeVec
-	providerCacheQueries   *prometheus.GaugeVec
-	providerCacheHits      *prometheus.GaugeVec
+	providerCurrentLoad   *prometheus.GaugeVec
+	providerTPM           *prometheus.GaugeVec
+	providerHealthStatus  *prometheus.GaugeVec
+	providerGPUCacheUsage *prometheus.GaugeVec
+	providerCPUCacheUsage *prometheus.GaugeVec
+	providerCacheHitRate  *prometheus.GaugeVec
+	providerCacheQueries  *prometheus.GaugeVec
+	providerCacheHits     *prometheus.GaugeVec
 
 	cacheLookups     *prometheus.CounterVec
 	cacheWrites      *prometheus.CounterVec

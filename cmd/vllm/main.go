@@ -69,9 +69,9 @@ func main() {
 	for i := 0; i < *instances; i++ {
 		port := *basePort + i
 		inst := instance{
-			name:    fmt.Sprintf("vllm-%s-%d", sanitizeName(*model), port),
-			port:    port,
-			baseURL: fmt.Sprintf("http://127.0.0.1:%d/v1", port),
+			name:       fmt.Sprintf("vllm-%s-%d", sanitizeName(*model), port),
+			port:       port,
+			baseURL:    fmt.Sprintf("http://127.0.0.1:%d/v1", port),
 			metricsURL: fmt.Sprintf("http://127.0.0.1:%d/metrics", port),
 		}
 
