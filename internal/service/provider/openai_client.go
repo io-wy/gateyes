@@ -348,15 +348,22 @@ func convertSDKImagesResponse(resp openai.ImagesResponse) *ImageGenerationRespon
 }
 
 func (p *openAIProvider) CreateEmbedding(ctx context.Context, req *EmbeddingRequest) (*EmbeddingResponse, error) {
-	params := openai.EmbeddingNewParams{
-		Model: openai.EmbeddingModel(req.Model),
+	var inputUnion openai.EmbeddingNewParamsInputUnion
+	if len(req.Input) > 0 {
+		var inputStr string
+		if err := json.Unmarshal(req.Input, &inputStr); err == nil {
+			inputUnion = openai.EmbeddingNewParamsInputUnion{OfString: openai.String(inputStr)}
+		} else {
+			var inputArr []string
+			if err := json.Unmarshal(req.Input, &inputArr); err == nil {
+				inputUnion = openai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: inputArr}
+			}
+		}
 	}
 
-	switch v := req.Input.(type) {
-	case string:
-		params.Input = openai.EmbeddingNewParamsInputUnion{OfString: openai.String(v)}
-	case []string:
-		params.Input = openai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: v}
+	params := openai.EmbeddingNewParams{
+		Model: openai.EmbeddingModel(req.Model),
+		Input: inputUnion,
 	}
 
 	if len(p.cfg.ExtraBody) > 0 {

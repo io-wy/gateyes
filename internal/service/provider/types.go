@@ -151,8 +151,8 @@ type Provider interface {
 }
 
 type EmbeddingRequest struct {
-	Model string `json:"model"`
-	Input any    `json:"input"`
+	Model string          `json:"model"`
+	Input json.RawMessage `json:"input"`
 }
 
 type EmbeddingData struct {
