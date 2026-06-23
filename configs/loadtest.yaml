@@ -75,6 +75,44 @@ providers:
     capabilities:
       embeddings: false
 
+  - name: mock-embeddings
+    type: openai
+    vendor: openai
+    endpoint: chat
+    baseURL: http://localhost:18080
+    apiKey: mock-key
+    model: mock-embedding-model
+    weight: 10
+    priceInput: 0.000001
+    priceOutput: 0
+    maxTokens: 4096
+    timeout: 60
+    enabled: true
+    capabilities:
+      chat: false
+      responses: false
+      messages: false
+      embeddings: true
+
+  - name: mock-images
+    type: openai
+    vendor: openai
+    endpoint: chat
+    baseURL: http://localhost:18080
+    apiKey: mock-key
+    model: mock-image-model
+    weight: 10
+    priceInput: 0.000001
+    priceOutput: 0.000001
+    maxTokens: 4096
+    timeout: 60
+    enabled: true
+    capabilities:
+      chat: false
+      responses: false
+      messages: false
+      images: true
+
 apiKeys:
   - key: demo-key-001
     secret: demo-secret

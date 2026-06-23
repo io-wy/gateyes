@@ -81,6 +81,115 @@ type usage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
+type embeddingRequest struct {
+	Model string   `json:"model"`
+	Input []string `json:"input"`
+}
+
+type embeddingResponse struct {
+	Object string      `json:"object"`
+	Data   []embedding `json:"data"`
+	Model  string      `json:"model"`
+	Usage  usage       `json:"usage"`
+}
+
+type embedding struct {
+	Object    string    `json:"object"`
+	Embedding []float64 `json:"embedding"`
+	Index     int       `json:"index"`
+}
+
+type imageRequest struct {
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+	N      int    `json:"n"`
+	Size   string `json:"size"`
+}
+
+type imageResponse struct {
+	Created int64  `json:"created"`
+	Data    []image `json:"data"`
+}
+
+type image struct {
+	URL string `json:"url"`
+}
+
+func (s *server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req embeddingRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	if s.cfg.failRate > 0 && rand.Float64() < s.cfg.failRate {
+		http.Error(w, "mock upstream failure", http.StatusInternalServerError)
+		return
+	}
+
+	vector := make([]float64, 1536)
+	for i := range vector {
+		vector[i] = 0.001 * float64(i)
+	}
+
+	data := make([]embedding, len(req.Input))
+	for i := range req.Input {
+		data[i] = embedding{Object: "embedding", Embedding: vector, Index: i}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(embeddingResponse{
+		Object: "list",
+		Data:   data,
+		Model:  req.Model,
+		Usage: usage{
+			PromptTokens:     len(req.Input) * 4,
+			CompletionTokens: 0,
+			TotalTokens:      len(req.Input) * 4,
+		},
+	})
+}
+
+func (s *server) handleImageGenerations(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req imageRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	if s.cfg.failRate > 0 && rand.Float64() < s.cfg.failRate {
+		http.Error(w, "mock upstream failure", http.StatusInternalServerError)
+		return
+	}
+
+	n := req.N
+	if n <= 0 {
+		n = 1
+	}
+	data := make([]image, n)
+	for i := range data {
+		data[i] = image{URL: fmt.Sprintf("https://mock.gateyes.test/image-%d.png?prompt=%s&size=%s", i, req.Prompt, req.Size)}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(imageResponse{
+		Created: time.Now().Unix(),
+		Data:    data,
+	})
+}
+
 func main() {
 	cfg := parseConfig()
 
@@ -93,6 +202,10 @@ func main() {
 	http.HandleFunc("/health", srv.handleHealth)
 	http.HandleFunc("/v1/chat/completions", srv.handleChatCompletions)
 	http.HandleFunc("/chat/completions", srv.handleChatCompletions)
+	http.HandleFunc("/v1/embeddings", srv.handleEmbeddings)
+	http.HandleFunc("/embeddings", srv.handleEmbeddings)
+	http.HandleFunc("/v1/images/generations", srv.handleImageGenerations)
+	http.HandleFunc("/images/generations", srv.handleImageGenerations)
 	http.HandleFunc("/v1/models", srv.handleModels)
 	http.HandleFunc("/models", srv.handleModels)
 
