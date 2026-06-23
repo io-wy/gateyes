@@ -71,7 +71,7 @@ const userTokenTTL = 10 * time.Minute
 
 type userBucket struct {
 	bucket     *TokenBucket
-	lastAccess time.Time
+	lastAccess atomic.Int64 // UnixNano, atomic to avoid data race in check().
 }
 
 type Limiter struct {
@@ -199,7 +199,7 @@ func (l *Limiter) refillLoop() {
 			now := time.Now()
 			for k, ub := range l.userTokens {
 				ub.bucket.TryConsume(0)
-				if now.Sub(ub.lastAccess) > userTokenTTL {
+				if now.Sub(time.Unix(0, ub.lastAccess.Load())) > userTokenTTL {
 					delete(l.userTokens, k)
 				}
 			}
@@ -292,8 +292,9 @@ func (l *Limiter) check(key string, userQPS, tokens int) bool {
 		if !exists || needsRebuild {
 			l.userTokens[key] = &userBucket{
 				bucket:     NewTokenBucket(rate, burst),
-				lastAccess: time.Now(),
+				lastAccess: atomic.Int64{},
 			}
+			l.userTokens[key].lastAccess.Store(time.Now().UnixNano())
 		}
 		ub = l.userTokens[key]
 		l.mu.Unlock()
@@ -301,7 +302,7 @@ func (l *Limiter) check(key string, userQPS, tokens int) bool {
 
 	ok := ub.bucket.TryConsume(1)
 	if ok {
-		ub.lastAccess = time.Now()
+		ub.lastAccess.Store(time.Now().UnixNano())
 	}
 	return ok
 }
