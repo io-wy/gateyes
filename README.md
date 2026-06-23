@@ -16,19 +16,23 @@ Gateyes is a production-oriented LLM API gateway. It exposes OpenAI-compatible a
 ## Repository Layout
 
 ```text
-cmd/                         binaries: gateway and migration runner
+cmd/                         binaries: gateway, migration runner, and vllm helper
 configs/                     runtime config examples and local config entrypoints
-deploy/                      Docker and Helm deployment assets
-docs/docs-project/           project documentation and operations guides
+deploy/                      Docker and Helm deployment assets, Grafana/Prometheus
+docs/docs-project/           project documentation, runbooks, and operations guides
 docs/docs-ref/               reusable reference material and archived templates
 docs/docs-tmp/               temporary or design-stage material
 internal/app/config/         config loading, validation, and reload orchestration
-internal/platform/           infrastructure adapters: db, redis, sqlstore, trace, eventbus
+internal/domain/plugin/      internal plugin domain types and contracts
+internal/handler/            HTTP handlers, middleware, metrics, and server wiring
+internal/handler/middleware/ auth, guard, rate-limit filter pipeline, and tracing
+internal/pkg/                internal shared libraries: db/redis wrappers, trace, eventbus, logging
 internal/repository/         repository contracts and domain persistence interfaces
-internal/plugin/             internal plugin contracts used by services
-internal/service/            business services: routing, provider, limiter, responses, etc.
-internal/extension/          extension runtimes: WASM filter and gRPC/WASM plugin adapters
-internal/transport/http/     HTTP handlers and middleware
+internal/repository/db/      database driver, connection pool, and migrations
+internal/repository/sqlstore/ SQL implementations of repository.Store
+internal/service/            business services: routing, provider, limiter, responses, auth, etc.
+internal/service/extension/  extension runtimes: WASM filter and gRPC/WASM plugin adapters
+internal/testutil/           shared test helpers and fixtures
 pkg/plugin/v1/               generated public gRPC plugin contracts
 proto/plugin/v1/             plugin protocol source files
 plugins/                     plugin SDK and examples
