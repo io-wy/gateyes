@@ -30,6 +30,14 @@ import (
 	"time"
 )
 
+const (
+	// readinessProbeTimeout is the HTTP client timeout used while polling each
+	// vLLM instance's /metrics endpoint until it becomes ready.
+	readinessProbeTimeout = 2 * time.Second
+	// readinessProbeInterval is the delay between consecutive readiness probes.
+	readinessProbeInterval = 500 * time.Millisecond
+)
+
 func main() {
 	var (
 		model             = flag.String("model", "Qwen/Qwen3-0.6B", "HuggingFace model name or local path")
@@ -147,8 +155,8 @@ func waitForReady(ctx context.Context, instances []instance) error {
 		wg.Add(1)
 		go func(inst instance) {
 			defer wg.Done()
-			client := &http.Client{Timeout: 2 * time.Second}
-			ticker := time.NewTicker(500 * time.Millisecond)
+			client := &http.Client{Timeout: readinessProbeTimeout}
+			ticker := time.NewTicker(readinessProbeInterval)
 			defer ticker.Stop()
 			for {
 				select {
@@ -186,25 +194,25 @@ func waitForReady(ctx context.Context, instances []instance) error {
 }
 
 func printConfig(model string, instances []instance, apiKey string) {
-	fmt.Println()
-	fmt.Println("# Paste the following into configs/config.yaml (or a separate file included via env):")
-	fmt.Println("providers:")
+	_, _ = fmt.Fprintln(os.Stdout)
+	_, _ = fmt.Fprintln(os.Stdout, "# Paste the following into configs/config.yaml (or a separate file included via env):")
+	_, _ = fmt.Fprintln(os.Stdout, "providers:")
 	for _, inst := range instances {
-		fmt.Printf("  - name: %s\n", inst.name)
-		fmt.Println("    type: openai")
-		fmt.Println("    vendor: vllm")
-		fmt.Println("    endpoint: chat")
-		fmt.Printf("    baseURL: %s\n", inst.baseURL)
-		fmt.Printf("    apiKey: %s\n", apiKey)
-		fmt.Printf("    model: %s\n", model)
-		fmt.Println("    weight: 100")
-		fmt.Println("    enabled: true")
-		fmt.Printf("    metricsURL: %s\n", inst.metricsURL)
-		fmt.Println("    capabilities:")
-		fmt.Println("      chat: true")
-		fmt.Println("      stream: true")
+		_, _ = fmt.Fprintf(os.Stdout, "  - name: %s\n", inst.name)
+		_, _ = fmt.Fprintln(os.Stdout, "    type: openai")
+		_, _ = fmt.Fprintln(os.Stdout, "    vendor: vllm")
+		_, _ = fmt.Fprintln(os.Stdout, "    endpoint: chat")
+		_, _ = fmt.Fprintf(os.Stdout, "    baseURL: %s\n", inst.baseURL)
+		_, _ = fmt.Fprintf(os.Stdout, "    apiKey: %s\n", apiKey)
+		_, _ = fmt.Fprintf(os.Stdout, "    model: %s\n", model)
+		_, _ = fmt.Fprintln(os.Stdout, "    weight: 100")
+		_, _ = fmt.Fprintln(os.Stdout, "    enabled: true")
+		_, _ = fmt.Fprintf(os.Stdout, "    metricsURL: %s\n", inst.metricsURL)
+		_, _ = fmt.Fprintln(os.Stdout, "    capabilities:")
+		_, _ = fmt.Fprintln(os.Stdout, "      chat: true")
+		_, _ = fmt.Fprintln(os.Stdout, "      stream: true")
 	}
-	fmt.Println()
+	_, _ = fmt.Fprintln(os.Stdout)
 }
 
 func sanitizeName(model string) string {
