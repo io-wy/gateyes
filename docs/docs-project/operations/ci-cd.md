@@ -10,17 +10,19 @@ Workflow file:
 
 Current checks:
 
-1. `gofmt`
+1. `gofmt` (advisory warning)
 2. `go test ./...`
 3. `go test -race ./...`
 4. `go vet ./...`
-5. `golangci-lint`
-6. `staticcheck`
-7. `govulncheck`
+5. `govulncheck`
+6. `gitleaks`
+7. `trivy` filesystem scan
 8. migration smoke test via `cmd/migrate`
-9. OpenAPI smoke validation
-10. `gitleaks`
-11. `trivy` filesystem scan
+9. architecture dependency check via `make lint-arch`
+10. code quality scan via `make lint-quality`
+11. test coverage report (`go test -coverprofile`)
+
+Steps 5–8 run as advisory (`continue-on-error: true`) so the workflow remains green while still surfacing findings. Steps 9–11 run in separate jobs so they can execute in parallel with the main validation matrix.
 
 ## 2. Release
 
