@@ -9,6 +9,7 @@ require (
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.9.2
+	github.com/larksuite/oapi-sdk-go/v3 v3.9.7
 	github.com/openai/openai-go v1.12.0
 	github.com/prometheus/client_golang v1.20.5
 	github.com/redis/go-redis/v9 v9.18.0

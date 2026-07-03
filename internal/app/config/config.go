@@ -303,10 +303,17 @@ type AlertConfig struct {
 
 type AlertChannelConfig struct {
 	Name   string            `yaml:"name"`
-	Type   string            `yaml:"type"`   // webhook, slack
-	Target string            `yaml:"target"` // URL
-	Secret string            `yaml:"secret"`
+	Type   string            `yaml:"type"`   // webhook, slack, feishu
+	Target string            `yaml:"target"` // URL (webhook/slack) or receive_id (feishu)
+	Secret string            `yaml:"secret"` // webhook secret or feishu app secret
 	Labels map[string]string `yaml:"labels"` // 用于路由过滤，如 severity=critical
+
+	// Feishu (Lark) SDK specific fields.
+	FeishuAppID       string `yaml:"feishuAppId"`
+	FeishuAppSecret   string `yaml:"feishuAppSecret"`
+	FeishuReceiveID   string `yaml:"feishuReceiveId"`
+	FeishuReceiveType string `yaml:"feishuReceiveType"` // open_id | user_id | email | chat_id
+	FeishuMsgType     string `yaml:"feishuMsgType"`     // text | interactive
 }
 
 type HealthCheckConfig struct {

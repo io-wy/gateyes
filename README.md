@@ -98,6 +98,43 @@ PostgreSQL 15+ no longer grants `CREATE` on the `public` schema to non-superuser
 If you create a dedicated `gateyes` role/database in a shared Postgres instance, the gateway's migrations will fail with `permission denied for schema public`.
 `make give-me-an-admin` handles this automatically by running `ALTER SCHEMA public OWNER TO gateyes`.
 
+## Alerts
+
+Gateyes can send alerts when budgets are exhausted, providers change state, or quotas cross thresholds.
+
+### Webhook (default)
+
+Set `alert.webhookURL` / `webhookSecret` in `config.yaml`, or use `alert.channels` for multiple webhooks with label-based routing.
+
+### Feishu (Lark)
+
+Use the official Feishu SDK channel to send text or interactive card messages to a user or group chat.
+
+1. Create a Feishu app and grant it the `im:chat:send` / `im:message:send` permissions.
+2. Add to `configs/config.yaml`:
+
+```yaml
+alert:
+  enabled: true
+  channels:
+    - name: feishu-ops
+      type: feishu
+      feishuAppId: ${FEISHU_APP_ID}
+      feishuAppSecret: ${FEISHU_APP_SECRET}
+      feishuReceiveType: chat_id   # or open_id / user_id / email
+      feishuReceiveId: ${FEISHU_CHAT_ID}
+      feishuMsgType: interactive   # or text
+      labels:
+        severity: critical
+```
+
+3. Set the secrets in `.env`:
+
+```bash
+FEISHU_APP_ID=cli_xxx
+FEISHU_APP_SECRET=xxx
+FEISHU_CHAT_ID=oc_xxx
+```
 
 ## API Surfaces
 

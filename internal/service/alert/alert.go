@@ -224,6 +224,9 @@ func buildChannels(cfg config.AlertConfig) []Channel {
 	var channels []Channel
 	for _, cc := range cfg.Channels {
 		switch strings.ToLower(cc.Type) {
+		case "feishu":
+			ch := NewFeishuChannel(cc.Name, cc.FeishuAppID, cc.FeishuAppSecret, cc.FeishuReceiveID, cc.FeishuReceiveType, cc.FeishuMsgType, cc.Labels)
+			channels = append(channels, ch)
 		case "webhook":
 			ch := NewWebhookChannel(cc.Name, cc.Target, cc.Secret, cc.Labels)
 			channels = append(channels, ch)

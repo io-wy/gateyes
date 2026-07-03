@@ -59,6 +59,17 @@ alert:
   budgetExhaustedURL: ""
   requestEventURL: ""
   errorEventURL: ""
+  channels:
+    # Example: send critical alerts to a Feishu (Lark) chat via the official SDK.
+    # - name: feishu-ops
+    #   type: feishu
+    #   feishuAppId: ${FEISHU_APP_ID}
+    #   feishuAppSecret: ${FEISHU_APP_SECRET}
+    #   feishuReceiveType: chat_id
+    #   feishuReceiveId: ${FEISHU_CHAT_ID}
+    #   feishuMsgType: interactive
+    #   labels:
+    #     severity: critical
 
 healthCheck:
   enabled: true
