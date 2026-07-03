@@ -14,6 +14,8 @@ import (
 	"github.com/gateyes/gateway/internal/service/provider"
 )
 
+const defaultCallbackTimeout = 10 * time.Second
+
 func detachedPersistenceContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	base := context.WithoutCancel(ctx)
 	return context.WithTimeout(base, terminalPersistenceTimeout)
@@ -551,7 +553,7 @@ func (s *Service) sendCallback(url string, payload map[string]any) {
 	body, _ := json.Marshal(payload)
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: defaultCallbackTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return

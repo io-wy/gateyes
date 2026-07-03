@@ -31,6 +31,8 @@ import (
 	"time"
 )
 
+const defaultFeedTimeout = 30 * time.Second
+
 // DefaultFeedURL is the LiteLLM-published price table. Stable URL, MIT-licensed.
 const DefaultFeedURL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 
@@ -84,7 +86,7 @@ func New(opts Options) *Feed {
 		cacheFile: opts.CacheFile,
 		interval:  opts.Interval,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: defaultFeedTimeout,
 		},
 		prices: make(map[string]ModelPrice),
 	}

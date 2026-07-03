@@ -31,6 +31,8 @@ import (
 	"time"
 )
 
+const defaultScrapeTimeout = 2 * time.Second
+
 // InferenceState is the cached per-provider scrape result.
 type InferenceState struct {
 	NumRequestsRunning float64
@@ -100,7 +102,7 @@ func NewInferenceScraper(endpoints map[string]string, interval time.Duration) *I
 		endpoints: clean,
 		interval:  interval,
 		httpClient: &http.Client{
-			Timeout: 2 * time.Second,
+			Timeout: defaultScrapeTimeout,
 		},
 		state: make(map[string]InferenceState, len(clean)),
 	}

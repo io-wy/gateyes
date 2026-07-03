@@ -7,10 +7,13 @@
 package main
 
 import (
-	"fmt"
+	"log/slog"
+	"os"
 
 	"github.com/gateyes/gateway/plugins/sdk/gateyes"
 )
+
+var logger = slog.New(slog.NewTextHandler(os.Stdout, nil))
 
 //export evaluate_gateway
 func evaluateGateway(inputPtr, inputLen, outputPtr, outputMaxLen int32) int32 {
@@ -19,16 +22,13 @@ func evaluateGateway(inputPtr, inputLen, outputPtr, outputMaxLen int32) int32 {
 
 	switch ev.Phase {
 	case "pre_upstream":
-		fmt.Printf("[WASM_AUDIT] pre_upstream | trace=%s tenant=%s model=%s | payload_size=%d\n",
-			ctx.TraceID, ctx.TenantID, ctx.Model, len(ev.Payload))
+		logger.Info("[WASM_AUDIT] pre_upstream", "trace", ctx.TraceID, "tenant", ctx.TenantID, "model", ctx.Model, "payload_size", len(ev.Payload))
 	case "post_upstream":
-		fmt.Printf("[WASM_AUDIT] post_upstream | trace=%s tenant=%s model=%s | payload_size=%d\n",
-			ctx.TraceID, ctx.TenantID, ctx.Model, len(ev.Payload))
+		logger.Info("[WASM_AUDIT] post_upstream", "trace", ctx.TraceID, "tenant", ctx.TenantID, "model", ctx.Model, "payload_size", len(ev.Payload))
 	case "audit":
-		fmt.Printf("[WASM_AUDIT] audit | trace=%s tenant=%s model=%s | payload_size=%d\n",
-			ctx.TraceID, ctx.TenantID, ctx.Model, len(ev.Payload))
+		logger.Info("[WASM_AUDIT] audit", "trace", ctx.TraceID, "tenant", ctx.TenantID, "model", ctx.Model, "payload_size", len(ev.Payload))
 	default:
-		fmt.Printf("[WASM_AUDIT] unhandled phase: %s\n", ev.Phase)
+		logger.Info("[WASM_AUDIT] unhandled phase", "phase", ev.Phase)
 	}
 
 	return gateyes.WriteGatewayCommand(outputPtr, gateyes.AllowGateway())

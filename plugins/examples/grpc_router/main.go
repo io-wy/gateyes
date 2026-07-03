@@ -2,8 +2,9 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"log/slog"
 	"net"
+	"os"
 	"sort"
 
 	"google.golang.org/grpc"
@@ -25,11 +26,12 @@ func (s *reverseRouterPlugin) OrderCandidates(ctx context.Context, req *pluginv1
 		names = append(names, c.Name)
 	}
 	sort.Sort(sort.Reverse(sort.StringSlice(names)))
-	fmt.Printf("[GRPC_ROUTER_PLUGIN] received %d candidates, ordered reverse: %v\n", len(names), names)
+	slog.Info("[GRPC_ROUTER_PLUGIN] received candidates", "count", len(names), "ordered", names)
 	return &pluginv1.OrderCandidatesResponse{OrderedNames: names}, nil
 }
 
 func main() {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	lis, err := net.Listen("tcp", ":50051")
 	if err != nil {
 		panic(err)
@@ -41,7 +43,7 @@ func main() {
 	hs.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	healthpb.RegisterHealthServer(s, hs)
 
-	fmt.Println("gRPC router plugin listening on :50051")
+	logger.Info("gRPC router plugin listening", "addr", ":50051")
 	if err := s.Serve(lis); err != nil {
 		panic(err)
 	}

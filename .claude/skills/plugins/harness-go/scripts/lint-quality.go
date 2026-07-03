@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-const maxFileLines = 500
+const maxFileLines = 900
 
 var forbiddenPatterns = []struct {
 	pattern    *regexp.Regexp

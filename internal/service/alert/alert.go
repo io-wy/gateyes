@@ -25,6 +25,8 @@ const (
 	SeverityInfo     Severity = "info"
 	SeverityWarning  Severity = "warning"
 	SeverityCritical Severity = "critical"
+
+	defaultWebhookTimeout = 10 * time.Second
 )
 
 type ProviderStateChange struct {
@@ -70,7 +72,7 @@ type WebhookChannel struct {
 func NewWebhookChannel(name, target, secret string, labels map[string]string) *WebhookChannel {
 	return &WebhookChannel{
 		name:   name,
-		client: &http.Client{Timeout: 10 * time.Second},
+		client: &http.Client{Timeout: defaultWebhookTimeout},
 		target: target,
 		secret: secret,
 		labels: labels,
