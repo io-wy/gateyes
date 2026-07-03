@@ -60,6 +60,45 @@ For the demo config:
 go run ./cmd/gateway -config configs/demo-mock.yaml
 ```
 
+
+## Cold Start (Shared PostgreSQL)
+
+For local development with a shared PostgreSQL instance (container name `postgres` on port `5432`):
+
+```bash
+# 1. Configure secrets (if you haven't already)
+cp .env.example .env
+# edit .env: GATEYES_ADMIN_BOOTSTRAP_SECRET, GATEYES_DEMO_SECRET, provider keys
+
+# 2. One-shot: infra + DB + gateway + verified admin
+make give-me-an-admin
+```
+
+The command will:
+1. Start `postgres:16-alpine` and `redis:7-alpine` containers if absent.
+2. Create the `gateyes` role and database, and fix PostgreSQL 15+ `public` schema ownership so migrations can run.
+3. Start the gateway and wait for `/ready` to return 200.
+4. Verify that the bootstrap admin (`admin-key-001`) can authenticate.
+
+After it finishes, you can use:
+
+- **Admin**: `Authorization: Bearer admin-key-001:$GATEYES_ADMIN_BOOTSTRAP_SECRET`
+- **Demo user**: `Authorization: Bearer demo-key-001:$GATEYES_DEMO_SECRET`
+
+Manual equivalent:
+
+```bash
+make provision-db   # only DB provisioning
+make run            # go run ./cmd/gateway -config configs/config.yaml
+```
+
+### Why the `public` schema fix matters
+
+PostgreSQL 15+ no longer grants `CREATE` on the `public` schema to non-superusers.
+If you create a dedicated `gateyes` role/database in a shared Postgres instance, the gateway's migrations will fail with `permission denied for schema public`.
+`make give-me-an-admin` handles this automatically by running `ALTER SCHEMA public OWNER TO gateyes`.
+
+
 ## API Surfaces
 
 | Endpoint | Compatibility | Purpose |

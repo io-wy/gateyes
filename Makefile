@@ -114,3 +114,18 @@ help:
 	@echo "  make pprof-cpu           Capture 30s CPU profile from :6060"
 	@echo "  make pprof-heap          Capture heap profile from :6060"
 	@echo ""
+# ---------------------------------------------------------------------------
+# Cold start / local dev bootstrap
+# ---------------------------------------------------------------------------
+
+## Provision the shared PostgreSQL database for gateyes.
+provision-db:
+	bash scripts/provision-db.sh
+
+## One-shot cold start: infra, DB, gateway, verified admin.
+give-me-an-admin:
+	bash scripts/give-me-an-admin.sh
+
+## Provision DB and run the gateway (alias for manual cold start).
+cold-start: provision-db
+	$(GO) run ./cmd/gateway -config $(CONFIG)
