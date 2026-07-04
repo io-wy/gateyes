@@ -315,6 +315,10 @@ func (f *fakeIdentityStore) UpdateService(ctx context.Context, tenantID string, 
 	return nil, nil
 }
 
+func (f *fakeIdentityStore) DeleteService(ctx context.Context, tenantID string, idOrPrefix string) error {
+	return nil
+}
+
 func (f *fakeIdentityStore) CreateServiceVersion(ctx context.Context, tenantID string, params repository.CreateServiceVersionParams) (*repository.ServiceVersionRecord, error) {
 	return nil, nil
 }
@@ -418,6 +422,37 @@ func (f *fakeIdentityStore) DeleteResponsesOlderThan(ctx context.Context, before
 	return 0, nil
 }
 func (f *fakeIdentityStore) Ping(ctx context.Context) error { return nil }
+
+func (f *fakeIdentityStore) CreateRole(ctx context.Context, params repository.CreateRoleParams) (*repository.RoleRecord, error) {
+	return nil, nil
+}
+func (f *fakeIdentityStore) ListRoles(ctx context.Context, tenantID string, filter repository.RoleFilter) ([]repository.RoleRecord, error) {
+	return nil, nil
+}
+func (f *fakeIdentityStore) GetRole(ctx context.Context, tenantID string, id string) (*repository.RoleRecord, error) {
+	return nil, nil
+}
+func (f *fakeIdentityStore) UpdateRole(ctx context.Context, tenantID string, id string, params repository.UpdateRoleParams) (*repository.RoleRecord, error) {
+	return nil, nil
+}
+func (f *fakeIdentityStore) DeleteRole(ctx context.Context, tenantID string, id string) error {
+	return nil
+}
+func (f *fakeIdentityStore) ListPermissions(ctx context.Context) ([]repository.PermissionRecord, error) {
+	return nil, nil
+}
+func (f *fakeIdentityStore) GetRolePermissions(ctx context.Context, roleID string) ([]repository.PermissionRecord, error) {
+	return nil, nil
+}
+func (f *fakeIdentityStore) SetRolePermissions(ctx context.Context, roleID string, permissionIDs []string) error {
+	return nil
+}
+func (f *fakeIdentityStore) GetUserRoleIDs(ctx context.Context, userID string) ([]string, error) {
+	return nil, nil
+}
+func (f *fakeIdentityStore) GetUserPermissions(ctx context.Context, userID string) ([]repository.PermissionRecord, error) {
+	return nil, nil
+}
 
 func baseIdentity() *repository.AuthIdentity {
 	return &repository.AuthIdentity{

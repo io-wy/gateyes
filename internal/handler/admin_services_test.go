@@ -35,6 +35,37 @@ func TestUpdateService(t *testing.T) {
 	}
 }
 
+func TestDeleteService(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	env := newHandlerTestEnv(t, handlerTestEnvConfig{})
+	adminToken := seedAdminToken(t, env, repository.RoleTenantAdmin, "admin-svc-del", "secret").APIKey + ":" + "secret"
+
+	rec := performJSONRequest(t, env, http.MethodPost, "/admin/services", adminToken, `{"name":"DelSvc","request_prefix":"delsvc","default_provider":"test-openai","default_model":"provider-model","enabled":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST service status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	serviceID := decodeBodyMap(t, rec)["service"].(map[string]any)["id"].(string)
+
+	rec = performJSONRequest(t, env, http.MethodDelete, "/admin/services/"+serviceID, adminToken, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("DELETE service status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	data := decodeBodyMap(t, rec)
+	if data["deleted"] != true {
+		t.Fatalf("DELETE service payload = %#v, want deleted=true", data)
+	}
+
+	rec = performJSONRequest(t, env, http.MethodGet, "/admin/services/"+serviceID, adminToken, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET deleted service status = %d, want %d: %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	rec = performJSONRequest(t, env, http.MethodDelete, "/admin/services/missing", adminToken, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("DELETE missing service status = %d, want %d: %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
 func TestListServiceVersions(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	env := newHandlerTestEnv(t, handlerTestEnvConfig{})

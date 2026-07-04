@@ -37,6 +37,7 @@ type Store interface {
 	ServiceStore
 	AuditLogStore
 	VirtualKeyStore
+	RoleStore
 	Ping(ctx context.Context) error
 }
 
@@ -116,6 +117,7 @@ type ServiceStore interface {
 	GetService(ctx context.Context, tenantID string, idOrPrefix string) (*ServiceRecord, error)
 	GetServiceByPrefix(ctx context.Context, tenantID string, prefix string) (*ServiceRecord, error)
 	UpdateService(ctx context.Context, tenantID string, idOrPrefix string, params UpdateServiceParams) (*ServiceRecord, error)
+	DeleteService(ctx context.Context, tenantID string, idOrPrefix string) error
 	CreateServiceVersion(ctx context.Context, tenantID string, params CreateServiceVersionParams) (*ServiceVersionRecord, error)
 	ListServiceVersions(ctx context.Context, tenantID string, serviceID string) ([]ServiceVersionRecord, error)
 	GetServiceVersion(ctx context.Context, tenantID string, serviceID string, versionOrID string) (*ServiceVersionRecord, error)
@@ -321,27 +323,30 @@ type UpdateTenantParams struct {
 }
 
 type APIKeyRecord struct {
-	ID               string
-	TenantID         string
-	TenantSlug       string
-	UserID           string
-	UserName         string
-	UserEmail        string
-	ProjectID        string
-	ProjectSlug      string
-	Key              string
-	Status           string
-	BudgetUSD        float64
-	SpentUSD         float64
-	BudgetPolicy     string
-	RateLimitQPS     int
-	AllowedModels    []string
-	AllowedProviders []string
-	AllowedServices  []string
-	LastUsedAt       *time.Time
-	RevokedAt        *time.Time
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID                     string
+	TenantID               string
+	TenantSlug             string
+	UserID                 string
+	UserName               string
+	UserEmail              string
+	ProjectID              string
+	ProjectSlug            string
+	Key                    string
+	Status                 string
+	BudgetUSD              float64
+	SpentUSD               float64
+	BudgetPolicy           string
+	RateLimitQPS           int
+	AllowedModels          []string
+	AllowedProviders       []string
+	AllowedServices        []string
+	LastUsedAt             *time.Time
+	RevokedAt              *time.Time
+	ExpiresAt              *time.Time
+	RotatedAt              *time.Time
+	RotationReminderSent   bool
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
 }
 
 type APIKeyFilter struct {
@@ -361,6 +366,7 @@ type CreateAPIKeyParams struct {
 	AllowedModels    []string
 	AllowedProviders []string
 	AllowedServices  []string
+	ExpiresAt        *time.Time
 }
 
 type UpdateAPIKeyParams struct {
@@ -373,6 +379,9 @@ type UpdateAPIKeyParams struct {
 	AllowedProviders *[]string
 	AllowedServices  *[]string
 	RevokedAt        *time.Time
+	ExpiresAt        *time.Time
+	RotatedAt        *time.Time
+	RotationReminderSent *bool
 }
 
 type RotateAPIKeyParams struct {
@@ -721,14 +730,15 @@ type ProviderRegistryRecord struct {
 }
 
 type ProviderRuntimeConfig struct {
-	APIKey      string            `json:"api_key,omitempty"`
-	PriceInput  float64           `json:"price_input,omitempty"`
-	PriceOutput float64           `json:"price_output,omitempty"`
-	MaxTokens   int               `json:"max_tokens,omitempty"`
-	Timeout     int               `json:"timeout,omitempty"`
-	Enabled     bool              `json:"enabled,omitempty"`
-	Headers     map[string]string `json:"headers,omitempty"`
-	ExtraBody   map[string]any    `json:"extra_body,omitempty"`
+	APIKey       string            `json:"api_key,omitempty"`
+	PriceInput   float64           `json:"price_input,omitempty"`
+	PriceOutput  float64           `json:"price_output,omitempty"`
+	MaxTokens    int               `json:"max_tokens,omitempty"`
+	Timeout      int               `json:"timeout,omitempty"`
+	Enabled      bool              `json:"enabled,omitempty"`
+	Headers      map[string]string `json:"headers,omitempty"`
+	ExtraBody    map[string]any    `json:"extra_body,omitempty"`
+	ModelAliases map[string]string `json:"model_aliases,omitempty"`
 }
 
 type UpdateProviderRegistryParams struct {
@@ -817,6 +827,60 @@ type UpdateVirtualKeyParams struct {
 	CallbackURL      *string
 	ExpiresAt        **time.Time
 	RevokedAt        **time.Time
+}
+
+type RoleStore interface {
+	CreateRole(ctx context.Context, params CreateRoleParams) (*RoleRecord, error)
+	ListRoles(ctx context.Context, tenantID string, filter RoleFilter) ([]RoleRecord, error)
+	GetRole(ctx context.Context, tenantID string, id string) (*RoleRecord, error)
+	UpdateRole(ctx context.Context, tenantID string, id string, params UpdateRoleParams) (*RoleRecord, error)
+	DeleteRole(ctx context.Context, tenantID string, id string) error
+	ListPermissions(ctx context.Context) ([]PermissionRecord, error)
+	GetRolePermissions(ctx context.Context, roleID string) ([]PermissionRecord, error)
+	SetRolePermissions(ctx context.Context, roleID string, permissionIDs []string) error
+	GetUserRoleIDs(ctx context.Context, userID string) ([]string, error)
+	GetUserPermissions(ctx context.Context, userID string) ([]PermissionRecord, error)
+}
+
+type RoleRecord struct {
+	ID          string
+	TenantID    string
+	Name        string
+	Description string
+	IsSystem    bool
+	Permissions []string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type PermissionRecord struct {
+	ID          string
+	Code        string
+	Name        string
+	Description string
+}
+
+type UserRoleRecord struct {
+	UserID   string
+	RoleID   string
+	TenantID string
+}
+
+type CreateRoleParams struct {
+	TenantID    string
+	Name        string
+	Description string
+	PermissionIDs []string
+}
+
+type UpdateRoleParams struct {
+	Name        *string
+	Description *string
+	PermissionIDs *[]string
+}
+
+type RoleFilter struct {
+	IncludeSystem bool
 }
 
 func IsAdminRole(role string) bool {

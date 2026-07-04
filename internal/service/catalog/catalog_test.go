@@ -35,6 +35,9 @@ func (m *mockStore) GetServiceByPrefix(ctx context.Context, tenantID string, pre
 func (m *mockStore) UpdateService(ctx context.Context, tenantID string, idOrPrefix string, params repository.UpdateServiceParams) (*repository.ServiceRecord, error) {
 	return m.service, nil
 }
+func (m *mockStore) DeleteService(ctx context.Context, tenantID string, idOrPrefix string) error {
+	return nil
+}
 func (m *mockStore) CreateServiceVersion(ctx context.Context, tenantID string, params repository.CreateServiceVersionParams) (*repository.ServiceVersionRecord, error) {
 	return m.version, nil
 }
@@ -276,6 +279,37 @@ func (m *mockStore) ListAuditLogs(ctx context.Context, tenantID string, filter r
 }
 func (m *mockStore) DeleteResponsesOlderThan(ctx context.Context, before time.Time) (int64, error) {
 	return 0, nil
+}
+
+func (m *mockStore) CreateRole(ctx context.Context, params repository.CreateRoleParams) (*repository.RoleRecord, error) {
+	return nil, nil
+}
+func (m *mockStore) ListRoles(ctx context.Context, tenantID string, filter repository.RoleFilter) ([]repository.RoleRecord, error) {
+	return nil, nil
+}
+func (m *mockStore) GetRole(ctx context.Context, tenantID string, id string) (*repository.RoleRecord, error) {
+	return nil, nil
+}
+func (m *mockStore) UpdateRole(ctx context.Context, tenantID string, id string, params repository.UpdateRoleParams) (*repository.RoleRecord, error) {
+	return nil, nil
+}
+func (m *mockStore) DeleteRole(ctx context.Context, tenantID string, id string) error {
+	return nil
+}
+func (m *mockStore) ListPermissions(ctx context.Context) ([]repository.PermissionRecord, error) {
+	return nil, nil
+}
+func (m *mockStore) GetRolePermissions(ctx context.Context, roleID string) ([]repository.PermissionRecord, error) {
+	return nil, nil
+}
+func (m *mockStore) SetRolePermissions(ctx context.Context, roleID string, permissionIDs []string) error {
+	return nil
+}
+func (m *mockStore) GetUserRoleIDs(ctx context.Context, userID string) ([]string, error) {
+	return nil, nil
+}
+func (m *mockStore) GetUserPermissions(ctx context.Context, userID string) ([]repository.PermissionRecord, error) {
+	return nil, nil
 }
 
 func newMockCatalogService(store repository.Store) *Service {

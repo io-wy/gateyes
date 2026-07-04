@@ -196,6 +196,44 @@ WHERE id = ?`, strings.Join(sets, ", "))), args...); err != nil {
 	return s.GetService(ctx, record.TenantID, record.ID)
 }
 
+func (s *Store) DeleteService(ctx context.Context, tenantID string, idOrPrefix string) error {
+	record, err := s.loadService(ctx, tenantID, idOrPrefix)
+	if err != nil {
+		return err
+	}
+
+	tx, err := s.db.Conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin delete service: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, s.db.Rebind(`
+DELETE FROM service_subscriptions
+WHERE service_id = ?`), record.ID); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("delete service subscriptions: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, s.db.Rebind(`
+DELETE FROM service_versions
+WHERE service_id = ?`), record.ID); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("delete service versions: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, s.db.Rebind(`
+DELETE FROM services
+WHERE id = ?`), record.ID); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("delete service: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete service: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) CreateServiceVersion(ctx context.Context, tenantID string, params repository.CreateServiceVersionParams) (*repository.ServiceVersionRecord, error) {
 	service, err := s.loadService(ctx, tenantID, params.ServiceID)
 	if err != nil {

@@ -151,6 +151,20 @@ func (h *AdminHandler) UpdateService(c *gin.Context) {
 	writeOK(c, serviceToResponse(*record))
 }
 
+func (h *AdminHandler) DeleteService(c *gin.Context) {
+	tenantID := h.adminTenantID(c)
+	if err := h.store.DeleteService(c.Request.Context(), tenantID, c.Param("id")); err != nil {
+		if err == repository.ErrNotFound {
+			writeError(c, http.StatusNotFound, CodeServiceNotFound, "service not found")
+			return
+		}
+		writeInternalError(c, err)
+		return
+	}
+	h.recordAudit(c, "service.delete", "service", c.Param("id"), nil)
+	writeOK(c, gin.H{"id": c.Param("id"), "deleted": true})
+}
+
 func (h *AdminHandler) ListServiceVersions(c *gin.Context) {
 	tenantID := h.adminTenantID(c)
 	record, err := h.store.GetService(c.Request.Context(), tenantID, c.Param("id"))

@@ -128,6 +128,56 @@ func TestUpdateService(t *testing.T) {
 	}
 }
 
+func TestDeleteService(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	tenantID, service := seedTenantAndService(t, store)
+
+	// Create a version and subscription to verify cascade cleanup.
+	if _, err := store.CreateServiceVersion(ctx, tenantID, repository.CreateServiceVersionParams{
+		ServiceID: service.ID,
+		Snapshot: repository.ServiceSnapshot{
+			Name:            service.Name,
+			RequestPrefix:   service.RequestPrefix,
+			DefaultProvider: service.DefaultProvider,
+			Enabled:         service.Enabled,
+		},
+	}); err != nil {
+		t.Fatalf("CreateServiceVersion() error: %v", err)
+	}
+	if _, err := store.CreateServiceSubscription(ctx, tenantID, repository.CreateServiceSubscriptionParams{
+		ServiceID:    service.ID,
+		ConsumerName: "consumer-a",
+	}); err != nil {
+		t.Fatalf("CreateServiceSubscription() error: %v", err)
+	}
+
+	if err := store.DeleteService(ctx, tenantID, service.ID); err != nil {
+		t.Fatalf("DeleteService() error: %v", err)
+	}
+
+	if _, err := store.GetService(ctx, tenantID, service.ID); err != repository.ErrNotFound {
+		t.Fatalf("GetService(after delete) error = %v, want %v", err, repository.ErrNotFound)
+	}
+
+	if _, err := store.ListServiceVersions(ctx, tenantID, service.ID); err != repository.ErrNotFound {
+		t.Fatalf("ListServiceVersions(after delete) error = %v, want %v", err, repository.ErrNotFound)
+	}
+
+	subscriptions, err := store.ListServiceSubscriptions(ctx, tenantID, repository.ServiceSubscriptionFilter{ServiceID: service.ID})
+	if err != nil {
+		t.Fatalf("ListServiceSubscriptions() error: %v", err)
+	}
+	if len(subscriptions) != 0 {
+		t.Fatalf("ListServiceSubscriptions() length = %d, want 0", len(subscriptions))
+	}
+
+	if err := store.DeleteService(ctx, tenantID, "nonexistent"); err != repository.ErrNotFound {
+		t.Fatalf("DeleteService(nonexistent) error = %v, want %v", err, repository.ErrNotFound)
+	}
+}
+
 func TestCreateServiceVersion(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
