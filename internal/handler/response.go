@@ -23,6 +23,7 @@ const (
 	CodeInvalidSecret     Code = 40003
 	CodeInvalidVirtualKey Code = 40004
 	CodeExpiredVirtualKey Code = 40005
+	CodeInvalidToken      Code = 40006
 
 	// 401xx 权限与授权
 	CodeInsufficientRole   Code = 40101
@@ -39,6 +40,7 @@ const (
 	CodeAPIKeyNotFound     Code = 40405
 	CodeVirtualKeyNotFound Code = 40406
 	CodeResponseNotFound   Code = 40407
+	CodePluginNotFound     Code = 40408
 
 	// 405xx 业务状态异常
 	CodeServiceNotPublished   Code = 40501

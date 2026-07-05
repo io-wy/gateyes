@@ -56,6 +56,7 @@ test.describe('Gateyes Admin Frontend', () => {
       { name: 'User', heading: 'User 管理' },
       { name: 'Tenant', heading: 'Tenant 管理' },
       { name: 'Service', heading: 'Service 管理' },
+      { name: 'Plugin', heading: 'Plugin 市场' },
       { name: 'Response', heading: '响应记录' },
       { name: 'Audit', heading: '审计日志' },
       { name: 'Settings', heading: '系统设置' },
@@ -144,5 +145,42 @@ test.describe('Gateyes Admin Frontend', () => {
     await page.getByRole('button', { name: '删除', exact: true }).click()
     await expect(page.getByRole('dialog', { name: '确认删除' })).not.toBeVisible()
     await expect(row).not.toBeVisible()
+  })
+
+  test('plugin page renders and can register gRPC plugin', async ({ page, request }) => {
+    const runId = Date.now().toString(36)
+    const pluginName = `e2e-grpc-${runId}`
+
+    await login(page)
+    await page.getByRole('link', { name: 'Plugin' }).click()
+    await expect(page.getByRole('heading', { name: 'Plugin 市场' })).toBeVisible()
+
+    // Register gRPC plugin via form
+    await page.getByRole('button', { name: '注册 gRPC' }).click()
+    await expect(page.getByText('注册 gRPC 插件')).toBeVisible()
+
+    await page.getByLabel('名称 *').fill(pluginName)
+    await page.getByLabel('gRPC 地址 *').fill('localhost:50052')
+
+    // Select phases via badges in the form (scope to '注册 gRPC 插件' section)
+    const formSection = page.locator('h3:has-text("注册 gRPC 插件")').locator('..')
+    await formSection.getByText('post_upstream').click()
+    await formSection.getByText('audit').click()
+
+    await page.getByRole('button', { name: '注册', exact: true }).click()
+
+    // Switch to installed tab to see the new plugin
+    await page.getByRole('button', { name: '已安装' }).click()
+    await expect(page.getByText(pluginName)).toBeVisible({ timeout: 10000 })
+
+    // Toggle enable
+    const row = page.locator('table tbody tr', { hasText: pluginName })
+    await row.getByRole('switch').click()
+
+    // Delete
+    await row.getByRole('button', { name: '删除' }).click()
+    await page.getByRole('button', { name: '删除', exact: true }).click()
+    await expect(page.getByRole('dialog', { name: '确认删除' })).not.toBeVisible()
+    await expect(row).not.toBeVisible({ timeout: 5000 })
   })
 })

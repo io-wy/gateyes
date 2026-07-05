@@ -359,6 +359,22 @@ func (f *fakeIdentityStore) UpdateServiceSubscription(ctx context.Context, tenan
 	return nil, nil
 }
 
+func (f *fakeIdentityStore) ListPlugins(ctx context.Context, tenantID string, filter repository.PluginFilter) ([]repository.PluginRecord, error) {
+	return nil, nil
+}
+func (f *fakeIdentityStore) GetPlugin(ctx context.Context, tenantID string, id string) (*repository.PluginRecord, error) {
+	return nil, nil
+}
+func (f *fakeIdentityStore) CreatePlugin(ctx context.Context, params repository.CreatePluginParams) (*repository.PluginRecord, error) {
+	return nil, nil
+}
+func (f *fakeIdentityStore) UpdatePlugin(ctx context.Context, tenantID string, id string, params repository.UpdatePluginParams) (*repository.PluginRecord, error) {
+	return nil, nil
+}
+func (f *fakeIdentityStore) DeletePlugin(ctx context.Context, tenantID string, id string) error {
+	return nil
+}
+
 func (f *fakeIdentityStore) CreateAuditLog(ctx context.Context, record repository.AuditLogRecord) error {
 	return nil
 }

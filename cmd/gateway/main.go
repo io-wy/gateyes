@@ -229,7 +229,7 @@ func main() {
 		}
 	}
 
-	httpMiddleware := middleware.New(cfg, store, limiterSvc, budgetSvc, alertSvc, metrics)
+	httpMiddleware := middleware.New(cfg, store, limiterSvc, budgetSvc, alertSvc, metrics, redisClient)
 
 	persistBus := eventbus.New(eventbus.Options{
 		Buffer:         cfg.Persistence.BusBuffer,
@@ -255,6 +255,9 @@ func main() {
 		pricingFeed.Start(context.Background())
 		defer pricingFeed.Stop()
 	}
+
+	// Hydrate marketplace plugins from DB on top of static config.
+	cfg.GRPCPlugins, cfg.WASMPlugins = loadMarketplacePlugins(context.Background(), store, defaultTenant.ID, cfg.GRPCPlugins, cfg.WASMPlugins)
 
 	// gRPC plugin manager
 	var grpcMgr *grpcplugin.Manager
@@ -329,6 +332,7 @@ func main() {
 
 	adminHandler := handler.NewAdminHandler(store, providerMgr, catalogSvc, reloader)
 	adminHandler.SetHealthChecker(healthChecker)
+	adminHandler.SetPluginDirectory(cfg.Plugins.Directory)
 	srv := handler.NewServer(cfg.Server, h, adminHandler, httpMiddleware)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -426,6 +430,56 @@ func main() {
 	if pm := httpMiddleware.PluginManager(); pm != nil {
 		pm.Close()
 	}
+}
+
+func loadMarketplacePlugins(
+	ctx context.Context,
+	store repository.Store,
+	tenantID string,
+	grpcCfgs []config.GRPCPluginConfig,
+	wasmCfgs []config.WASMPluginConfig,
+) ([]config.GRPCPluginConfig, []config.WASMPluginConfig) {
+	if tenantID == "" {
+		return grpcCfgs, wasmCfgs
+	}
+
+	plugins, err := store.ListPlugins(ctx, tenantID, repository.PluginFilter{Enabled: boolPtr(true)})
+	if err != nil {
+		slog.Warn("failed to load marketplace plugins", "error", err)
+		return grpcCfgs, wasmCfgs
+	}
+
+	for _, p := range plugins {
+		switch p.Type {
+		case "grpc":
+			if p.Address == "" {
+				continue
+			}
+			grpcCfgs = append(grpcCfgs, config.GRPCPluginConfig{
+				Name:    p.Name,
+				Type:    "gateway",
+				Address: p.Address,
+				Timeout: p.TimeoutMs,
+				Phases:  p.Phases,
+			})
+		case "wasm":
+			if p.FilePath == "" {
+				continue
+			}
+			wasmCfgs = append(wasmCfgs, config.WASMPluginConfig{
+				Name:        p.Name,
+				Path:        p.FilePath,
+				Phases:      p.Phases,
+				TimeoutMs:   p.TimeoutMs,
+				MemoryPages: uint32(p.MemoryPages),
+			})
+		}
+	}
+	return grpcCfgs, wasmCfgs
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }
 
 func redisClientConfig(cfg config.RedisConfig) redispkg.Config {

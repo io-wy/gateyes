@@ -1,9 +1,11 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -83,11 +85,23 @@ func (h *Handler) logRequestFailed(c *gin.Context, surface, providerName string,
 	)
 }
 
+// captureRequestBody reads the raw request body from the gin context and
+// restores it so that ShouldBindJSON can parse it afterwards.
+func captureRequestBody(c *gin.Context) []byte {
+	rawBody, _ := io.ReadAll(c.Request.Body)
+	c.Request.Body = io.NopCloser(bytes.NewReader(rawBody))
+	if len(rawBody) == 0 {
+		rawBody, _ = c.GetRawData()
+	}
+	return rawBody
+}
+
 func (h *Handler) Chat(c *gin.Context) {
 	start := time.Now()
 	defer h.metrics.TrackInFlight(metricsSurfaceChatCompletions)()
 
 	var req provider.ChatCompletionRequest
+	rawBody := captureRequestBody(c)
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.metrics.RecordError(metricsSurfaceChatCompletions, "", metricsResultClientError, "invalid_request")
 		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": err.Error(), "type": "invalid_request_error"}})
@@ -102,6 +116,7 @@ func (h *Handler) Chat(c *gin.Context) {
 	responseReq := provider.ConvertChatRequest(&req)
 	hints := responseSvc.ParseCacheHintsFromHeaders(c.GetHeader)
 	reqCtx := responseSvc.WithCacheHints(c.Request.Context(), hints)
+	reqCtx = responseSvc.WithRawRequestBody(reqCtx, rawBody)
 	if req.Stream {
 		stream, err := h.responses.CreateStream(reqCtx, identity, responseReq, c.GetHeader("X-Session-ID"))
 		if err != nil {
@@ -133,6 +148,7 @@ func (h *Handler) AnthropicMessages(c *gin.Context) {
 	defer h.metrics.TrackInFlight(metricsSurfaceMessages)()
 
 	var req provider.AnthropicMessagesRequest
+	rawBody := captureRequestBody(c)
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.metrics.RecordError(metricsSurfaceMessages, "", metricsResultClientError, "invalid_request")
 		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": err.Error(), "type": "invalid_request_error"}})
@@ -147,6 +163,7 @@ func (h *Handler) AnthropicMessages(c *gin.Context) {
 	responseReq := provider.ConvertAnthropicRequest(&req)
 	hints := responseSvc.ParseCacheHintsFromHeaders(c.GetHeader)
 	reqCtx := responseSvc.WithCacheHints(c.Request.Context(), hints)
+	reqCtx = responseSvc.WithRawRequestBody(reqCtx, rawBody)
 	if req.Stream {
 		stream, err := h.responses.CreateStream(reqCtx, identity, responseReq, c.GetHeader("X-Session-ID"))
 		if err != nil {

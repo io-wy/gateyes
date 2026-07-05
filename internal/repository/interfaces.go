@@ -35,6 +35,7 @@ type Store interface {
 	ProviderRegistryStore
 	ProjectStore
 	ServiceStore
+	PluginStore
 	AuditLogStore
 	VirtualKeyStore
 	RoleStore
@@ -597,6 +598,69 @@ type ServiceFilter struct {
 	ProjectID     string
 	PublishStatus string
 	Enabled       *bool
+}
+
+type PluginRecord struct {
+	ID           string
+	TenantID     string
+	Name         string
+	Type         string
+	Description  string
+	Author       string
+	Phases       []string
+	FilePath     string
+	Address      string
+	TimeoutMs    int
+	MemoryPages  int
+	Enabled      bool
+	Source       string
+	Config       map[string]any
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+type CreatePluginParams struct {
+	TenantID    string
+	Name        string
+	Type        string
+	Description string
+	Author      string
+	Phases      []string
+	FilePath    string
+	Address     string
+	TimeoutMs   int
+	MemoryPages int
+	Enabled     bool
+	Source      string
+	Config      map[string]any
+}
+
+type UpdatePluginParams struct {
+	Name        *string
+	Description *string
+	Author      *string
+	Phases      *[]string
+	FilePath    *string
+	Address     *string
+	TimeoutMs   *int
+	MemoryPages *int
+	Enabled     *bool
+	Source      *string
+	Config      *map[string]any
+}
+
+type PluginFilter struct {
+	Type    string
+	Enabled *bool
+	Source  string
+}
+
+type PluginStore interface {
+	ListPlugins(ctx context.Context, tenantID string, filter PluginFilter) ([]PluginRecord, error)
+	GetPlugin(ctx context.Context, tenantID string, id string) (*PluginRecord, error)
+	CreatePlugin(ctx context.Context, params CreatePluginParams) (*PluginRecord, error)
+	UpdatePlugin(ctx context.Context, tenantID string, id string, params UpdatePluginParams) (*PluginRecord, error)
+	DeletePlugin(ctx context.Context, tenantID string, id string) error
 }
 
 type ServiceSnapshot struct {

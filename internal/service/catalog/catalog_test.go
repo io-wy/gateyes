@@ -68,6 +68,21 @@ func (m *mockStore) GetServiceSubscription(ctx context.Context, tenantID string,
 func (m *mockStore) UpdateServiceSubscription(ctx context.Context, tenantID string, id string, params repository.UpdateServiceSubscriptionParams) (*repository.ServiceSubscriptionRecord, error) {
 	return nil, nil
 }
+func (m *mockStore) ListPlugins(ctx context.Context, tenantID string, filter repository.PluginFilter) ([]repository.PluginRecord, error) {
+	return nil, nil
+}
+func (m *mockStore) GetPlugin(ctx context.Context, tenantID string, id string) (*repository.PluginRecord, error) {
+	return nil, nil
+}
+func (m *mockStore) CreatePlugin(ctx context.Context, params repository.CreatePluginParams) (*repository.PluginRecord, error) {
+	return nil, nil
+}
+func (m *mockStore) UpdatePlugin(ctx context.Context, tenantID string, id string, params repository.UpdatePluginParams) (*repository.PluginRecord, error) {
+	return nil, nil
+}
+func (m *mockStore) DeletePlugin(ctx context.Context, tenantID string, id string) error {
+	return nil
+}
 func (m *mockStore) CreateResponse(ctx context.Context, record repository.ResponseRecord) error {
 	return nil
 }

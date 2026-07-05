@@ -66,6 +66,26 @@ func cloneStringAnyMap(value map[string]any) map[string]any {
 	return cloned
 }
 
+type ctxKeyRawBody struct{}
+
+// WithRawRequestBody attaches the original HTTP request body to the context
+// so that Create / CreateStream can store it instead of the normalized form.
+func WithRawRequestBody(ctx context.Context, raw []byte) context.Context {
+	return context.WithValue(ctx, ctxKeyRawBody{}, raw)
+}
+
+func rawBodyFromContext(ctx context.Context) []byte {
+	if v, ok := ctx.Value(ctxKeyRawBody{}).([]byte); ok {
+		return v
+	}
+	return nil
+}
+
+// RawBodyFromContext extracts the original raw request body from context.
+func RawBodyFromContext(ctx context.Context) []byte {
+	return rawBodyFromContext(ctx)
+}
+
 func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*CreateResult, error) {
 	req.Normalize()
 	createStart := time.Now()
@@ -109,6 +129,9 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 		trace.touch()
 	}
 	requestBody, _ := json.Marshal(req)
+	if raw := rawBodyFromContext(ctx); len(raw) > 0 {
+		requestBody = raw
+	}
 	if err := s.store.CreateResponse(ctx, repository.ResponseRecord{
 		ID:             responseID,
 		TenantID:       identity.TenantID,

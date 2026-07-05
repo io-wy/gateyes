@@ -20,6 +20,7 @@ type AdminHandler struct {
 	catalogSvc         *catalog.Service
 	reloader           *config.Reloader
 	healthChecker      *provider.HealthChecker
+	pluginDir          string
 	startedAt          time.Time
 }
 
@@ -30,12 +31,19 @@ func NewAdminHandler(store repository.Store, providerMgr *provider.Manager, cata
 		providerRuntimeSvc: provider.NewRuntimeRegistryService(store, providerMgr),
 		catalogSvc:         catalogSvc,
 		reloader:           reloader,
+		pluginDir:          "./plugins",
 		startedAt:          time.Now(),
 	}
 }
 
 func (h *AdminHandler) SetHealthChecker(hc *provider.HealthChecker) {
 	h.healthChecker = hc
+}
+
+func (h *AdminHandler) SetPluginDirectory(dir string) {
+	if dir != "" {
+		h.pluginDir = dir
+	}
 }
 
 func (h *AdminHandler) ReloadConfig(c *gin.Context) {

@@ -19,6 +19,10 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 	if err != nil {
 		return nil, nil, err
 	}
+	// Preserve original raw request body from handler context
+	if raw := responseSvc.RawBodyFromContext(ctx); len(raw) > 0 {
+		ctx = responseSvc.WithRawRequestBody(ctx, raw)
+	}
 	result, err := s.responses.Create(ctx, identity, preparedReq, sessionID)
 	if err != nil {
 		return nil, runtime.service, err

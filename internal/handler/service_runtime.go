@@ -9,11 +9,14 @@ import (
 	"github.com/gateyes/gateway/internal/handler/middleware"
 	"github.com/gateyes/gateway/internal/service/catalog"
 	"github.com/gateyes/gateway/internal/service/provider"
+	responseSvc "github.com/gateyes/gateway/internal/service/responses"
 )
 
 func (h *Handler) ServiceResponses(c *gin.Context) {
 	start := time.Now()
 	defer h.metrics.TrackInFlight(metricsSurfaceResponses)()
+
+	rawBody := captureRequestBody(c)
 
 	var req provider.ResponseRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -30,8 +33,9 @@ func (h *Handler) ServiceResponses(c *gin.Context) {
 		return
 	}
 
+	reqCtx := responseSvc.WithRawRequestBody(c.Request.Context(), rawBody)
 	if req.Stream {
-		stream, _, err := h.catalog.CreateStream(c.Request.Context(), identity, c.Param("prefix"), "responses", &req, c.GetHeader("X-Session-ID"))
+		stream, _, err := h.catalog.CreateStream(reqCtx, identity, c.Param("prefix"), "responses", &req, c.GetHeader("X-Session-ID"))
 		if err != nil {
 			h.renderServiceErrorV2(c, metricsSurfaceResponses, "", err)
 			return
@@ -40,7 +44,7 @@ func (h *Handler) ServiceResponses(c *gin.Context) {
 		return
 	}
 
-	result, _, err := h.catalog.Create(c.Request.Context(), identity, c.Param("prefix"), "responses", &req, c.GetHeader("X-Session-ID"))
+	result, _, err := h.catalog.Create(reqCtx, identity, c.Param("prefix"), "responses", &req, c.GetHeader("X-Session-ID"))
 	if err != nil {
 		h.renderServiceErrorV2(c, metricsSurfaceResponses, "", err)
 		return
@@ -54,6 +58,8 @@ func (h *Handler) ServiceResponses(c *gin.Context) {
 func (h *Handler) ServiceChat(c *gin.Context) {
 	start := time.Now()
 	defer h.metrics.TrackInFlight(metricsSurfaceChatCompletions)()
+
+	rawBody := captureRequestBody(c)
 
 	var req provider.ChatCompletionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -69,8 +75,9 @@ func (h *Handler) ServiceChat(c *gin.Context) {
 	}
 
 	responseReq := provider.ConvertChatRequest(&req)
+	reqCtx := responseSvc.WithRawRequestBody(c.Request.Context(), rawBody)
 	if req.Stream {
-		stream, _, err := h.catalog.CreateStream(c.Request.Context(), identity, c.Param("prefix"), "chat", responseReq, c.GetHeader("X-Session-ID"))
+		stream, _, err := h.catalog.CreateStream(reqCtx, identity, c.Param("prefix"), "chat", responseReq, c.GetHeader("X-Session-ID"))
 		if err != nil {
 			h.renderServiceErrorV2(c, metricsSurfaceChatCompletions, "", err)
 			return
@@ -78,7 +85,7 @@ func (h *Handler) ServiceChat(c *gin.Context) {
 		h.streamChatCompatibility(c, stream, req.Model, start)
 		return
 	}
-	result, _, err := h.catalog.Create(c.Request.Context(), identity, c.Param("prefix"), "chat", responseReq, c.GetHeader("X-Session-ID"))
+	result, _, err := h.catalog.Create(reqCtx, identity, c.Param("prefix"), "chat", responseReq, c.GetHeader("X-Session-ID"))
 	if err != nil {
 		h.renderServiceErrorV2(c, metricsSurfaceChatCompletions, "", err)
 		return
@@ -92,6 +99,8 @@ func (h *Handler) ServiceChat(c *gin.Context) {
 func (h *Handler) ServiceMessages(c *gin.Context) {
 	start := time.Now()
 	defer h.metrics.TrackInFlight(metricsSurfaceMessages)()
+
+	rawBody := captureRequestBody(c)
 
 	var req provider.AnthropicMessagesRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -107,8 +116,9 @@ func (h *Handler) ServiceMessages(c *gin.Context) {
 	}
 
 	responseReq := provider.ConvertAnthropicRequest(&req)
+	reqCtx := responseSvc.WithRawRequestBody(c.Request.Context(), rawBody)
 	if req.Stream {
-		stream, _, err := h.catalog.CreateStream(c.Request.Context(), identity, c.Param("prefix"), "messages", responseReq, c.GetHeader("X-Session-ID"))
+		stream, _, err := h.catalog.CreateStream(reqCtx, identity, c.Param("prefix"), "messages", responseReq, c.GetHeader("X-Session-ID"))
 		if err != nil {
 			h.renderServiceErrorV2(c, metricsSurfaceMessages, "", err)
 			return
@@ -116,7 +126,7 @@ func (h *Handler) ServiceMessages(c *gin.Context) {
 		h.streamAnthropicMessages(c, stream, req.Model, start)
 		return
 	}
-	result, _, err := h.catalog.Create(c.Request.Context(), identity, c.Param("prefix"), "messages", responseReq, c.GetHeader("X-Session-ID"))
+	result, _, err := h.catalog.Create(reqCtx, identity, c.Param("prefix"), "messages", responseReq, c.GetHeader("X-Session-ID"))
 	if err != nil {
 		h.renderServiceErrorV2(c, metricsSurfaceMessages, "", err)
 		return
@@ -131,6 +141,8 @@ func (h *Handler) ServiceInvoke(c *gin.Context) {
 	start := time.Now()
 	defer h.metrics.TrackInFlight(metricsSurfaceResponses)()
 
+	rawBody := captureRequestBody(c)
+
 	var req catalog.PromptInvokeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.metrics.RecordError(metricsSurfaceResponses, "", metricsResultClientError, "invalid_request")
@@ -144,8 +156,9 @@ func (h *Handler) ServiceInvoke(c *gin.Context) {
 		return
 	}
 
+	reqCtx := responseSvc.WithRawRequestBody(c.Request.Context(), rawBody)
 	if req.Stream {
-		stream, _, err := h.catalog.CreatePromptInvocationStream(c.Request.Context(), identity, c.Param("prefix"), req, c.GetHeader("X-Session-ID"))
+		stream, _, err := h.catalog.CreatePromptInvocationStream(reqCtx, identity, c.Param("prefix"), req, c.GetHeader("X-Session-ID"))
 		if err != nil {
 			h.renderServiceErrorV2(c, metricsSurfaceResponses, "", err)
 			return
@@ -154,7 +167,7 @@ func (h *Handler) ServiceInvoke(c *gin.Context) {
 		return
 	}
 
-	result, _, err := h.catalog.CreatePromptInvocation(c.Request.Context(), identity, c.Param("prefix"), req, c.GetHeader("X-Session-ID"))
+	result, _, err := h.catalog.CreatePromptInvocation(reqCtx, identity, c.Param("prefix"), req, c.GetHeader("X-Session-ID"))
 	if err != nil {
 		h.renderServiceErrorV2(c, metricsSurfaceResponses, "", err)
 		return

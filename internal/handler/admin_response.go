@@ -95,6 +95,65 @@ func (h *AdminHandler) GetResponseTrace(c *gin.Context) {
 	})
 }
 
+func (h *AdminHandler) GetResponseDetail(c *gin.Context) {
+	tenantID := h.adminTenantID(c)
+	record, err := h.store.GetResponse(c.Request.Context(), tenantID, c.Param("id"))
+	if err != nil {
+		if err == repository.ErrNotFound {
+			writeError(c, http.StatusNotFound, CodeResponseNotFound, "response not found")
+			return
+		}
+		writeInternalError(c, err)
+		return
+	}
+
+	var requestBody any
+	if len(record.RequestBody) > 0 {
+		_ = json.Unmarshal(record.RequestBody, &requestBody)
+	}
+	var responseBody any
+	if len(record.ResponseBody) > 0 {
+		_ = json.Unmarshal(record.ResponseBody, &responseBody)
+	}
+	var trace any
+	if len(record.RouteTraceBody) > 0 {
+		_ = json.Unmarshal(record.RouteTraceBody, &trace)
+	}
+
+	// Use a non-map type so writeJSON wraps it in "data" for the frontend client.
+	writeOK(c, responseDetailResponse{
+		ID:           record.ID,
+		TenantID:     record.TenantID,
+		ProjectID:    record.ProjectID,
+		UserID:       record.UserID,
+		APIKeyID:     record.APIKeyID,
+		ProviderName: record.ProviderName,
+		Model:        record.Model,
+		Status:       record.Status,
+		RequestBody:  requestBody,
+		ResponseBody: responseBody,
+		RouteTrace:   trace,
+		CreatedAt:    record.CreatedAt,
+		UpdatedAt:    record.UpdatedAt,
+	})
+}
+
+type responseDetailResponse struct {
+	ID           string `json:"id"`
+	TenantID     string `json:"tenant_id"`
+	ProjectID    string `json:"project_id"`
+	UserID       string `json:"user_id"`
+	APIKeyID     string `json:"api_key_id"`
+	ProviderName string `json:"provider_name"`
+	Model        string `json:"model"`
+	Status       string `json:"status"`
+	RequestBody  any    `json:"request_body"`
+	ResponseBody any    `json:"response_body"`
+	RouteTrace   any    `json:"route_trace"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
 func responseToResponse(record repository.ResponseRecord) gin.H {
 	return gin.H{
 		"id":            record.ID,

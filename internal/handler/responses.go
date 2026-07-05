@@ -41,6 +41,8 @@ func (h *Handler) handleResponsesCreate(c *gin.Context) {
 	start := time.Now()
 	defer h.metrics.TrackInFlight(metricsSurfaceResponses)()
 
+	rawBody := captureRequestBody(c)
+
 	var req provider.ResponseRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.metrics.RecordError(metricsSurfaceResponses, "", metricsResultClientError, "invalid_request")
@@ -59,6 +61,7 @@ func (h *Handler) handleResponsesCreate(c *gin.Context) {
 
 	hints := responseSvc.ParseCacheHintsFromHeaders(c.GetHeader)
 	reqCtx := responseSvc.WithCacheHints(c.Request.Context(), hints)
+	reqCtx = responseSvc.WithRawRequestBody(reqCtx, rawBody)
 
 	if req.Stream {
 		stream, err := h.responses.CreateStream(reqCtx, identity, &req, c.GetHeader("X-Session-ID"))
