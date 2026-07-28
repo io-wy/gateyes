@@ -101,11 +101,14 @@ func filterFunctionTools(tools []any) []any {
 
 func (p *openAIProvider) toChatCompletionParams(req *ResponseRequest) (openai.ChatCompletionNewParams, error) {
 	params := openai.ChatCompletionNewParams{
-		Model:    openai.ChatModel(req.Model),
+		Model:    openai.ChatModel(p.ResolveModel(req.Model)),
 		Messages: buildChatCompletionMessages(req.InputMessages()),
 	}
 	if maxTokens := req.RequestedMaxTokens(); maxTokens > 0 {
 		params.MaxTokens = openai.Int(int64(maxTokens))
+	}
+	if promptCacheKey := strings.TrimSpace(req.PromptCacheKey); promptCacheKey != "" {
+		params.PromptCacheKey = openai.String(promptCacheKey)
 	}
 	if tools := filterFunctionTools(req.Tools); len(tools) > 0 {
 		body, err := json.Marshal(tools)
@@ -136,13 +139,16 @@ func (p *openAIProvider) toChatCompletionParams(req *ResponseRequest) (openai.Ch
 
 func (p *openAIProvider) toResponseParams(req *ResponseRequest) (oairesponses.ResponseNewParams, error) {
 	params := oairesponses.ResponseNewParams{
-		Model: oairesponses.ResponsesModel(req.Model),
+		Model: oairesponses.ResponsesModel(p.ResolveModel(req.Model)),
 		Input: oairesponses.ResponseNewParamsInputUnion{
 			OfInputItemList: buildOpenAIInput(req.InputMessages()),
 		},
 	}
 	if maxTokens := req.RequestedMaxTokens(); maxTokens > 0 {
 		params.MaxOutputTokens = openai.Int(int64(maxTokens))
+	}
+	if promptCacheKey := strings.TrimSpace(req.PromptCacheKey); promptCacheKey != "" {
+		params.PromptCacheKey = openai.String(promptCacheKey)
 	}
 	if tools := filterFunctionTools(req.Tools); len(tools) > 0 {
 		body, err := json.Marshal(tools)
@@ -273,7 +279,7 @@ func (p *openAIProvider) CreateImageGeneration(ctx context.Context, req *ImageGe
 		model = p.cfg.Model
 	}
 	if model != "" {
-		params.Model = openai.ImageModel(model)
+		params.Model = openai.ImageModel(p.ResolveModel(model))
 	}
 	if req.N > 0 {
 		params.N = openai.Int(int64(req.N))
@@ -362,7 +368,7 @@ func (p *openAIProvider) CreateEmbedding(ctx context.Context, req *EmbeddingRequ
 	}
 
 	params := openai.EmbeddingNewParams{
-		Model: openai.EmbeddingModel(req.Model),
+		Model: openai.EmbeddingModel(p.ResolveModel(req.Model)),
 		Input: inputUnion,
 	}
 

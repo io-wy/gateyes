@@ -90,14 +90,15 @@ func applyCapabilityOverrides(record *repository.ProviderRegistryRecord, caps co
 
 func runtimeConfigFromProviderConfig(cfg config.ProviderConfig) *repository.ProviderRuntimeConfig {
 	return &repository.ProviderRuntimeConfig{
-		APIKey:      cfg.APIKey,
-		PriceInput:  cfg.PriceInput,
-		PriceOutput: cfg.PriceOutput,
-		MaxTokens:   cfg.MaxTokens,
-		Timeout:     cfg.Timeout,
-		Enabled:     cfg.Enabled,
-		Headers:     cfg.Headers,
-		ExtraBody:   cfg.ExtraBody,
+		APIKey:       cfg.APIKey,
+		PriceInput:   cfg.PriceInput,
+		PriceOutput:  cfg.PriceOutput,
+		MaxTokens:    cfg.MaxTokens,
+		Timeout:      cfg.Timeout,
+		Enabled:      cfg.Enabled,
+		Headers:      cfg.Headers,
+		ExtraBody:    cfg.ExtraBody,
+		ModelAliases: cfg.ModelAliases,
 	}
 }
 

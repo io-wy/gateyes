@@ -34,6 +34,8 @@ type Config struct {
 	Plugins        PluginsConfig        `yaml:"plugins"`
 	GRPCPlugins    []GRPCPluginConfig   `yaml:"grpcPlugins"`
 	WASMPlugins    []WASMPluginConfig   `yaml:"wasmPlugins"`
+	RBAC           RBACConfig           `yaml:"rbac"`
+	OIDC           OIDCConfig           `yaml:"oidc"`
 }
 
 // PluginsConfig configures the WASM plugin system.
@@ -116,10 +118,18 @@ type PricingConfig struct {
 // higher-throughput deployments. When BusBuffer fills (saturated workers),
 // the gateway falls back to inline detached goroutines so no billing data
 // is dropped — observe the dropped counter via metrics.
+//
+// If Redis is enabled, the bus can optionally persist events to a Redis
+// Stream for durability across process restarts. See StreamName.
 type PersistenceConfig struct {
-	BusBuffer             int `yaml:"busBuffer"`             // channel capacity, default 10000
-	BusWorkers            int `yaml:"busWorkers"`            // consumer goroutine count, default 8
-	HandlerTimeoutSeconds int `yaml:"handlerTimeoutSeconds"` // per-handler timeout, default 5
+	BusBuffer             int    `yaml:"busBuffer"`             // channel capacity, default 10000
+	BusWorkers            int    `yaml:"busWorkers"`            // consumer goroutine count, default 8
+	HandlerTimeoutSeconds int    `yaml:"handlerTimeoutSeconds"` // per-handler timeout, default 5
+	StreamName            string `yaml:"streamName"`            // redis stream name, default "gateyes:events"
+	ConsumerGroup         string `yaml:"consumerGroup"`         // redis consumer group, default "gateyes"
+	StreamMaxLen          int64  `yaml:"streamMaxLen"`          // max stream length (approx), default 100000
+	ReadBlockSeconds      int    `yaml:"readBlockSeconds"`      // XReadGroup block timeout, default 1
+	ClaimMinIdleSeconds   int    `yaml:"claimMinIdleSeconds"`   // idle before claim, default 60
 }
 
 type RedisConfig struct {
@@ -260,6 +270,9 @@ type ProviderConfig struct {
 	ExtraBody    map[string]any             `yaml:"extraBody"`
 	EnvFile      string                     `yaml:"envFile"`    // 敏感字段外置 .env 文件路径，空则自动尝试 .env1, .env2...
 	MetricsURL   string                     `yaml:"metricsURL"` // optional: Prometheus /metrics endpoint for inference-aware routing (vLLM)
+	// ModelAliases maps incoming model names (e.g. "claude-sonnet-4-6") to
+	// the model name this provider actually accepts (e.g. "deepseek-v4-flash").
+	ModelAliases map[string]string `yaml:"modelAliases"`
 }
 
 type ProviderCapabilitiesConfig struct {
@@ -286,6 +299,22 @@ type AdminConfig struct {
 	DefaultTenant   string `yaml:"defaultTenant"`
 	BootstrapKey    string `yaml:"bootstrapKey"`
 	BootstrapSecret string `yaml:"bootstrapSecret"`
+}
+
+// RBACConfig configures database-backed role-based access control.
+type RBACConfig struct {
+	CacheTTLSeconds int `yaml:"cacheTTLSeconds"` // permission cache TTL, default 300
+}
+
+// OIDCConfig configures enterprise SSO for admin users.
+type OIDCConfig struct {
+	Enabled      bool     `yaml:"enabled"`
+	IssuerURL    string   `yaml:"issuerURL"`
+	ClientID     string   `yaml:"clientID"`
+	ClientSecret string   `yaml:"clientSecret"`
+	RedirectURL  string   `yaml:"redirectURL"`
+	Scopes       []string `yaml:"scopes"`
+	JWTSecret    string   `yaml:"jwtSecret"`
 }
 
 type AlertConfig struct {
@@ -337,13 +366,14 @@ type CircuitBreakerConfig struct {
 }
 
 type CacheConfig struct {
-	Enabled      bool   `yaml:"enabled"`
-	Backend      string `yaml:"backend"`      // "auto" | "memory"; auto = redis if available, else memory
-	DefaultTTL   int    `yaml:"defaultTTL"`   // seconds; 0 = no expiry
-	Capacity     int    `yaml:"capacity"`     // memory cache max entries; <1 = default 1024
-	SkipStream   bool   `yaml:"skipStream"`   // default false
-	SkipTools    bool   `yaml:"skipTools"`    // default true (tools responses are stateful)
-	Singleflight bool   `yaml:"singleflight"` // dedupe concurrent cache misses on same key
+	Enabled       bool   `yaml:"enabled"`
+	Backend       string `yaml:"backend"`       // "auto" | "memory"; auto = redis if available, else memory
+	DefaultTTL    int    `yaml:"defaultTTL"`    // seconds; 0 = no expiry
+	Capacity      int    `yaml:"capacity"`      // memory cache max entries; <1 = default 1024
+	SkipStream    bool   `yaml:"skipStream"`    // default false
+	SkipTools     bool   `yaml:"skipTools"`     // default true (tools responses are stateful)
+	Singleflight  bool   `yaml:"singleflight"`  // dedupe concurrent cache misses on same key
+	PromptRewrite bool   `yaml:"promptRewrite"` // normalize dynamic prompt markers before cache/provider calls
 }
 
 type AffinityConfig struct {
@@ -665,17 +695,23 @@ func DefaultConfig() *Config {
 			HalfOpenMaxRequests: 1,
 		},
 		Cache: CacheConfig{
-			Enabled:    false,
-			Backend:    "auto",
-			DefaultTTL: 0,
-			Capacity:   0,
-			SkipStream: false,
-			SkipTools:  true,
+			Enabled:       false,
+			Backend:       "auto",
+			DefaultTTL:    0,
+			Capacity:      0,
+			SkipStream:    false,
+			SkipTools:     true,
+			PromptRewrite: true,
 		},
 		Persistence: PersistenceConfig{
 			BusBuffer:             10000,
 			BusWorkers:            8,
 			HandlerTimeoutSeconds: 5,
+			StreamName:            "gateyes:events",
+			ConsumerGroup:         "gateyes",
+			StreamMaxLen:          100000,
+			ReadBlockSeconds:      1,
+			ClaimMinIdleSeconds:   60,
 		},
 		Admin: AdminConfig{
 			DefaultTenant:   "default",

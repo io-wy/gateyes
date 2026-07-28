@@ -9,15 +9,51 @@ import (
 )
 
 type baseProvider struct {
-	cfg    config.ProviderConfig
-	client *http.Client
+	cfg          config.ProviderConfig
+	client       *http.Client
+	modelAliases map[string]string
 }
 
 func newBaseProvider(cfg config.ProviderConfig) baseProvider {
-	return baseProvider{
-		cfg:    cfg,
-		client: newProviderHTTPClient(cfg.Timeout),
+	aliases := make(map[string]string, len(cfg.ModelAliases))
+	for k, v := range cfg.ModelAliases {
+		if k != "" && v != "" {
+			aliases[k] = v
+		}
 	}
+	return baseProvider{
+		cfg:          cfg,
+		client:       newProviderHTTPClient(cfg.Timeout),
+		modelAliases: aliases,
+	}
+}
+
+func (p *baseProvider) ResolveModel(requested string) string {
+	return resolveModel(p.modelAliases, requested)
+}
+
+// resolveModel maps an incoming model name to the provider-specific model name
+// using configured aliases. If no alias matches, the requested name is returned.
+// Resolution is bounded to prevent alias cycles; on cycle detection the last
+// resolved name before repetition is returned.
+func resolveModel(aliases map[string]string, requested string) string {
+	if requested == "" || len(aliases) == 0 {
+		return requested
+	}
+	seen := make(map[string]struct{})
+	current := requested
+	for i := 0; i < 5; i++ {
+		if _, ok := seen[current]; ok {
+			break
+		}
+		seen[current] = struct{}{}
+		target, ok := aliases[current]
+		if !ok || target == "" {
+			return current
+		}
+		current = target
+	}
+	return current
 }
 
 func (p *baseProvider) Name() string {

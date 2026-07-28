@@ -85,6 +85,25 @@ func (h *Handler) logRequestFailed(c *gin.Context, surface, providerName string,
 	)
 }
 
+func attachCacheHeaders(c *gin.Context, trace *responseSvc.CacheTrace) {
+	if c == nil || trace == nil || trace.Result == "" {
+		return
+	}
+	c.Header("X-Gateyes-Cache-Result", trace.Result)
+	if trace.Layer != "" {
+		c.Header("X-Gateyes-Cache-Layer", trace.Layer)
+	}
+	if trace.Reason != "" {
+		c.Header("X-Gateyes-Cache-Reason", trace.Reason)
+	}
+	if len(trace.Rewrites) > 0 {
+		c.Header("X-Gateyes-Cache-Rewrites", strings.Join(trace.Rewrites, ","))
+	}
+	if trace.PromptCacheKey != "" {
+		c.Header("X-Gateyes-Prompt-Cache-Key", trace.PromptCacheKey)
+	}
+}
+
 // captureRequestBody reads the raw request body from the gin context and
 // restores it so that ShouldBindJSON can parse it afterwards.
 func captureRequestBody(c *gin.Context) []byte {
@@ -115,14 +134,17 @@ func (h *Handler) Chat(c *gin.Context) {
 
 	responseReq := provider.ConvertChatRequest(&req)
 	hints := responseSvc.ParseCacheHintsFromHeaders(c.GetHeader)
+	cacheTrace := &responseSvc.CacheTrace{}
 	reqCtx := responseSvc.WithCacheHints(c.Request.Context(), hints)
 	reqCtx = responseSvc.WithRawRequestBody(reqCtx, rawBody)
+	reqCtx = responseSvc.WithCacheTrace(reqCtx, cacheTrace)
 	if req.Stream {
 		stream, err := h.responses.CreateStream(reqCtx, identity, responseReq, c.GetHeader("X-Session-ID"))
 		if err != nil {
 			h.renderServiceError(c, metricsSurfaceChatCompletions, "", err)
 			return
 		}
+		attachCacheHeaders(c, cacheTrace)
 		h.streamChatCompatibility(c, stream, req.Model, start)
 		return
 	}
@@ -136,6 +158,7 @@ func (h *Handler) Chat(c *gin.Context) {
 	upstreamLatency := time.Duration(result.LatencyMs) * time.Millisecond
 	h.observeResponseWithUpstream(metricsSurfaceChatCompletions, result.ProviderName, result.Response.Usage, time.Since(start), upstreamLatency, result.Retries, result.Fallback)
 	h.logRequestCompleted(c, metricsSurfaceChatCompletions, result.ProviderName, http.StatusOK, time.Since(start))
+	attachCacheHeaders(c, cacheTrace)
 	c.JSON(http.StatusOK, provider.ConvertResponseToChat(result.Response))
 }
 
@@ -162,14 +185,17 @@ func (h *Handler) AnthropicMessages(c *gin.Context) {
 
 	responseReq := provider.ConvertAnthropicRequest(&req)
 	hints := responseSvc.ParseCacheHintsFromHeaders(c.GetHeader)
+	cacheTrace := &responseSvc.CacheTrace{}
 	reqCtx := responseSvc.WithCacheHints(c.Request.Context(), hints)
 	reqCtx = responseSvc.WithRawRequestBody(reqCtx, rawBody)
+	reqCtx = responseSvc.WithCacheTrace(reqCtx, cacheTrace)
 	if req.Stream {
 		stream, err := h.responses.CreateStream(reqCtx, identity, responseReq, c.GetHeader("X-Session-ID"))
 		if err != nil {
 			h.renderServiceError(c, metricsSurfaceMessages, "", err)
 			return
 		}
+		attachCacheHeaders(c, cacheTrace)
 		h.streamAnthropicMessages(c, stream, req.Model, start)
 		return
 	}
@@ -184,6 +210,7 @@ func (h *Handler) AnthropicMessages(c *gin.Context) {
 	upstreamLatency := time.Duration(result.LatencyMs) * time.Millisecond
 	h.observeResponseWithUpstream(metricsSurfaceMessages, result.ProviderName, result.Response.Usage, time.Since(start), upstreamLatency, result.Retries, result.Fallback)
 	h.logRequestCompleted(c, metricsSurfaceMessages, result.ProviderName, http.StatusOK, time.Since(start))
+	attachCacheHeaders(c, cacheTrace)
 	c.JSON(http.StatusOK, provider.ConvertResponseToAnthropic(result.Response))
 }
 

@@ -98,7 +98,7 @@ func TestE2EFeatures(t *testing.T) {
 	t.Cleanup(limiterSvc.Stop)
 	budgetSvc := budget.New(store)
 	alertSvc := alert.NewAlertService(config.AlertConfig{Enabled: false}, store)
-	mw := middleware.New(nil, store, limiterSvc, budgetSvc, alertSvc, metrics)
+	mw := middleware.New(nil, store, limiterSvc, budgetSvc, alertSvc, metrics, nil)
 	responseService := responseSvc.New(&responseSvc.Dependencies{
 		Config: cfgObj, Store: store, Auth: mw.AuthService(),
 		ProviderMgr: providerMgr, Router: routerSvc, Alert: alertSvc, Limiter: limiterSvc,

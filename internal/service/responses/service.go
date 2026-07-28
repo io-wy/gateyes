@@ -104,7 +104,7 @@ type execution struct {
 }
 
 func New(deps *Dependencies) *Service {
-	return &Service{
+	s := &Service{
 		cfg:            deps.Config,
 		store:          deps.Store,
 		auth:           deps.Auth,
@@ -122,6 +122,10 @@ func New(deps *Dependencies) *Service {
 		drainSem:       make(chan struct{}, 100),
 		persistSem:     make(chan struct{}, 50),
 	}
+	if deps.EventBus != nil {
+		deps.EventBus.RegisterEventHandler(eventbus.EventTypeResponseUpdate, s.handleUpdateResponseEvent)
+	}
+	return s
 }
 
 // SetPluginManager wires an optional gRPC plugin manager.

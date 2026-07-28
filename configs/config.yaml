@@ -90,6 +90,7 @@ cache:
   skipStream: false
   skipTools: true
   singleflight: true
+  promptRewrite: true
 
 providers:
   - name: codexapis
@@ -135,6 +136,10 @@ providers:
     maxTokens: 16384
     timeout: 600
     enabled: true
+    modelAliases:
+      claude-sonnet-4-6: deepseek-v4-flash
+      claude-opus-4-6: deepseek-v4-pro
+      gpt-5.4: deepseek-v4-flash
     capabilities:
       embeddings: false
 

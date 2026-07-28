@@ -199,8 +199,8 @@ func TestAnthropicBuildRequestAndConvertResponseSupportToolUse(t *testing.T) {
 	req.Normalize()
 
 	// Test request building through buildAnthropicParams
-	cfg := config.ProviderConfig{MaxTokens: 256}
-	params, err := buildAnthropicParams(req, cfg)
+	p := newTestAnthropicProvider(t, config.ProviderConfig{MaxTokens: 256})
+	params, err := p.buildAnthropicParams(req)
 	if err != nil {
 		t.Fatalf("buildAnthropicParams error: %v", err)
 	}

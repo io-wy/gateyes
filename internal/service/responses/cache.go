@@ -3,6 +3,7 @@ package responses
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/gateyes/gateway/internal/repository"
@@ -27,22 +28,28 @@ func (s *Service) cacheLayer(stream bool) string {
 }
 
 func (s *Service) shouldSkipCache(ctx context.Context, req *provider.ResponseRequest) bool {
+	skip, _ := s.cacheSkipReason(ctx, req)
+	return skip
+}
+
+func (s *Service) cacheSkipReason(ctx context.Context, req *provider.ResponseRequest) (bool, string) {
 	if s.cache == nil || !s.cfg.Cache.Enabled {
-		return true
+		return true, "disabled"
 	}
 	if s.cfg.Cache.SkipStream && req.Stream {
-		return true
+		return true, "stream_disabled"
 	}
 	if s.cfg.Cache.SkipTools && len(req.Tools) > 0 {
-		return true
+		return true, "tools"
 	}
 	if CacheHintsFrom(ctx).Skip {
-		return true
+		return true, "request_header"
 	}
-	return false
+	return false, ""
 }
 
 func (s *Service) buildCacheKey(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest) string {
+	req = s.applyCachePromptRewrite(ctx, identity, req)
 	msgs := req.InputMessages()
 	payload := map[string]any{
 		"model":    req.Model,
@@ -58,6 +65,12 @@ func (s *Service) buildCacheKey(ctx context.Context, identity *repository.AuthId
 	if len(req.Tools) > 0 {
 		payload["tools"] = req.Tools
 	}
+	if req.OutputFormat != nil {
+		payload["output_format"] = req.OutputFormat
+	}
+	if options := cacheKeyRequestOptions(req.Options); len(options) > 0 {
+		payload["options"] = options
+	}
 	canon, _ := cache.CanonicalizeJSON(payload)
 	return cache.BuildKey(cache.KeyInput{
 		TenantID:    identity.TenantID,
@@ -69,14 +82,38 @@ func (s *Service) buildCacheKey(ctx context.Context, identity *repository.AuthId
 	})
 }
 
+func cacheKeyRequestOptions(options *provider.RequestOptions) map[string]any {
+	if options == nil {
+		return nil
+	}
+	payload := make(map[string]any)
+	if strings.TrimSpace(options.System) != "" {
+		payload["system"] = options.System
+	}
+	if options.Thinking != nil {
+		payload["thinking"] = options.Thinking
+	}
+	if len(options.Raw) > 0 {
+		payload["raw"] = options.Raw
+	}
+	if len(payload) == 0 {
+		return nil
+	}
+	return payload
+}
+
 func (s *Service) lookupCache(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest) (*cache.Entry, bool) {
-	if s.shouldSkipCache(ctx, req) {
+	layer := s.cacheLayer(req.Stream)
+	if skip, reason := s.cacheSkipReason(ctx, req); skip {
+		setCacheTrace(ctx, CacheResultSkip, layer, reason, "")
+		if s.metrics != nil {
+			s.metrics.RecordCacheLookup(layer, CacheResultSkip)
+		}
 		return nil, false
 	}
 	cacheKey := s.buildCacheKey(ctx, identity, req)
 	start := time.Now()
 	entry, hit, err := s.cache.Get(ctx, cacheKey)
-	layer := s.cacheLayer(req.Stream)
 	if s.metrics != nil {
 		s.metrics.ObserveCacheGetDuration(layer, time.Since(start))
 		if hit {
@@ -87,6 +124,13 @@ func (s *Service) lookupCache(ctx context.Context, identity *repository.AuthIden
 		} else {
 			s.metrics.RecordCacheLookup(layer, "miss")
 		}
+	}
+	if hit {
+		setCacheTrace(ctx, CacheResultHit, layer, "", cacheKey)
+	} else if err != nil {
+		setCacheTrace(ctx, CacheResultError, layer, err.Error(), cacheKey)
+	} else {
+		setCacheTrace(ctx, CacheResultMiss, layer, "", cacheKey)
 	}
 	return entry, hit
 }

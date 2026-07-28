@@ -42,6 +42,7 @@ const (
 )
 
 // rolePermissions maps each role to its allowed permissions.
+// Kept as a fallback when the database-backed RBAC service is unavailable.
 var rolePermissions = map[string][]Permission{
 	repository.RoleSuperAdmin: {
 		PermProviderRead, PermProviderWrite,
@@ -69,8 +70,9 @@ var rolePermissions = map[string][]Permission{
 }
 
 // RequirePermission returns a gin middleware that checks whether the
-// authenticated identity has the given permission.
-func RequirePermission(perm Permission) gin.HandlerFunc {
+// authenticated identity has the given permission. It uses the database-backed
+// RBAC service when available, falling back to the legacy hard-coded map.
+func (m *Middleware) RequirePermission(perm Permission) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		identity, ok := Identity(c)
 		if !ok || identity == nil {
@@ -83,8 +85,17 @@ func RequirePermission(perm Permission) gin.HandlerFunc {
 			return
 		}
 
-		perms := rolePermissions[identity.Role]
-		if !slices.Contains(perms, perm) {
+		// Prefer database-backed RBAC; fall back to legacy map on failure.
+		allowed := false
+		if m.rbac != nil && identity.UserID != "" {
+			allowed = m.rbac.HasPermission(c.Request.Context(), identity.UserID, string(perm))
+		}
+		if !allowed {
+			perms := rolePermissions[identity.Role]
+			allowed = slices.Contains(perms, perm)
+		}
+
+		if !allowed {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 				"code":    40101,
 				"success": false,

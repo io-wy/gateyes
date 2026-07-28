@@ -1,6 +1,7 @@
 import { Outlet, Link, useLocation } from '@tanstack/react-router'
 import {
   LayoutDashboard,
+  FlaskConical,
   Server,
   Key,
   KeyRound,
@@ -20,6 +21,7 @@ import { Separator } from '@/components/ui/separator'
 
 const navItems = [
   { name: 'Dashboard', path: '/', icon: LayoutDashboard },
+  { name: 'Playground', path: '/playground', icon: FlaskConical },
   { name: 'Provider', path: '/providers', icon: Server },
   { name: 'API Key', path: '/keys', icon: Key },
   { name: 'Virtual Key', path: '/virtual-keys', icon: KeyRound },

@@ -2,21 +2,27 @@ package middleware
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/auth"
+	"github.com/gateyes/gateway/internal/service/oidc"
 )
 
 type AuthMiddleware struct {
 	auth    *auth.Auth
+	oidcSvc *oidc.Service
+	jwtSvc  *oidc.JWTService
 	metrics MetricsRecorder
 }
 
-func NewAuthMiddleware(store repository.Store, metrics MetricsRecorder) *AuthMiddleware {
+func NewAuthMiddleware(store repository.Store, oidcSvc *oidc.Service, jwtSvc *oidc.JWTService, metrics MetricsRecorder) *AuthMiddleware {
 	return &AuthMiddleware{
 		auth:    auth.NewAuth(store),
+		oidcSvc: oidcSvc,
+		jwtSvc:  jwtSvc,
 		metrics: metrics,
 	}
 }
@@ -79,7 +85,7 @@ func (m *AuthMiddleware) RequireRoles(roles ...string) gin.HandlerFunc {
 	}
 }
 
-// AdminAuth 验证 API Key，返回统一格式 {code, success, message, data}
+// AdminAuth validates either an API Key or a JWT access token for admin routes.
 func (m *AuthMiddleware) AdminAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := ""
@@ -88,6 +94,29 @@ func (m *AuthMiddleware) AdminAuth() gin.HandlerFunc {
 		} else {
 			authHeader = c.GetHeader("Authorization")
 		}
+
+		bearer := strings.TrimPrefix(authHeader, "Bearer ")
+		bearer = strings.TrimSpace(bearer)
+
+		// JWT tokens contain three dot-separated segments and are not API keys.
+		if oidc.IsJWTLike(bearer) && m.jwtSvc != nil {
+			claims, err := m.jwtSvc.VerifyAccessToken(bearer)
+			if err == nil {
+				identity := &repository.AuthIdentity{
+					UserID:   claims.UserID,
+					TenantID: claims.TenantID,
+					Role:     claims.Role,
+				}
+				SetIdentity(c, identity)
+				c.Next()
+				return
+			}
+			recordMiddlewareError(m.metrics, c, metricsResultAuthError, "invalid_jwt")
+			c.JSON(http.StatusUnauthorized, adminErrorResponse(40001, "invalid token"))
+			c.Abort()
+			return
+		}
+
 		key, secret := m.auth.ExtractKey(authHeader)
 		identity, err := m.auth.Authenticate(c.Request.Context(), key, secret)
 		if err != nil {

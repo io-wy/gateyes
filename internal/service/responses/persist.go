@@ -5,9 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/gateyes/gateway/internal/pkg/eventbus"
+	"github.com/gateyes/gateway/internal/pkg/retry"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/alert"
 	"github.com/gateyes/gateway/internal/service/auth"
@@ -66,6 +70,9 @@ func (s *Service) publishOrInline(h func(ctx context.Context)) {
 }
 
 func (s *Service) persistSuccess(ctx context.Context, identity *repository.AuthIdentity, exec *execution, resp *provider.Response, latencyMs int64) error {
+	asyncCtx, asyncCancel := detachedPersistenceContext(ctx)
+	defer asyncCancel()
+
 	providerName := exec.provider.Name()
 	model := exec.requestedModel
 	cost := s.computeCost(exec.provider, exec.requestedModel, resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
@@ -112,7 +119,24 @@ func (s *Service) persistSuccess(ctx context.Context, identity *repository.AuthI
 	identitySnap := *identity
 	alertSvc := s.alert
 
-	s.publishOrInline(func(asyncCtx context.Context) {
+	// Durable event: response status/body update. Survives process restart
+	// when Redis Streams is configured.
+	updatePayload := mustMarshalUpdateResponse(updateResponsePayload{
+		ID:             responseID,
+		TenantID:       tenantID,
+		ProjectID:      projectID,
+		ProviderName:   providerName,
+		Model:          model,
+		Status:         "completed",
+		ResponseBody:   body,
+		RouteTraceBody: traceBytes,
+	})
+	if s.eventBus != nil {
+		s.eventBus.PublishEvent(asyncCtx, eventbus.Event{
+			Type:    eventbus.EventTypeResponseUpdate,
+			Payload: updatePayload,
+		})
+	} else {
 		_ = s.store.UpdateResponse(asyncCtx, repository.ResponseRecord{
 			ID:             responseID,
 			TenantID:       tenantID,
@@ -123,10 +147,13 @@ func (s *Service) persistSuccess(ctx context.Context, identity *repository.AuthI
 			ResponseBody:   body,
 			RouteTraceBody: traceBytes,
 		})
+	}
 
+	// Best-effort alert + callback remain in-memory closures.
+	s.publishOrInline(func(workCtx context.Context) {
 		if alertSvc != nil {
-			alertSvc.CheckQuotaUsage(asyncCtx, &identitySnap)
-			alertSvc.NotifyRequestEvent(asyncCtx, map[string]any{
+			alertSvc.CheckQuotaUsage(workCtx, &identitySnap)
+			alertSvc.NotifyRequestEvent(workCtx, map[string]any{
 				"tenant_id":      tenantID,
 				"project_id":     projectID,
 				"api_key_id":     apiKeyID,
@@ -140,7 +167,7 @@ func (s *Service) persistSuccess(ctx context.Context, identity *repository.AuthI
 		}
 
 		if callbackURL != "" {
-			s.sendCallback(callbackURL, map[string]any{
+			if err := s.sendCallback(callbackURL, map[string]any{
 				"event":          "request.completed",
 				"response_id":    responseID,
 				"tenant_id":      tenantID,
@@ -156,7 +183,13 @@ func (s *Service) persistSuccess(ctx context.Context, identity *repository.AuthI
 					"completion_tokens": completionTokens,
 					"total_tokens":      totalTokens,
 				},
-			})
+			}); err != nil {
+				slog.Error("async callback failed",
+					"response_id", responseID,
+					"callback_url", callbackURL,
+					"error", err,
+				)
+			}
 		}
 	})
 
@@ -431,23 +464,31 @@ func (s *Service) finalizeStream(ctx context.Context, identity *repository.AuthI
 	s.providerMgr.Stats.RecordRequest(providerName, true, resp.Usage.TotalTokens, latencyMs)
 
 	if identity.CallbackURL != "" {
-		go s.sendCallback(identity.CallbackURL, map[string]any{
-			"event":          "request.completed",
-			"response_id":    responseID,
-			"tenant_id":      identity.TenantID,
-			"api_key_id":     identity.APIKeyID,
-			"virtual_key_id": identity.VirtualKeyID,
-			"provider_name":  providerName,
-			"model":          model,
-			"status":         "success",
-			"latency_ms":     latencyMs,
-			"cost_usd":       cost,
-			"usage": map[string]any{
-				"prompt_tokens":     resp.Usage.PromptTokens,
-				"completion_tokens": resp.Usage.CompletionTokens,
-				"total_tokens":      resp.Usage.TotalTokens,
-			},
-		})
+		go func() {
+			if err := s.sendCallback(identity.CallbackURL, map[string]any{
+				"event":          "request.completed",
+				"response_id":    responseID,
+				"tenant_id":      identity.TenantID,
+				"api_key_id":     identity.APIKeyID,
+				"virtual_key_id": identity.VirtualKeyID,
+				"provider_name":  providerName,
+				"model":          model,
+				"status":         "success",
+				"latency_ms":     latencyMs,
+				"cost_usd":       cost,
+				"usage": map[string]any{
+					"prompt_tokens":     resp.Usage.PromptTokens,
+					"completion_tokens": resp.Usage.CompletionTokens,
+					"total_tokens":      resp.Usage.TotalTokens,
+				},
+			}); err != nil {
+				slog.Error("streaming callback failed",
+					"response_id", responseID,
+					"callback_url", identity.CallbackURL,
+					"error", err,
+				)
+			}
+		}()
 	}
 
 	if emitOutputs {
@@ -546,9 +587,9 @@ func (s *Service) handleStreamCancellation(ctx context.Context, identity *reposi
 	s.providerMgr.Stats.RecordRequest(currentProvider.Name(), false, resp.Usage.TotalTokens, latencyMs)
 }
 
-func (s *Service) sendCallback(url string, payload map[string]any) {
+func (s *Service) sendCallback(url string, payload map[string]any) error {
 	if url == "" {
-		return
+		return nil
 	}
 	body, _ := json.Marshal(payload)
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
@@ -556,7 +597,57 @@ func (s *Service) sendCallback(url string, payload map[string]any) {
 	client := &http.Client{Timeout: defaultCallbackTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
-		return
+		return err
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusBadRequest {
+		return fmt.Errorf("callback returned status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+type updateResponsePayload struct {
+	ID             string `json:"id"`
+	TenantID       string `json:"tenant_id"`
+	ProjectID      string `json:"project_id"`
+	ProviderName   string `json:"provider_name"`
+	Model          string `json:"model"`
+	Status         string `json:"status"`
+	ResponseBody   []byte `json:"response_body"`
+	RouteTraceBody []byte `json:"route_trace_body"`
+}
+
+func mustMarshalUpdateResponse(p updateResponsePayload) []byte {
+	b, err := json.Marshal(p)
+	if err != nil {
+		panic(fmt.Sprintf("marshal updateResponsePayload: %v", err))
+	}
+	return b
+}
+
+func (s *Service) handleUpdateResponseEvent(ctx context.Context, payload []byte) error {
+	var p updateResponsePayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return fmt.Errorf("unmarshal response:update payload: %w", err)
+	}
+	err := retry.Do(ctx, 3, 50*time.Millisecond, func() error {
+		return s.store.UpdateResponse(ctx, repository.ResponseRecord{
+			ID:             p.ID,
+			TenantID:       p.TenantID,
+			ProjectID:      p.ProjectID,
+			ProviderName:   p.ProviderName,
+			Model:          p.Model,
+			Status:         p.Status,
+			ResponseBody:   p.ResponseBody,
+			RouteTraceBody: p.RouteTraceBody,
+		})
+	})
+	if err != nil {
+		slog.Error("async UpdateResponse failed",
+			"response_id", p.ID,
+			"tenant_id", p.TenantID,
+			"error", err,
+		)
+	}
+	return err
 }

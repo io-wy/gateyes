@@ -2,15 +2,14 @@
 
 本文档描述 Gateyes 当前的监控出口、Prometheus 指标口径、request correlation，以及 Prometheus / Grafana 基线资产。
 
-当前实现只使用仓库内已有技术：
+当前实现使用仓库内已有技术：
 
 - `Gin`
 - `prometheus/client_golang`
 - `promauto`
 - `promhttp`
 - `slog`
-
-不包含 OpenTelemetry trace backend 或外部 APM SDK。
+- OpenTelemetry propagation / OTLP exporter
 
 ## 1. 暴露方式
 
@@ -55,11 +54,28 @@ metrics:
 | `gateway_llm_active_streams` | `surface` | 当前活跃流数 |
 | `gateway_llm_stream_duration_seconds` | `surface,provider,result` | 流式总持续时间 |
 | `gateway_llm_tokens_total` | `provider,token_type` | `prompt/completion/cached/total` token 计数 |
+| `gateway_llm_prompt_cache_ratio` | `provider` | 上游返回的 cached prompt token 比例 |
 | `gateway_llm_errors_total` | `surface,provider,error_class` | 更细粒度错误分类 |
 | `gateway_llm_retries_total` | `provider` | retry 总数 |
 | `gateway_llm_fallbacks_total` | `provider` | fallback 总数 |
 | `gateway_provider_requests_total` | `provider,result` | provider 维度请求数 |
 | `gateway_provider_circuit_state` | `tenant_id,provider` | circuit breaker 状态 |
+| `gateway_provider_current_load` | `provider` | provider 当前并发负载 |
+| `gateway_provider_tpm` | `provider` | provider token throughput |
+| `gateway_provider_health_status` | `provider` | provider 健康状态 |
+| `gateway_provider_gpu_cache_usage_ratio` | `provider` | vLLM GPU KV cache 占用率 |
+| `gateway_provider_cpu_cache_usage_ratio` | `provider` | vLLM CPU KV cache 占用率 |
+| `gateway_provider_prefix_cache_hit_rate_ratio` | `provider` | vLLM prefix cache 命中率 |
+| `gateway_provider_prefix_cache_queries` | `provider` | vLLM prefix cache 查询数 |
+| `gateway_provider_prefix_cache_hits` | `provider` | vLLM prefix cache 命中数 |
+| `gateway_cache_lookups_total` | `layer,result` | L1 cache lookup 次数 |
+| `gateway_cache_writes_total` | `layer,result` | L1 cache write 次数 |
+| `gateway_cache_value_size_bytes` | `layer` | cache value size 分布 |
+| `gateway_cache_get_duration_seconds` | `layer` | cache lookup 延迟 |
+| `gateway_eventbus_dropped_total` | - | 异步事件队列丢弃次数 |
+| `gateway_eventbus_processed_total` | - | 异步事件 handler 执行次数 |
+| `gateway_eventbus_panics_total` | - | 异步事件 handler panic 次数 |
+| `gateway_eventbus_queue_size` | - | 异步事件队列长度 |
 
 ### Ingress 维度指标
 
@@ -78,6 +94,8 @@ metrics:
 - `responses`
 - `chat_completions`
 - `messages`
+- `embeddings`
+- `images`
 - `models`
 - `admin`
 
@@ -152,6 +170,21 @@ provider="none"
 - `gateway_llm_active_streams`
 - `gateway_llm_time_to_first_token_seconds`
 - `gateway_llm_stream_duration_seconds`
+
+### Cache
+
+缓存路径会额外记录：
+
+- L1 lookup / write 命中、miss、error、skip
+- cache value size
+- cache lookup latency
+- provider 侧 cached prompt tokens 和 cached/prompt ratio
+
+Admin API 通过 `GET /admin/v1/cache/summary` 输出 lookup、hit rate、平均 lookup latency、平均 value size，前端 Dashboard 使用该接口展示缓存收益。
+
+### Tracing
+
+`internal/handler/middleware/otel.go` 会提取 W3C `traceparent` 并创建 HTTP span。`tracing.exporter=otlp` 时由 `internal/pkg/trace` 初始化 OTLP exporter。
 
 ## 4. 推荐 Prometheus 查询
 

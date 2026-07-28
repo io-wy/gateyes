@@ -71,7 +71,7 @@
               "text/plain": {
                 "schema": {
                   "type": "string",
-                  "example": "# HELP gateway_requests_total Total requests\ngateway_requests_total 15234"
+                  "example": "# HELP gateway_llm_requests_total Total LLM requests\ngateway_llm_requests_total{surface=\"responses\",result=\"success\",provider=\"openai\"} 15234"
                 }
               }
             }

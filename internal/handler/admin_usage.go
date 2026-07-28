@@ -1,47 +1,54 @@
 package handler
 
 import (
-	"github.com/gateyes/gateway/internal/handler/middleware"
-	"github.com/gateyes/gateway/internal/repository"
-	"github.com/gin-gonic/gin"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/gateyes/gateway/internal/handler/middleware"
+	"github.com/gateyes/gateway/internal/repository"
+	"github.com/gateyes/gateway/internal/service/provider"
+	"github.com/gin-gonic/gin"
 )
+
+type DashboardSummary struct {
+	TotalRequests   int64   `json:"totalRequests"`
+	SuccessRate     float64 `json:"successRate"`
+	AvgLatencyMs    float64 `json:"avgLatencyMs"`
+	ActiveProviders int     `json:"activeProviders"`
+	HealthyBudgets  int     `json:"healthyBudgets"`
+	TotalBudgets    int     `json:"totalBudgets"`
+}
 
 func (h *AdminHandler) Dashboard(c *gin.Context) {
 	tenantID := h.adminTenantID(c)
 
-	userStats, err := h.store.Stats(c.Request.Context(), tenantID)
-	if err != nil {
-		writeInternalError(c, err)
-		return
-	}
 	usageStats, err := h.store.GetUsageSummary(c.Request.Context(), tenantID)
 	if err != nil {
 		writeInternalError(c, err)
 		return
 	}
 
-	writeOK(c, gin.H{
-		"providers": gin.H{
-			"list":             h.providerResponses(c, tenantID),
-			"total_requests":   usageStats.TotalRequests,
-			"success_requests": usageStats.SuccessRequests,
-			"failed_requests":  usageStats.FailedRequests,
-			"total_tokens":     usageStats.TotalTokens,
-			"total_cost_usd":   usageStats.TotalCostUSD,
-			"avg_latency_ms":   usageStats.AvgLatencyMs,
-			"error_rate":       errorRate(usageStats.TotalRequests, usageStats.FailedRequests),
-		},
-		"users": gin.H{
-			"total_users":   userStats.TotalUsers,
-			"active_users":  userStats.ActiveUsers,
-			"total_quota":   userStats.TotalQuota,
-			"total_used":    userStats.TotalUsed,
-			"usage_percent": usagePercent(userStats),
-		},
-		"uptime": time.Since(h.startedAt).String(),
+	providers := h.providerResponses(c, tenantID)
+	activeProviders := 0
+	for _, p := range providers {
+		if status, ok := p["status"].(string); ok && status == provider.ProviderHealthHealthy {
+			activeProviders++
+		}
+	}
+
+	var successRate float64
+	if usageStats.TotalRequests > 0 {
+		successRate = float64(usageStats.SuccessRequests) / float64(usageStats.TotalRequests)
+	}
+
+	writeOK(c, DashboardSummary{
+		TotalRequests:   usageStats.TotalRequests,
+		SuccessRate:     successRate,
+		AvgLatencyMs:    usageStats.AvgLatencyMs,
+		ActiveProviders: activeProviders,
+		HealthyBudgets:  0,
+		TotalBudgets:    0,
 	})
 }
 

@@ -12,7 +12,7 @@ services:
       - GATEYES_CONFIG_PATH=/app/configs/config.yaml
     command: ["-config", "/app/configs/config.yaml"]
     ports:
-      - "8083:8083"
+      - "8028:8028"
     volumes:
       - ./configs/config.yaml:/app/configs/config.yaml:ro
     depends_on:
@@ -21,7 +21,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8083/ready >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8028/ready >/dev/null 2>&1"]
       interval: 15s
       timeout: 5s
       retries: 5

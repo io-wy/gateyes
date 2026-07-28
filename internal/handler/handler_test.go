@@ -442,7 +442,7 @@ func newHandlerTestEnv(t *testing.T, cfg handlerTestEnvConfig) *handlerTestEnv {
 	})
 	t.Cleanup(limiterSvc.Stop)
 	budgetSvc := budget.New(store)
-	mw := middleware.New(nil, store, limiterSvc, budgetSvc, nil, metrics)
+	mw := middleware.New(nil, store, limiterSvc, budgetSvc, nil, metrics, nil)
 	responseService := responseSvc.New(&responseSvc.Dependencies{
 		Config:      cfgObj,
 		Store:       store,

@@ -36,6 +36,9 @@ func New(database *db.DB) *Store {
 
 func (s *Store) SetEventBus(bus *eventbus.Bus) {
 	s.eventBus = bus
+	if bus != nil {
+		bus.RegisterEventHandler(eventbus.EventTypeResponseDetails, s.handleResponseDetailsEvent)
+	}
 }
 
 func (s *Store) SetRedis(rdb *redis.Client) {

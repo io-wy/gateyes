@@ -65,15 +65,20 @@ test_doc/
 temp.md
 *.tmp
 *.log
+.playwright-mcp/
+web/.playwright-mcp/
+web/test-results/
+web/tmp/
+web/dist/
+/gateyes-*.png
+/web/gateyes-*.png
 
 # Go workspace/vendor state
 vendor/
 go.work
 go.work.sum
 
-# Documentation cache; keep docs-tmp metadata and migrated design notes
+# Documentation cache; keep docs-tmp metadata only
 /docs/docs-tmp/*
 !/docs/docs-tmp/.gitignore
 !/docs/docs-tmp/README.md
-!/docs/docs-tmp/design/
-!/docs/docs-tmp/design/**

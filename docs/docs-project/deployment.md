@@ -16,26 +16,26 @@ cp .env.example .env
 docker compose up --build -d
 
 # 4. 验证
-curl http://127.0.0.1:8083/health
+curl http://127.0.0.1:8028/health
 ```
 
 ### 首次使用
 
 ```bash
 # 1. 创建租户
-curl -X POST http://127.0.0.1:8083/admin/tenants \
+curl -X POST http://127.0.0.1:8028/admin/v1/tenants \
   -H "Authorization: Bearer admin-key-001:admin-secret-001" \
   -H "Content-Type: application/json" \
   -d '{"slug":"my-team","name":"My Team"}'
 
 # 2. 创建用户（返回 api_key 和 api_secret）
-curl -X POST http://127.0.0.1:8083/admin/users \
+curl -X POST http://127.0.0.1:8028/admin/v1/users \
   -H "Authorization: Bearer admin-key-001:admin-secret-001" \
   -H "Content-Type: application/json" \
-  -d '{"name":"alice","role":"tenant_user"}'
+  -d '{"tenant_id":"<tenant_id>","name":"alice","role":"tenant_user"}'
 
 # 3. 用返回的凭据请求
-curl -X POST http://127.0.0.1:8083/v1/chat/completions \
+curl -X POST http://127.0.0.1:8028/v1/chat/completions \
   -H "Authorization: Bearer <api_key>:<api_secret>" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}'
@@ -57,7 +57,7 @@ docker compose up --build
 
 Exposed endpoints:
 
-1. Gateway: `http://127.0.0.1:8083`
+1. Gateway: `http://127.0.0.1:8028`
 2. Prometheus: `http://127.0.0.1:9090`
 3. Grafana: `http://127.0.0.1:3000`
 4. Redis: `localhost:6379`

@@ -474,7 +474,7 @@ func newGatewayE2EEnv(t *testing.T) *gatewayE2EEnv {
 	})
 	t.Cleanup(limiterSvc.Stop)
 	budgetSvc := budget.New(store)
-	mw := middleware.New(nil, store, limiterSvc, budgetSvc, nil, metrics)
+	mw := middleware.New(nil, store, limiterSvc, budgetSvc, nil, metrics, nil)
 	responseService := responseSvc.New(&responseSvc.Dependencies{
 		Config:      cfgObj,
 		Store:       store,

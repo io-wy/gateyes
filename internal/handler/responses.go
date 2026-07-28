@@ -60,8 +60,10 @@ func (h *Handler) handleResponsesCreate(c *gin.Context) {
 	}
 
 	hints := responseSvc.ParseCacheHintsFromHeaders(c.GetHeader)
+	cacheTrace := &responseSvc.CacheTrace{}
 	reqCtx := responseSvc.WithCacheHints(c.Request.Context(), hints)
 	reqCtx = responseSvc.WithRawRequestBody(reqCtx, rawBody)
+	reqCtx = responseSvc.WithCacheTrace(reqCtx, cacheTrace)
 
 	if req.Stream {
 		stream, err := h.responses.CreateStream(reqCtx, identity, &req, c.GetHeader("X-Session-ID"))
@@ -69,6 +71,7 @@ func (h *Handler) handleResponsesCreate(c *gin.Context) {
 			h.renderServiceError(c, metricsSurfaceResponses, "", err)
 			return
 		}
+		attachCacheHeaders(c, cacheTrace)
 		h.streamResponses(c, stream, req.Model, start)
 		return
 	}
@@ -83,6 +86,7 @@ func (h *Handler) handleResponsesCreate(c *gin.Context) {
 	upstreamLatency := time.Duration(result.LatencyMs) * time.Millisecond
 	h.observeResponseWithUpstream(metricsSurfaceResponses, result.ProviderName, result.Response.Usage, time.Since(start), upstreamLatency, result.Retries, result.Fallback)
 	h.logRequestCompleted(c, metricsSurfaceResponses, result.ProviderName, http.StatusOK, time.Since(start))
+	attachCacheHeaders(c, cacheTrace)
 	c.JSON(http.StatusOK, result.Response)
 }
 

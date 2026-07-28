@@ -22,8 +22,8 @@ WORKDIR /app
 COPY --from=builder /out/gateway /app/gateway
 COPY --from=builder /out/gateway-migrate /app/gateway-migrate
 COPY configs /app/configs
-COPY docs/openapi.json /app/docs/openapi.json
+COPY docs/docs-project/assets/openapi.json /app/docs/openapi.json
 
-EXPOSE 8083
+EXPOSE 8028
 ENTRYPOINT ["/app/gateway"]
 CMD ["-config", "/app/configs/config.example.yaml"]

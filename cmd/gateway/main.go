@@ -235,8 +235,16 @@ func main() {
 		Buffer:         cfg.Persistence.BusBuffer,
 		Workers:        cfg.Persistence.BusWorkers,
 		HandlerTimeout: time.Duration(cfg.Persistence.HandlerTimeoutSeconds) * time.Second,
+		Metrics:        metrics,
+		Stream: eventbus.StreamOptions{
+			Redis:         redisClient,
+			StreamName:    cfg.Persistence.StreamName,
+			ConsumerGroup: cfg.Persistence.ConsumerGroup,
+			MaxLen:        cfg.Persistence.StreamMaxLen,
+			ReadBlock:     time.Duration(cfg.Persistence.ReadBlockSeconds) * time.Second,
+			ClaimMinIdle:  time.Duration(cfg.Persistence.ClaimMinIdleSeconds) * time.Second,
+		},
 	})
-	persistBus.Start(context.Background())
 	store.SetEventBus(persistBus)
 
 	guardrails := buildGuardrails(cfg.Guardrails)
@@ -331,8 +339,13 @@ func main() {
 	})
 
 	adminHandler := handler.NewAdminHandler(store, providerMgr, catalogSvc, reloader)
+	adminHandler.SetMetrics(metrics)
 	adminHandler.SetHealthChecker(healthChecker)
 	adminHandler.SetPluginDirectory(cfg.Plugins.Directory)
+
+	// Start the event bus after all handlers have registered.
+	persistBus.Start(context.Background())
+
 	srv := handler.NewServer(cfg.Server, h, adminHandler, httpMiddleware)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

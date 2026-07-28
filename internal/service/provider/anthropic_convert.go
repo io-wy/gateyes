@@ -8,8 +8,6 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
-
-	"github.com/gateyes/gateway/internal/app/config"
 )
 
 func buildAnthropicStreamResponse(id, model string, outputs []ResponseOutput, promptTokens, completionTokens int) *Response {
@@ -338,10 +336,10 @@ func applySDKContentBlockToState(state *anthropicStreamState, block anthropic.Co
 
 // --- Request builders ---
 
-func buildAnthropicParams(req *ResponseRequest, cfg config.ProviderConfig) (anthropic.MessageNewParams, error) {
+func (p *anthropicProvider) buildAnthropicParams(req *ResponseRequest) (anthropic.MessageNewParams, error) {
 	maxTokens := req.RequestedMaxTokens()
 	if maxTokens == 0 {
-		maxTokens = cfg.MaxTokens
+		maxTokens = p.cfg.MaxTokens
 	}
 	if maxTokens == 0 {
 		maxTokens = 1024
@@ -350,7 +348,7 @@ func buildAnthropicParams(req *ResponseRequest, cfg config.ProviderConfig) (anth
 	messages, system, _ := buildAnthropicMessages(req.InputMessages())
 
 	params := anthropic.MessageNewParams{
-		Model:     anthropic.Model(req.Model),
+		Model:     anthropic.Model(p.ResolveModel(req.Model)),
 		MaxTokens: int64(maxTokens),
 		Messages:  messages,
 	}
@@ -407,7 +405,7 @@ func buildAnthropicParams(req *ResponseRequest, cfg config.ProviderConfig) (anth
 		}
 	}
 
-	extraBody := buildExtraBody(cfg)
+	extraBody := buildExtraBody(p.cfg)
 	if err := mergeExtraBody(&params, extraBody); err != nil {
 		return anthropic.MessageNewParams{}, fmt.Errorf("merge extra body: %w", err)
 	}

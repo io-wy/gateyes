@@ -102,6 +102,9 @@ providers:
     maxTokens: 16384
     timeout: 60
     enabled: true
+    modelAliases:
+      claude-sonnet-4-6: LongCat-Flash-Chat
+      claude-opus-4-6: LongCat-Flash-Chat
     capabilities:
       embeddings: false
 
@@ -180,3 +183,18 @@ admin:
   defaultTenant: default
   bootstrapKey: admin-key-001
   bootstrapSecret: ${GATEYES_ADMIN_BOOTSTRAP_SECRET}
+
+rbac:
+  cacheTTLSeconds: 300
+
+oidc:
+  enabled: false
+  issuerURL: "https://accounts.google.com"
+  clientID: "${GOOGLE_CLIENT_ID}"
+  clientSecret: "${GOOGLE_CLIENT_SECRET}"
+  redirectURL: "https://gateyes.example.com/admin/auth/callback"
+  scopes:
+    - openid
+    - email
+    - profile
+  jwtSecret: "${GATEYES_JWT_SECRET}"

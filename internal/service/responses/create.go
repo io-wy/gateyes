@@ -28,6 +28,7 @@ func buildUpstreamRequest(req *provider.ResponseRequest) *provider.ResponseReque
 		MaxOutputTokens:   req.MaxOutputTokens,
 		MaxTokens:         req.MaxTokens,
 		Tools:             req.Tools,
+		PromptCacheKey:    req.PromptCacheKey,
 		OutputFormat:      cloneOutputFormat(req.OutputFormat),
 		Options:           provider.CloneRequestOptions(req.Options),
 	}
@@ -100,6 +101,7 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 			req = pre.Request
 		}
 	}
+	req = s.applyCachePromptRewrite(ctx, identity, req)
 
 	// L1 cache fast path
 	if entry, hit := s.lookupCache(ctx, identity, req); hit {
@@ -115,6 +117,7 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 				Fallback:         0,
 			}, nil
 		}
+		setCacheTrace(ctx, CacheResultError, s.cacheLayer(req.Stream), "invalid_cached_entry", s.buildCacheKey(ctx, identity, req))
 	}
 
 	candidates, trace := s.planCandidates(ctx, identity, sessionID, req)

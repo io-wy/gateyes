@@ -34,8 +34,18 @@ func TestBuildAnthropicTextBlockBranches(t *testing.T) {
 	}
 }
 
+func newTestAnthropicProvider(t *testing.T, cfg config.ProviderConfig) *anthropicProvider {
+	t.Helper()
+	cfg.Name = firstNonEmpty(cfg.Name, "test-anthropic")
+	cfg.Type = firstNonEmpty(cfg.Type, "anthropic")
+	cfg.BaseURL = firstNonEmpty(cfg.BaseURL, "http://localhost")
+	cfg.APIKey = firstNonEmpty(cfg.APIKey, "test-key")
+	return NewAnthropicProvider(cfg).(*anthropicProvider)
+}
+
 func TestBuildAnthropicParams(t *testing.T) {
-	params, err := buildAnthropicParams(&ResponseRequest{
+	p := newTestAnthropicProvider(t, config.ProviderConfig{MaxTokens: 128})
+	params, err := p.buildAnthropicParams(&ResponseRequest{
 		Model: "claude-public",
 		Messages: []Message{
 			{Role: "developer", Content: TextBlocks("dev sys")},
@@ -54,7 +64,7 @@ func TestBuildAnthropicParams(t *testing.T) {
 				},
 			},
 		},
-	}, config.ProviderConfig{MaxTokens: 128})
+	})
 	if err != nil {
 		t.Fatalf("buildAnthropicParams() error: %v", err)
 	}
@@ -72,10 +82,11 @@ func TestBuildAnthropicParams(t *testing.T) {
 	}
 
 	// Test default max_tokens
-	params2, err := buildAnthropicParams(&ResponseRequest{
+	p2 := newTestAnthropicProvider(t, config.ProviderConfig{})
+	params2, err := p2.buildAnthropicParams(&ResponseRequest{
 		Model:    "claude-public",
 		Messages: []Message{{Role: "user", Content: TextBlocks("hello")}},
-	}, config.ProviderConfig{})
+	})
 	if err != nil {
 		t.Fatalf("buildAnthropicParams(default tokens) error: %v", err)
 	}
@@ -85,7 +96,8 @@ func TestBuildAnthropicParams(t *testing.T) {
 }
 
 func TestBuildAnthropicParamsWithOptions(t *testing.T) {
-	params, err := buildAnthropicParams(&ResponseRequest{
+	p := newTestAnthropicProvider(t, config.ProviderConfig{MaxTokens: 256})
+	params, err := p.buildAnthropicParams(&ResponseRequest{
 		Model: "claude-public",
 		Messages: []Message{{
 			Role:    "user",
@@ -101,7 +113,7 @@ func TestBuildAnthropicParamsWithOptions(t *testing.T) {
 				"metadata": map[string]any{"suite": "regression"},
 			},
 		},
-	}, config.ProviderConfig{MaxTokens: 256})
+	})
 	if err != nil {
 		t.Fatalf("buildAnthropicParams(options) error: %v", err)
 	}
@@ -110,6 +122,25 @@ func TestBuildAnthropicParamsWithOptions(t *testing.T) {
 	}
 	if params.Thinking.OfEnabled == nil || params.Thinking.OfEnabled.BudgetTokens != 32 {
 		t.Fatalf("buildAnthropicParams(options) thinking = %+v, want enabled budget 32", params.Thinking)
+	}
+}
+
+func TestBuildAnthropicParamsModelAlias(t *testing.T) {
+	p := newTestAnthropicProvider(t, config.ProviderConfig{
+		MaxTokens: 128,
+		ModelAliases: map[string]string{
+			"claude-public": "claude-3-5-sonnet-20241022",
+		},
+	})
+	params, err := p.buildAnthropicParams(&ResponseRequest{
+		Model:    "claude-public",
+		Messages: []Message{{Role: "user", Content: TextBlocks("hello")}},
+	})
+	if err != nil {
+		t.Fatalf("buildAnthropicParams() error: %v", err)
+	}
+	if params.Model != "claude-3-5-sonnet-20241022" {
+		t.Fatalf("buildAnthropicParams() model = %q, want claude-3-5-sonnet-20241022", params.Model)
 	}
 }
 
@@ -131,19 +162,20 @@ func TestBuildAnthropicThinkingParam(t *testing.T) {
 }
 
 func TestBuildAnthropicParamsWithVendorProfile(t *testing.T) {
-	params, err := buildAnthropicParams(&ResponseRequest{
-		Model: "MiniMax-M2.5",
-		Messages: []Message{{
-			Role:    "user",
-			Content: TextBlocks("hello"),
-		}},
-	}, config.ProviderConfig{
+	p := newTestAnthropicProvider(t, config.ProviderConfig{
 		Vendor:    "minimax",
 		Type:      "anthropic",
 		MaxTokens: 256,
 		ExtraBody: map[string]any{
 			"temperature": 0.7,
 		},
+	})
+	params, err := p.buildAnthropicParams(&ResponseRequest{
+		Model: "MiniMax-M2.5",
+		Messages: []Message{{
+			Role:    "user",
+			Content: TextBlocks("hello"),
+		}},
 	})
 	if err != nil {
 		t.Fatalf("buildAnthropicParams(vendor) error: %v", err)

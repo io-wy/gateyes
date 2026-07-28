@@ -16,6 +16,7 @@ type ChatCompletionRequest struct {
 	Stream         bool          `json:"stream,omitempty"`
 	MaxTokens      int           `json:"max_tokens,omitempty"`
 	Tools          []any         `json:"tools,omitempty"`
+	PromptCacheKey string        `json:"prompt_cache_key,omitempty"`
 	ResponseFormat any           `json:"response_format,omitempty"`
 }
 
@@ -78,14 +79,15 @@ func ConvertChatRequest(req *ChatCompletionRequest) *ResponseRequest {
 		})
 	}
 	return &ResponseRequest{
-		Model:        req.Model,
-		Surface:      "chat",
-		Input:        messages,
-		Messages:     messages,
-		Stream:       req.Stream,
-		MaxTokens:    req.MaxTokens,
-		Tools:        req.Tools,
-		OutputFormat: normalizeOutputFormatValue(req.ResponseFormat),
+		Model:          req.Model,
+		Surface:        "chat",
+		Input:          messages,
+		Messages:       messages,
+		Stream:         req.Stream,
+		MaxTokens:      req.MaxTokens,
+		Tools:          req.Tools,
+		PromptCacheKey: req.PromptCacheKey,
+		OutputFormat:   normalizeOutputFormatValue(req.ResponseFormat),
 	}
 }
 

@@ -9,6 +9,7 @@ import { AppLayout } from '@/components/layout/app-layout'
 import {
   DashboardPage,
   LoginPage,
+  PlaygroundPage,
   ProvidersPage,
   KeysPage,
   VirtualKeysPage,
@@ -61,6 +62,12 @@ const providersRoute = createRoute({
   getParentRoute: () => authLayoutRoute,
   path: '/providers',
   component: ProvidersPage,
+})
+
+const playgroundRoute = createRoute({
+  getParentRoute: () => authLayoutRoute,
+  path: '/playground',
+  component: PlaygroundPage,
 })
 
 const keysRoute = createRoute({
@@ -125,10 +132,11 @@ const settingsRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
-  authLayoutRoute.addChildren([
-    dashboardRoute,
-    providersRoute,
-    keysRoute,
+    authLayoutRoute.addChildren([
+      dashboardRoute,
+      playgroundRoute,
+      providersRoute,
+      keysRoute,
     virtualKeysRoute,
     projectsRoute,
     usersRoute,

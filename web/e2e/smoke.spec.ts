@@ -147,7 +147,7 @@ test.describe('Gateyes Admin Frontend', () => {
     await expect(row).not.toBeVisible()
   })
 
-  test('plugin page renders and can register gRPC plugin', async ({ page, request }) => {
+  test('plugin page renders and can register gRPC plugin', async ({ page }) => {
     const runId = Date.now().toString(36)
     const pluginName = `e2e-grpc-${runId}`
 

@@ -50,6 +50,7 @@ type ResponseRequest struct {
 	MaxOutputTokens   int             `json:"max_output_tokens,omitempty"`
 	MaxTokens         int             `json:"max_tokens,omitempty"`
 	Tools             []any           `json:"tools,omitempty"`
+	PromptCacheKey    string          `json:"prompt_cache_key,omitempty"`
 	OutputFormat      *OutputFormat   `json:"-"`
 	Options           *RequestOptions `json:"-"`
 }

@@ -96,6 +96,7 @@ func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mwSvc 
 
 func registerAdminRoutes(g *gin.RouterGroup, adminH *AdminHandler, mwSvc *mw.Middleware) {
 	g.GET("/dashboard", mwSvc.RequirePermission(mw.PermUsageRead), adminH.Dashboard)
+	g.GET("/cache/summary", mwSvc.RequirePermission(mw.PermUsageRead), adminH.GetCacheSummary)
 	g.GET("/providers", mwSvc.RequirePermission(mw.PermProviderRead), adminH.GetProviders)
 	g.POST("/providers/check", mwSvc.RequirePermission(mw.PermProviderRead), adminH.CheckProviders)
 	g.POST("/providers", mwSvc.RequirePermission(mw.PermProviderWrite), adminH.CreateProvider)

@@ -5,13 +5,14 @@ Gateyes is a production-oriented LLM API gateway. It exposes OpenAI-compatible a
 ## What It Provides
 
 - Unified API surfaces: `/v1/responses`, `/v1/chat/completions`, `/v1/messages`, `/v1/embeddings`, `/v1/images/generations`
-- Multi-tenant auth and RBAC with API-key based identities
+- Multi-tenant auth, RBAC, OIDC admin login, API keys, and virtual keys
 - Provider routing with fallback, retry, circuit breaker, and health checks
 - Redis-backed distributed rate limiting with in-memory fallback
 - Project, tenant, API-key, and virtual-key budget controls
-- L1 response cache with Redis + memory fallback
+- L1 response cache with Redis + memory fallback, singleflight, cache hints, and prompt rewrite optimization
 - Prometheus metrics, OTLP tracing, audit logs, and provider runtime stats
 - WASM and gRPC plugin support across gateway lifecycle phases
+- React admin console for dashboard, providers, keys, services, responses, audit, and API playground
 
 ## Repository Layout
 
@@ -21,7 +22,7 @@ configs/                     runtime config examples and local config entrypoint
 deploy/                      Docker and Helm deployment assets, Grafana/Prometheus
 docs/docs-project/           project documentation, runbooks, and operations guides
 docs/docs-ref/               reusable reference material and archived templates
-docs/docs-tmp/               temporary or design-stage material
+docs/docs-tmp/               ignored temporary documentation cache metadata
 internal/app/config/         config loading, validation, and reload orchestration
 internal/domain/plugin/      internal plugin domain types and contracts
 internal/handler/            HTTP handlers, middleware, metrics, and server wiring
@@ -36,6 +37,7 @@ internal/testutil/           shared test helpers and fixtures
 pkg/plugin/v1/               generated public gRPC plugin contracts
 proto/plugin/v1/             plugin protocol source files
 plugins/                     plugin SDK and examples
+web/                         React admin console and API playground
 ```
 
 ## Configuration
@@ -136,6 +138,27 @@ FEISHU_APP_SECRET=xxx
 FEISHU_CHAT_ID=oc_xxx
 ```
 
+## Model Aliases
+
+Providers can declare aliases so clients can use their native model names while
+the gateway forwards the provider-specific name upstream. This is useful when
+routing Anthropic clients like Claude Code to OpenAI-compatible providers.
+
+```yaml
+providers:
+  - name: deepseek
+    type: openai
+    model: deepseek-v4-flash
+    modelAliases:
+      claude-sonnet-4-6: deepseek-v4-flash
+      claude-opus-4-6: deepseek-v4-pro
+      gpt-5.4: deepseek-v4-flash
+```
+
+With the above, a request for `claude-sonnet-4-6` is routed to the `deepseek`
+provider and forwarded to DeepSeek as `deepseek-v4-flash`. The response still
+reports the original requested model name to the client.
+
 ## API Surfaces
 
 | Endpoint | Compatibility | Purpose |
@@ -184,7 +207,7 @@ go test ./...
 Focused gateway compatibility:
 
 ```bash
-go test ./internal/service/provider ./internal/service/responses ./internal/transport/http/handler
+go test ./internal/service/provider ./internal/service/responses ./internal/handler
 ```
 
 More details: [TESTING.md](./TESTING.md)
@@ -193,8 +216,10 @@ More details: [TESTING.md](./TESTING.md)
 
 | Document | Purpose |
 | --- | --- |
+| [feature-inventory.md](./docs/docs-project/feature-inventory.md) | Current implemented capability inventory |
 | [architecture.md](./docs/docs-project/architecture.md) | Architecture and responsibility boundaries |
 | [runtime-mechanisms.md](./docs/docs-project/runtime-mechanisms.md) | Auth, routing, quota, cache, budget mechanics |
+| [cache.md](./docs/docs-project/cache.md) | L1 cache, singleflight, prompt rewrite, and cache observability |
 | [provider-configuration.md](./docs/docs-project/provider-configuration.md) | Provider setup |
 | [plugin-development.md](./docs/docs-project/plugin-development.md) | WASM and gRPC plugin guide |
 | [deployment.md](./docs/docs-project/deployment.md) | Docker Compose, Helm, production notes |

@@ -22,6 +22,7 @@ type routeTrace struct {
 	InitialCandidates []string             `json:"initial_candidates,omitempty"`
 	FilteredOut       []routeTraceFiltered `json:"filtered_out,omitempty"`
 	Router            routeSvc.OrderTrace  `json:"router"`
+	Cache             *CacheTrace          `json:"cache,omitempty"`
 	OrderedCandidates []string             `json:"ordered_candidates,omitempty"`
 	Attempts          []routeTraceAttempt  `json:"attempts,omitempty"`
 	FinalProvider     string               `json:"final_provider,omitempty"`
@@ -59,6 +60,10 @@ func (s *Service) planCandidates(ctx context.Context, identity *repository.AuthI
 		RequestedModel: req.Model,
 		SessionID:      sessionID,
 		Status:         "planned",
+	}
+	if cacheTrace := CacheTraceFrom(ctx); cacheTrace != nil && cacheTrace.Result != "" {
+		cacheCopy := *cacheTrace
+		trace.Cache = &cacheCopy
 	}
 
 	providerNames, err := s.store.ListTenantProviders(ctx, identity.TenantID)

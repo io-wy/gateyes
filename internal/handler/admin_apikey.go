@@ -53,6 +53,7 @@ func (h *AdminHandler) CreateAPIKey(c *gin.Context) {
 		AllowedModels:    req.AllowedModels,
 		AllowedProviders: req.AllowedProviders,
 		AllowedServices:  req.AllowedServices,
+		ExpiresAt:        req.ExpiresAt,
 	})
 	if err != nil {
 		writeInternalError(c, err)
@@ -99,14 +100,15 @@ func (h *AdminHandler) GetAPIKey(c *gin.Context) {
 }
 
 type UpdateAPIKeyRequest struct {
-	ProjectID        *string   `json:"project_id"`
-	Status           *string   `json:"status"`
-	BudgetUSD        *float64  `json:"budget_usd"`
-	BudgetPolicy     *string   `json:"budget_policy"`
-	RateLimitQPS     *int      `json:"rate_limit_qps"`
-	AllowedModels    *[]string `json:"allowed_models"`
-	AllowedProviders *[]string `json:"allowed_providers"`
-	AllowedServices  *[]string `json:"allowed_services"`
+	ProjectID        *string    `json:"project_id"`
+	Status           *string    `json:"status"`
+	BudgetUSD        *float64   `json:"budget_usd"`
+	BudgetPolicy     *string    `json:"budget_policy"`
+	RateLimitQPS     *int       `json:"rate_limit_qps"`
+	AllowedModels    *[]string  `json:"allowed_models"`
+	AllowedProviders *[]string  `json:"allowed_providers"`
+	AllowedServices  *[]string  `json:"allowed_services"`
+	ExpiresAt        *time.Time `json:"expires_at"`
 }
 
 func (h *AdminHandler) UpdateAPIKey(c *gin.Context) {
@@ -131,6 +133,7 @@ func (h *AdminHandler) UpdateAPIKey(c *gin.Context) {
 		AllowedModels:    req.AllowedModels,
 		AllowedProviders: req.AllowedProviders,
 		AllowedServices:  req.AllowedServices,
+		ExpiresAt:        req.ExpiresAt,
 	})
 	if err != nil {
 		if err == repository.ErrNotFound {
@@ -238,5 +241,12 @@ func apiKeyToResponse(record repository.APIKeyRecord) gin.H {
 	if record.RevokedAt != nil {
 		response["revoked_at"] = *record.RevokedAt
 	}
+	if record.ExpiresAt != nil {
+		response["expires_at"] = *record.ExpiresAt
+	}
+	if record.RotatedAt != nil {
+		response["rotated_at"] = *record.RotatedAt
+	}
+	response["rotation_reminder_sent"] = record.RotationReminderSent
 	return response
 }

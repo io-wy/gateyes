@@ -290,7 +290,7 @@ func newTestMiddleware(
 		t.Cleanup(limiterSvc.Stop)
 	}
 
-	return New(nil, store, limiterSvc, nil, nil, nil)
+	return New(nil, store, limiterSvc, nil, nil, nil, nil)
 }
 
 func TestMiddlewareMetricsContracts(t *testing.T) {
@@ -403,5 +403,5 @@ func newTestMiddlewareWithMetrics(
 		t.Cleanup(limiterSvc.Stop)
 	}
 
-	return New(nil, store, limiterSvc, nil, nil, metrics)
+	return New(nil, store, limiterSvc, nil, nil, metrics, nil)
 }

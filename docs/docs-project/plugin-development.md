@@ -28,7 +28,7 @@
 | `audit` | 响应已写入客户端后（异步） | `{"request": "...", "response": {...}, "usage": {...}, "provider": "...", "latency": 123}` | 只读，建议 `ALLOW` |
 
 **注意**：
-- `pre_route` / `post_route` **只在流式路径**（`CreateStream`）中调用。非流式路径（`Create`）目前没有这两个 phase。
+- `pre_route` / `post_route` **只在流式路径**（`StreamResponse`）中调用。非流式路径（`CreateResponse`）目前没有这两个 phase。
 - `audit` 是异步的，gateway 不等待 plugin 返回。
 
 ### Action（命令类型）

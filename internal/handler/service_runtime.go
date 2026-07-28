@@ -33,13 +33,18 @@ func (h *Handler) ServiceResponses(c *gin.Context) {
 		return
 	}
 
-	reqCtx := responseSvc.WithRawRequestBody(c.Request.Context(), rawBody)
+	hints := responseSvc.ParseCacheHintsFromHeaders(c.GetHeader)
+	cacheTrace := &responseSvc.CacheTrace{}
+	reqCtx := responseSvc.WithCacheHints(c.Request.Context(), hints)
+	reqCtx = responseSvc.WithRawRequestBody(reqCtx, rawBody)
+	reqCtx = responseSvc.WithCacheTrace(reqCtx, cacheTrace)
 	if req.Stream {
 		stream, _, err := h.catalog.CreateStream(reqCtx, identity, c.Param("prefix"), "responses", &req, c.GetHeader("X-Session-ID"))
 		if err != nil {
 			h.renderServiceErrorV2(c, metricsSurfaceResponses, "", err)
 			return
 		}
+		attachCacheHeaders(c, cacheTrace)
 		h.streamResponses(c, stream, req.Model, start)
 		return
 	}
@@ -52,6 +57,7 @@ func (h *Handler) ServiceResponses(c *gin.Context) {
 	upstreamLatency := time.Duration(result.LatencyMs) * time.Millisecond
 	h.observeResponseWithUpstream(metricsSurfaceResponses, result.ProviderName, result.Response.Usage, time.Since(start), upstreamLatency, result.Retries, result.Fallback)
 	h.logRequestCompleted(c, metricsSurfaceResponses, result.ProviderName, http.StatusOK, time.Since(start))
+	attachCacheHeaders(c, cacheTrace)
 	writeOK(c, result.Response)
 }
 
@@ -75,13 +81,18 @@ func (h *Handler) ServiceChat(c *gin.Context) {
 	}
 
 	responseReq := provider.ConvertChatRequest(&req)
-	reqCtx := responseSvc.WithRawRequestBody(c.Request.Context(), rawBody)
+	hints := responseSvc.ParseCacheHintsFromHeaders(c.GetHeader)
+	cacheTrace := &responseSvc.CacheTrace{}
+	reqCtx := responseSvc.WithCacheHints(c.Request.Context(), hints)
+	reqCtx = responseSvc.WithRawRequestBody(reqCtx, rawBody)
+	reqCtx = responseSvc.WithCacheTrace(reqCtx, cacheTrace)
 	if req.Stream {
 		stream, _, err := h.catalog.CreateStream(reqCtx, identity, c.Param("prefix"), "chat", responseReq, c.GetHeader("X-Session-ID"))
 		if err != nil {
 			h.renderServiceErrorV2(c, metricsSurfaceChatCompletions, "", err)
 			return
 		}
+		attachCacheHeaders(c, cacheTrace)
 		h.streamChatCompatibility(c, stream, req.Model, start)
 		return
 	}
@@ -93,6 +104,7 @@ func (h *Handler) ServiceChat(c *gin.Context) {
 	upstreamLatency := time.Duration(result.LatencyMs) * time.Millisecond
 	h.observeResponseWithUpstream(metricsSurfaceChatCompletions, result.ProviderName, result.Response.Usage, time.Since(start), upstreamLatency, result.Retries, result.Fallback)
 	h.logRequestCompleted(c, metricsSurfaceChatCompletions, result.ProviderName, http.StatusOK, time.Since(start))
+	attachCacheHeaders(c, cacheTrace)
 	writeOK(c, provider.ConvertResponseToChat(result.Response))
 }
 
@@ -116,13 +128,18 @@ func (h *Handler) ServiceMessages(c *gin.Context) {
 	}
 
 	responseReq := provider.ConvertAnthropicRequest(&req)
-	reqCtx := responseSvc.WithRawRequestBody(c.Request.Context(), rawBody)
+	hints := responseSvc.ParseCacheHintsFromHeaders(c.GetHeader)
+	cacheTrace := &responseSvc.CacheTrace{}
+	reqCtx := responseSvc.WithCacheHints(c.Request.Context(), hints)
+	reqCtx = responseSvc.WithRawRequestBody(reqCtx, rawBody)
+	reqCtx = responseSvc.WithCacheTrace(reqCtx, cacheTrace)
 	if req.Stream {
 		stream, _, err := h.catalog.CreateStream(reqCtx, identity, c.Param("prefix"), "messages", responseReq, c.GetHeader("X-Session-ID"))
 		if err != nil {
 			h.renderServiceErrorV2(c, metricsSurfaceMessages, "", err)
 			return
 		}
+		attachCacheHeaders(c, cacheTrace)
 		h.streamAnthropicMessages(c, stream, req.Model, start)
 		return
 	}
@@ -134,6 +151,7 @@ func (h *Handler) ServiceMessages(c *gin.Context) {
 	upstreamLatency := time.Duration(result.LatencyMs) * time.Millisecond
 	h.observeResponseWithUpstream(metricsSurfaceMessages, result.ProviderName, result.Response.Usage, time.Since(start), upstreamLatency, result.Retries, result.Fallback)
 	h.logRequestCompleted(c, metricsSurfaceMessages, result.ProviderName, http.StatusOK, time.Since(start))
+	attachCacheHeaders(c, cacheTrace)
 	writeOK(c, provider.ConvertResponseToAnthropic(result.Response))
 }
 
@@ -156,13 +174,18 @@ func (h *Handler) ServiceInvoke(c *gin.Context) {
 		return
 	}
 
-	reqCtx := responseSvc.WithRawRequestBody(c.Request.Context(), rawBody)
+	hints := responseSvc.ParseCacheHintsFromHeaders(c.GetHeader)
+	cacheTrace := &responseSvc.CacheTrace{}
+	reqCtx := responseSvc.WithCacheHints(c.Request.Context(), hints)
+	reqCtx = responseSvc.WithRawRequestBody(reqCtx, rawBody)
+	reqCtx = responseSvc.WithCacheTrace(reqCtx, cacheTrace)
 	if req.Stream {
 		stream, _, err := h.catalog.CreatePromptInvocationStream(reqCtx, identity, c.Param("prefix"), req, c.GetHeader("X-Session-ID"))
 		if err != nil {
 			h.renderServiceErrorV2(c, metricsSurfaceResponses, "", err)
 			return
 		}
+		attachCacheHeaders(c, cacheTrace)
 		h.streamResponses(c, stream, "", start)
 		return
 	}
@@ -175,5 +198,6 @@ func (h *Handler) ServiceInvoke(c *gin.Context) {
 	upstreamLatency := time.Duration(result.LatencyMs) * time.Millisecond
 	h.observeResponseWithUpstream(metricsSurfaceResponses, result.ProviderName, result.Response.Usage, time.Since(start), upstreamLatency, result.Retries, result.Fallback)
 	h.logRequestCompleted(c, metricsSurfaceResponses, result.ProviderName, http.StatusOK, time.Since(start))
+	attachCacheHeaders(c, cacheTrace)
 	writeOK(c, result.Response)
 }

@@ -1,7 +1,10 @@
 package middleware
 
 import (
+	"time"
+
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/gateyes/gateway/internal/repository"
@@ -10,8 +13,11 @@ import (
 	"github.com/gateyes/gateway/internal/service/budget"
 	"github.com/gateyes/gateway/internal/service/extension/filter"
 	"github.com/gateyes/gateway/internal/service/limiter"
+	"github.com/gateyes/gateway/internal/service/oidc"
+	"github.com/gateyes/gateway/internal/service/rbac"
 )
 
+// MetricsRecorder is implemented by the handler metrics collector.
 type MetricsRecorder interface {
 	RecordError(surface, providerName, result, errorClass string)
 }
@@ -21,10 +27,32 @@ type Middleware struct {
 	auth  *AuthMiddleware
 	guard *GuardMiddleware
 	pm    *filter.PluginManager
+	rbac  *rbac.Service
 }
 
-func New(cfg *config.Config, store repository.Store, limiterSvc *limiter.Limiter, budgetSvc *budget.Service, alertSvc *alert.AlertService, metrics MetricsRecorder) *Middleware {
-	authMW := NewAuthMiddleware(store, metrics)
+func New(cfg *config.Config, store repository.Store, limiterSvc *limiter.Limiter, budgetSvc *budget.Service, alertSvc *alert.AlertService, metrics MetricsRecorder, rdb *redis.Client) *Middleware {
+	var oidcSvc *oidc.Service
+	var jwtSvc *oidc.JWTService
+	if cfg != nil {
+		var err error
+		oidcSvc, err = oidc.NewService(cfg.OIDC, store)
+		if err != nil {
+			// OIDC misconfiguration should not crash the gateway; admin SSO simply won't work.
+			if metrics != nil {
+				metrics.RecordError("oidc_init", "", "init_error", "oidc_config_error")
+			}
+		}
+		jwtSvc = oidc.NewJWTService([]byte(cfg.OIDC.JWTSecret))
+	}
+	authMW := NewAuthMiddleware(store, oidcSvc, jwtSvc, metrics)
+
+	var rbacTTL time.Duration
+	if cfg != nil && cfg.RBAC.CacheTTLSeconds > 0 {
+		rbacTTL = time.Duration(cfg.RBAC.CacheTTLSeconds) * time.Second
+	} else {
+		rbacTTL = 5 * time.Minute
+	}
+	rbacSvc := rbac.New(store, rdb, rbacTTL)
 
 	authSvc := authMW.Service()
 	registry := filter.NewRegistry()
@@ -70,7 +98,23 @@ func New(cfg *config.Config, store repository.Store, limiterSvc *limiter.Limiter
 		auth:  authMW,
 		guard: NewGuardMiddleware(pipeline, metrics),
 		pm:    pm,
+		rbac:  rbacSvc,
 	}
+}
+
+// RBAC returns the RBAC service for permission invalidation from handlers.
+func (m *Middleware) RBAC() *rbac.Service {
+	return m.rbac
+}
+
+// OIDC returns the OIDC service, or nil if not configured.
+func (m *Middleware) OIDC() *oidc.Service {
+	return m.auth.oidcSvc
+}
+
+// JWT returns the JWT service, or nil if not configured.
+func (m *Middleware) JWT() *oidc.JWTService {
+	return m.auth.jwtSvc
 }
 
 // PluginManager returns the WASM plugin manager, or nil if plugins are disabled.

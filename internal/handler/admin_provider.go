@@ -1,12 +1,14 @@
 package handler
 
 import (
+	"net/http"
+	"time"
+
 	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/gateyes/gateway/internal/handler/middleware"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/provider"
 	"github.com/gin-gonic/gin"
-	"net/http"
 )
 
 func (h *AdminHandler) CheckProviders(c *gin.Context) {
@@ -185,13 +187,14 @@ func (h *AdminHandler) DeleteProvider(c *gin.Context) {
 }
 
 type CreateAPIKeyRequest struct {
-	UserID           string   `json:"user_id" binding:"required"`
-	ProjectID        string   `json:"project_id"`
-	BudgetUSD        float64  `json:"budget_usd"`
-	RateLimitQPS     int      `json:"rate_limit_qps"`
-	AllowedModels    []string `json:"allowed_models"`
-	AllowedProviders []string `json:"allowed_providers"`
-	AllowedServices  []string `json:"allowed_services"`
+	UserID           string     `json:"user_id" binding:"required"`
+	ProjectID        string     `json:"project_id"`
+	BudgetUSD        float64    `json:"budget_usd"`
+	RateLimitQPS     int        `json:"rate_limit_qps"`
+	AllowedModels    []string   `json:"allowed_models"`
+	AllowedProviders []string   `json:"allowed_providers"`
+	AllowedServices  []string   `json:"allowed_services"`
+	ExpiresAt        *time.Time `json:"expires_at"`
 }
 
 func (h *AdminHandler) providerResponses(c *gin.Context, tenantID string) []gin.H {

@@ -20,6 +20,7 @@ type AdminHandler struct {
 	catalogSvc         *catalog.Service
 	reloader           *config.Reloader
 	healthChecker      *provider.HealthChecker
+	metrics            *Metrics
 	pluginDir          string
 	startedAt          time.Time
 }
@@ -38,6 +39,10 @@ func NewAdminHandler(store repository.Store, providerMgr *provider.Manager, cata
 
 func (h *AdminHandler) SetHealthChecker(hc *provider.HealthChecker) {
 	h.healthChecker = hc
+}
+
+func (h *AdminHandler) SetMetrics(metrics *Metrics) {
+	h.metrics = metrics
 }
 
 func (h *AdminHandler) SetPluginDirectory(dir string) {

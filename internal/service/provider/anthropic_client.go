@@ -40,7 +40,7 @@ func NewAnthropicProvider(cfg config.ProviderConfig) Provider {
 }
 
 func (p *anthropicProvider) CreateResponse(ctx context.Context, req *ResponseRequest) (*Response, error) {
-	params, err := buildAnthropicParams(req, p.cfg)
+	params, err := p.buildAnthropicParams(req)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +63,7 @@ func (p *anthropicProvider) StreamResponse(ctx context.Context, req *ResponseReq
 
 		streamReq := *req
 		streamReq.Stream = true
-		params, err := buildAnthropicParams(&streamReq, p.cfg)
+		params, err := p.buildAnthropicParams(&streamReq)
 		if err != nil {
 			errCh <- err
 			return

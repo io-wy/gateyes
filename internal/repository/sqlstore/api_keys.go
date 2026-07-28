@@ -45,9 +45,9 @@ func (s *Store) CreateAPIKey(ctx context.Context, params repository.CreateAPIKey
 	if _, err := s.db.Conn.ExecContext(ctx, s.db.Rebind(`
 INSERT INTO api_keys (
 	id, user_id, key, secret_hash, name, status, project_id, budget_usd, spent_usd,
-	allowed_models, allowed_providers, allowed_services, rate_limit_qps, created_at, updated_at
+	allowed_models, allowed_providers, allowed_services, rate_limit_qps, expires_at, created_at, updated_at
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`),
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`),
 		uuid.NewString(),
 		user.ID,
 		params.Key,
@@ -60,6 +60,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`),
 		providersJSON,
 		servicesJSON,
 		params.RateLimitQPS,
+		params.ExpiresAt,
 		now,
 		now,
 	); err != nil {
@@ -74,7 +75,7 @@ func (s *Store) ListAPIKeys(ctx context.Context, tenantID string, filter reposit
 SELECT ak.id, u.tenant_id, t.slug, ak.user_id, u.name, u.email,
 	COALESCE(ak.project_id, ''), COALESCE(p.slug, ''), ak.key, ak.status,
 	ak.budget_usd, ak.spent_usd, ak.budget_policy, ak.rate_limit_qps, ak.allowed_models, ak.allowed_providers, ak.allowed_services,
-	ak.last_used_at, ak.revoked_at, ak.created_at, ak.updated_at
+	ak.last_used_at, ak.revoked_at, ak.expires_at, ak.rotated_at, ak.rotation_reminder_sent, ak.created_at, ak.updated_at
 FROM api_keys ak
 JOIN users u ON u.id = ak.user_id
 JOIN tenants t ON t.id = u.tenant_id
@@ -125,7 +126,7 @@ func (s *Store) GetAPIKey(ctx context.Context, tenantID string, idOrKey string) 
 SELECT ak.id, u.tenant_id, t.slug, ak.user_id, u.name, u.email,
 	COALESCE(ak.project_id, ''), COALESCE(p.slug, ''), ak.key, ak.status,
 	ak.budget_usd, ak.spent_usd, ak.budget_policy, ak.rate_limit_qps, ak.allowed_models, ak.allowed_providers, ak.allowed_services,
-	ak.last_used_at, ak.revoked_at, ak.created_at, ak.updated_at
+	ak.last_used_at, ak.revoked_at, ak.expires_at, ak.rotated_at, ak.rotation_reminder_sent, ak.created_at, ak.updated_at
 FROM api_keys ak
 JOIN users u ON u.id = ak.user_id
 JOIN tenants t ON t.id = u.tenant_id
@@ -216,6 +217,18 @@ func (s *Store) UpdateAPIKey(ctx context.Context, tenantID string, idOrKey strin
 	} else if params.Status != nil && *params.Status == repository.StatusActive {
 		sets = append(sets, "revoked_at = NULL")
 	}
+	if params.ExpiresAt != nil {
+		sets = append(sets, "expires_at = ?")
+		args = append(args, *params.ExpiresAt)
+	}
+	if params.RotatedAt != nil {
+		sets = append(sets, "rotated_at = ?")
+		args = append(args, *params.RotatedAt)
+	}
+	if params.RotationReminderSent != nil {
+		sets = append(sets, "rotation_reminder_sent = ?")
+		args = append(args, *params.RotationReminderSent)
+	}
 	sets = append(sets, "updated_at = ?")
 	args = append(args, time.Now().UTC(), record.ID)
 
@@ -236,8 +249,8 @@ func (s *Store) RotateAPIKey(ctx context.Context, tenantID string, idOrKey strin
 	}
 	if _, err := s.db.Conn.ExecContext(ctx, s.db.Rebind(`
 UPDATE api_keys
-SET key = ?, secret_hash = ?, status = ?, revoked_at = NULL, updated_at = ?
-WHERE id = ?`), params.NewKey, params.NewSecretHash, repository.StatusActive, time.Now().UTC(), record.ID); err != nil {
+SET key = ?, secret_hash = ?, status = ?, revoked_at = NULL, rotated_at = ?, updated_at = ?
+WHERE id = ?`), params.NewKey, params.NewSecretHash, repository.StatusActive, time.Now().UTC(), time.Now().UTC(), record.ID); err != nil {
 		return nil, fmt.Errorf("rotate api key: %w", err)
 	}
 	return s.GetAPIKey(ctx, record.TenantID, record.ID)
@@ -250,6 +263,9 @@ func scanAPIKeyRecord(scanner rowScanner) (*repository.APIKeyRecord, error) {
 	var allowedServicesRaw string
 	var lastUsedAt sql.NullTime
 	var revokedAt sql.NullTime
+	var expiresAt sql.NullTime
+	var rotatedAt sql.NullTime
+	var rotationReminderSent int
 	if err := scanner.Scan(
 		&record.ID,
 		&record.TenantID,
@@ -270,10 +286,22 @@ func scanAPIKeyRecord(scanner rowScanner) (*repository.APIKeyRecord, error) {
 		&allowedServicesRaw,
 		&lastUsedAt,
 		&revokedAt,
+		&expiresAt,
+		&rotatedAt,
+		&rotationReminderSent,
 		&record.CreatedAt,
 		&record.UpdatedAt,
 	); err != nil {
 		return nil, err
+	}
+	record.RotationReminderSent = rotationReminderSent != 0
+	if expiresAt.Valid {
+		value := expiresAt.Time
+		record.ExpiresAt = &value
+	}
+	if rotatedAt.Valid {
+		value := rotatedAt.Time
+		record.RotatedAt = &value
 	}
 	record.AllowedModels = decodeStringSlice(allowedModelsRaw)
 	record.AllowedProviders = decodeStringSlice(allowedProvidersRaw)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -50,9 +51,71 @@ type Metrics struct {
 	cacheWrites      *prometheus.CounterVec
 	cacheValueSize   *prometheus.HistogramVec
 	cacheGetDuration *prometheus.HistogramVec
+	cacheStats       cacheStats
+
+	eventBusDropped   prometheus.Counter
+	eventBusProcessed prometheus.Counter
+	eventBusPanics    prometheus.Counter
+	eventBusQueueSize prometheus.Gauge
 
 	inferenceScraper *router.InferenceScraper
 	scraperMu        sync.RWMutex
+}
+
+type CacheLookupSummary struct {
+	Hit   int64 `json:"hit"`
+	Miss  int64 `json:"miss"`
+	Error int64 `json:"error"`
+	Skip  int64 `json:"skip"`
+	Total int64 `json:"total"`
+}
+
+type CacheWriteSummary struct {
+	Success int64 `json:"success"`
+	Error   int64 `json:"error"`
+	Total   int64 `json:"total"`
+}
+
+type CacheLayerSummary struct {
+	Layer         string             `json:"layer"`
+	Lookups       CacheLookupSummary `json:"lookups"`
+	Writes        CacheWriteSummary  `json:"writes"`
+	HitRate       float64            `json:"hit_rate"`
+	LookupAvgMs   float64            `json:"lookup_avg_ms"`
+	ValueAvgBytes float64            `json:"value_avg_bytes"`
+}
+
+type CacheSummary struct {
+	Enabled bool                `json:"enabled"`
+	Layers  []CacheLayerSummary `json:"layers"`
+	Totals  CacheLayerSummary   `json:"totals"`
+}
+
+type cacheStats struct {
+	mu             sync.RWMutex
+	lookups        map[string]map[string]int64
+	writes         map[string]map[string]int64
+	lookupDuration map[string]cacheDurationStats
+	valueSize      map[string]cacheValueStats
+}
+
+type cacheDurationStats struct {
+	count int64
+	total time.Duration
+}
+
+type cacheValueStats struct {
+	count int64
+	total int64
+}
+
+func newCacheStats() cacheStats {
+	return cacheStats{
+		lookups:        make(map[string]map[string]int64),
+		writes:         make(map[string]map[string]int64),
+		lookupDuration: make(map[string]cacheDurationStats),
+		valueSize:      make(map[string]cacheValueStats),
+	}
 }
 
 var registerGoCollectorOnce sync.Once
@@ -87,8 +150,9 @@ func NewMetricsFromConfig(cfg config.MetricsConfig) *Metrics {
 		namespace = "gateway"
 	}
 	metrics := &Metrics{
-		enabled: cfg.Enabled,
-		handler: http.NotFoundHandler(),
+		enabled:    cfg.Enabled,
+		handler:    http.NotFoundHandler(),
+		cacheStats: newCacheStats(),
 	}
 	if !cfg.Enabled {
 		return metrics
@@ -157,6 +221,26 @@ func NewMetricsFromConfig(cfg config.MetricsConfig) *Metrics {
 		Name:      "cache_get_duration_seconds",
 		Buckets:   []float64{0.0001, 0.001, 0.01, 0.1, 1},
 	}, []string{"layer"})
+	metrics.eventBusDropped = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "eventbus_dropped_total",
+		Help:      "Number of event bus handlers dropped because the buffer was full or the bus was closed.",
+	})
+	metrics.eventBusProcessed = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "eventbus_processed_total",
+		Help:      "Number of event bus handlers that were invoked (including those that panicked).",
+	})
+	metrics.eventBusPanics = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "eventbus_panics_total",
+		Help:      "Number of event bus handlers that panicked during execution.",
+	})
+	metrics.eventBusQueueSize = promauto.NewGauge(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      "eventbus_queue_size",
+		Help:      "Current number of handlers waiting in the event bus buffer.",
+	})
 	return metrics
 }
 
@@ -267,6 +351,7 @@ func (m *Metrics) RecordCacheLookup(layer, result string) {
 		return
 	}
 	m.cacheLookups.WithLabelValues(layer, result).Inc()
+	m.cacheStats.recordLookup(layer, result)
 }
 
 func (m *Metrics) RecordCacheWrite(layer, result string) {
@@ -274,6 +359,7 @@ func (m *Metrics) RecordCacheWrite(layer, result string) {
 		return
 	}
 	m.cacheWrites.WithLabelValues(layer, result).Inc()
+	m.cacheStats.recordWrite(layer, result)
 }
 
 func (m *Metrics) ObserveCacheValueSize(layer string, size int) {
@@ -281,6 +367,7 @@ func (m *Metrics) ObserveCacheValueSize(layer string, size int) {
 		return
 	}
 	m.cacheValueSize.WithLabelValues(layer).Observe(float64(size))
+	m.cacheStats.observeValueSize(layer, size)
 }
 
 func (m *Metrics) ObserveCacheGetDuration(layer string, d time.Duration) {
@@ -288,6 +375,220 @@ func (m *Metrics) ObserveCacheGetDuration(layer string, d time.Duration) {
 		return
 	}
 	m.cacheGetDuration.WithLabelValues(layer).Observe(d.Seconds())
+	m.cacheStats.observeLookupDuration(layer, d)
+}
+
+func (m *Metrics) CacheSummary() CacheSummary {
+	if m == nil {
+		return CacheSummary{}
+	}
+	return m.cacheStats.summary(m.enabled)
+}
+
+func (s *cacheStats) recordLookup(layer, result string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lookups[layer] == nil {
+		s.lookups[layer] = make(map[string]int64)
+	}
+	s.lookups[layer][result]++
+}
+
+func (s *cacheStats) recordWrite(layer, result string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.writes[layer] == nil {
+		s.writes[layer] = make(map[string]int64)
+	}
+	s.writes[layer][result]++
+}
+
+func (s *cacheStats) observeValueSize(layer string, size int) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stats := s.valueSize[layer]
+	stats.count++
+	stats.total += int64(size)
+	s.valueSize[layer] = stats
+}
+
+func (s *cacheStats) observeLookupDuration(layer string, d time.Duration) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stats := s.lookupDuration[layer]
+	stats.count++
+	stats.total += d
+	s.lookupDuration[layer] = stats
+}
+
+func (s *cacheStats) summary(enabled bool) CacheSummary {
+	if s == nil {
+		return CacheSummary{Enabled: enabled}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	layerSet := make(map[string]struct{})
+	for layer := range s.lookups {
+		layerSet[layer] = struct{}{}
+	}
+	for layer := range s.writes {
+		layerSet[layer] = struct{}{}
+	}
+	for layer := range s.lookupDuration {
+		layerSet[layer] = struct{}{}
+	}
+	for layer := range s.valueSize {
+		layerSet[layer] = struct{}{}
+	}
+
+	layers := make([]string, 0, len(layerSet))
+	for layer := range layerSet {
+		layers = append(layers, layer)
+	}
+	sort.Strings(layers)
+
+	summary := CacheSummary{
+		Enabled: enabled,
+		Layers:  make([]CacheLayerSummary, 0, len(layers)),
+		Totals:  CacheLayerSummary{Layer: "total"},
+	}
+	for _, layer := range layers {
+		layerSummary := s.layerSummaryLocked(layer)
+		summary.Layers = append(summary.Layers, layerSummary)
+		summary.Totals.Lookups.Hit += layerSummary.Lookups.Hit
+		summary.Totals.Lookups.Miss += layerSummary.Lookups.Miss
+		summary.Totals.Lookups.Error += layerSummary.Lookups.Error
+		summary.Totals.Lookups.Skip += layerSummary.Lookups.Skip
+		summary.Totals.Lookups.Total += layerSummary.Lookups.Total
+		summary.Totals.Writes.Success += layerSummary.Writes.Success
+		summary.Totals.Writes.Error += layerSummary.Writes.Error
+		summary.Totals.Writes.Total += layerSummary.Writes.Total
+	}
+	summary.Totals.HitRate = hitRate(summary.Totals.Lookups)
+	summary.Totals.LookupAvgMs = avgDurationMs(s.lookupDuration)
+	summary.Totals.ValueAvgBytes = avgValueBytes(s.valueSize)
+	return summary
+}
+
+func (s *cacheStats) layerSummaryLocked(layer string) CacheLayerSummary {
+	lookups := lookupSummary(s.lookups[layer])
+	writes := writeSummary(s.writes[layer])
+	return CacheLayerSummary{
+		Layer:         layer,
+		Lookups:       lookups,
+		Writes:        writes,
+		HitRate:       hitRate(lookups),
+		LookupAvgMs:   durationAvgMs(s.lookupDuration[layer]),
+		ValueAvgBytes: valueAvgBytes(s.valueSize[layer]),
+	}
+}
+
+func lookupSummary(values map[string]int64) CacheLookupSummary {
+	out := CacheLookupSummary{
+		Hit:   values["hit"],
+		Miss:  values["miss"],
+		Error: values["error"],
+		Skip:  values["skip"],
+	}
+	out.Total = out.Hit + out.Miss + out.Error + out.Skip
+	return out
+}
+
+func writeSummary(values map[string]int64) CacheWriteSummary {
+	out := CacheWriteSummary{
+		Success: values["success"],
+		Error:   values["error"] + values["failure"],
+	}
+	out.Total = out.Success + out.Error
+	return out
+}
+
+func hitRate(values CacheLookupSummary) float64 {
+	if values.Total == 0 {
+		return 0
+	}
+	return float64(values.Hit) / float64(values.Total)
+}
+
+func durationAvgMs(stats cacheDurationStats) float64 {
+	if stats.count == 0 {
+		return 0
+	}
+	return float64(stats.total) / float64(stats.count) / float64(time.Millisecond)
+}
+
+func valueAvgBytes(stats cacheValueStats) float64 {
+	if stats.count == 0 {
+		return 0
+	}
+	return float64(stats.total) / float64(stats.count)
+}
+
+func avgDurationMs(values map[string]cacheDurationStats) float64 {
+	var count int64
+	var total time.Duration
+	for _, stats := range values {
+		count += stats.count
+		total += stats.total
+	}
+	if count == 0 {
+		return 0
+	}
+	return float64(total) / float64(count) / float64(time.Millisecond)
+}
+
+func avgValueBytes(values map[string]cacheValueStats) float64 {
+	var count int64
+	var total int64
+	for _, stats := range values {
+		count += stats.count
+		total += stats.total
+	}
+	if count == 0 {
+		return 0
+	}
+	return float64(total) / float64(count)
+}
+
+func (m *Metrics) IncEventBusDropped() {
+	if m == nil || !m.enabled {
+		return
+	}
+	m.eventBusDropped.Inc()
+}
+
+func (m *Metrics) IncEventBusProcessed() {
+	if m == nil || !m.enabled {
+		return
+	}
+	m.eventBusProcessed.Inc()
+}
+
+func (m *Metrics) IncEventBusPanics() {
+	if m == nil || !m.enabled {
+		return
+	}
+	m.eventBusPanics.Inc()
+}
+
+func (m *Metrics) SetEventBusQueueSize(size int) {
+	if m == nil || !m.enabled {
+		return
+	}
+	m.eventBusQueueSize.Set(float64(size))
 }
 
 func (m *Metrics) SetInferenceScraper(scraper *router.InferenceScraper) {

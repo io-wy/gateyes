@@ -3,12 +3,16 @@ package sqlstore
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/gateyes/gateway/internal/pkg/eventbus"
+	"github.com/gateyes/gateway/internal/pkg/retry"
 	"github.com/gateyes/gateway/internal/repository"
 )
 
@@ -59,15 +63,14 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 			return fmt.Errorf("create response meta: %w", err)
 		}
 
-		s.eventBus.Publish(func(ctx context.Context) {
-			s.db.Conn.ExecContext(ctx, s.db.Rebind(`
-				INSERT INTO response_details (response_id, request_body, response_body, route_trace_body)
-				VALUES (?, ?, ?, ?)
-				ON CONFLICT (response_id) DO UPDATE SET
-					request_body = excluded.request_body,
-					response_body = excluded.response_body,
-					route_trace_body = excluded.route_trace_body
-			`), record.ID, requestBody, responseBody, routeTraceBody)
+		s.eventBus.PublishEvent(ctx, eventbus.Event{
+			Type: eventbus.EventTypeResponseDetails,
+			Payload: mustMarshalResponseDetails(responseDetailsPayload{
+				ResponseID:     record.ID,
+				RequestBody:    requestBody,
+				ResponseBody:   responseBody,
+				RouteTraceBody: routeTraceBody,
+			}),
 		})
 		return nil
 	}
@@ -381,4 +384,45 @@ func (s *Store) DeleteResponsesOlderThan(ctx context.Context, before time.Time) 
 		return 0, fmt.Errorf("delete old responses: %w", err)
 	}
 	return result.RowsAffected()
+}
+
+type responseDetailsPayload struct {
+	ResponseID     string `json:"response_id"`
+	RequestBody    string `json:"request_body"`
+	ResponseBody   string `json:"response_body"`
+	RouteTraceBody string `json:"route_trace_body"`
+}
+
+func mustMarshalResponseDetails(p responseDetailsPayload) []byte {
+	b, err := json.Marshal(p)
+	if err != nil {
+		// JSON cannot fail for this struct; panic only on programmer error.
+		panic(fmt.Sprintf("marshal responseDetailsPayload: %v", err))
+	}
+	return b
+}
+
+func (s *Store) handleResponseDetailsEvent(ctx context.Context, payload []byte) error {
+	var p responseDetailsPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return fmt.Errorf("unmarshal response:details payload: %w", err)
+	}
+	err := retry.Do(ctx, 3, 50*time.Millisecond, func() error {
+		_, err := s.db.Conn.ExecContext(ctx, s.db.Rebind(`
+			INSERT INTO response_details (response_id, request_body, response_body, route_trace_body)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT (response_id) DO UPDATE SET
+				request_body = excluded.request_body,
+				response_body = excluded.response_body,
+				route_trace_body = excluded.route_trace_body
+		`), p.ResponseID, p.RequestBody, p.ResponseBody, p.RouteTraceBody)
+		return err
+	})
+	if err != nil {
+		slog.Error("async response_details insert failed",
+			"response_id", p.ResponseID,
+			"error", err,
+		)
+	}
+	return err
 }

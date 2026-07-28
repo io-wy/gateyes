@@ -259,6 +259,7 @@ func providerConfigFromRegistry(record repository.ProviderRegistryRecord) config
 		cfg.Timeout = record.RuntimeConfig.Timeout
 		cfg.Headers = cloneStringMap(record.RuntimeConfig.Headers)
 		cfg.ExtraBody = cloneAnyMap(record.RuntimeConfig.ExtraBody)
+		cfg.ModelAliases = cloneStringMap(record.RuntimeConfig.ModelAliases)
 	}
 	return cfg
 }

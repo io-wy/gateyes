@@ -20,6 +20,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { responsesApi } from '@/api/responses'
+import { JsonBlock } from '@/components/json-block'
 
 const DETAIL_TABS = [
   { id: 'request', label: 'Request' },
@@ -181,15 +182,15 @@ export function ResponsesPage() {
                   </button>
                 ))}
               </div>
-              <div className="max-h-[60vh] overflow-auto rounded-md bg-muted">
-                <pre className="whitespace-pre p-4 text-xs font-mono">
-                {detailTab === 'request'
-                  ? JSON.stringify(detailData.request_body ?? {}, null, 2)
-                  : detailTab === 'response'
-                    ? JSON.stringify(detailData.response_body ?? {}, null, 2)
-                    : JSON.stringify(detailData.route_trace ?? {}, null, 2)}
-                </pre>
-              </div>
+              {detailTab === 'request' && (
+                <JsonBlock title="Request Body" value={detailData.request_body} />
+              )}
+              {detailTab === 'response' && (
+                <JsonBlock title="Response Body" value={detailData.response_body} />
+              )}
+              {detailTab === 'trace' && (
+                <JsonBlock title="Route Trace" value={detailData.route_trace} />
+              )}
             </div>
           )}
         </DialogContent>

@@ -102,6 +102,7 @@ func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIde
 			req = pre.Request
 		}
 	}
+	req = s.applyCachePromptRewrite(ctx, identity, req)
 
 	// PreRoute plugin
 	preRoutePayload := map[string]any{"request": req}
@@ -145,12 +146,58 @@ func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIde
 
 	events := make(chan provider.ResponseEvent)
 	errCh := make(chan error, 1)
+	cacheEntry, cacheHit := s.lookupCache(ctx, identity, req)
+	cacheChecked := true
+	if cacheTrace := CacheTraceFrom(ctx); cacheTrace != nil && cacheTrace.Result != "" && trace != nil {
+		cacheCopy := *cacheTrace
+		trace.Cache = &cacheCopy
+	}
+
+	if cacheHit {
+		requestBody, _ := json.Marshal(req)
+		if raw := rawBodyFromContext(ctx); len(raw) > 0 {
+			requestBody = raw
+		}
+		if trace != nil {
+			trace.ResponseID = responseID
+			finalizeRouteTrace(trace, cacheEntry.Provider, "cache_hit", nil)
+		}
+		if err := s.store.CreateResponse(ctx, repository.ResponseRecord{
+			ID:             responseID,
+			TenantID:       identity.TenantID,
+			ProjectID:      identity.ProjectID,
+			UserID:         identity.UserID,
+			APIKeyID:       identity.APIKeyID,
+			ProviderName:   cacheEntry.Provider,
+			Model:          req.Model,
+			Status:         "in_progress",
+			RequestBody:    requestBody,
+			RouteTraceBody: routeTraceBytes(trace),
+		}); err != nil {
+			return nil, err
+		}
+		go func() {
+			defer close(events)
+			defer close(errCh)
+			s.replayCachedStream(ctx, identity, req, cacheEntry, responseID, events, errCh)
+		}()
+		return &Stream{
+			ResponseID:   responseID,
+			ProviderName: cacheEntry.Provider,
+			StartedAt:    time.Now(),
+			Events:       events,
+			Errors:       errCh,
+		}, nil
+	}
 
 	if trace != nil {
 		trace.ResponseID = responseID
 		trace.touch()
 	}
 	requestBody, _ := json.Marshal(req)
+	if raw := rawBodyFromContext(ctx); len(raw) > 0 {
+		requestBody = raw
+	}
 	if err := s.store.CreateResponse(ctx, repository.ResponseRecord{
 		ID:             responseID,
 		TenantID:       identity.TenantID,
@@ -166,7 +213,7 @@ func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIde
 		return nil, err
 	}
 
-	go s.runStreamWithFallback(ctx, identity, req, sessionID, candidates, responseID, trace, events, errCh)
+	go s.runStreamWithFallback(ctx, identity, req, sessionID, candidates, responseID, trace, events, errCh, cacheChecked)
 
 	firstProviderName := ""
 	if len(candidates) > 0 {
@@ -181,15 +228,17 @@ func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIde
 	}, nil
 }
 
-func (s *Service) runStreamWithFallback(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string, candidates []provider.Provider, responseID string, trace *routeTrace, out chan<- provider.ResponseEvent, errCh chan<- error) {
+func (s *Service) runStreamWithFallback(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string, candidates []provider.Provider, responseID string, trace *routeTrace, out chan<- provider.ResponseEvent, errCh chan<- error, cacheChecked bool) {
 	defer close(out)
 	defer close(errCh)
 
 	requestBody, _ := json.Marshal(req)
 
-	if entry, hit := s.lookupCache(ctx, identity, req); hit {
-		s.replayCachedStream(ctx, identity, req, entry, responseID, out, errCh)
-		return
+	if !cacheChecked {
+		if entry, hit := s.lookupCache(ctx, identity, req); hit {
+			s.replayCachedStream(ctx, identity, req, entry, responseID, out, errCh)
+			return
+		}
 	}
 
 	tenantID := identity.TenantID
