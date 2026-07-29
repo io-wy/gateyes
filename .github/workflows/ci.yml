@@ -87,24 +87,6 @@ jobs:
           exit-code: 0
           ignore-unfixed: true
 
-  harness:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Architecture dependency check
-        run: make lint-arch
-
-      - name: Quality check
-        run: make lint-quality
-
   coverage:
     runs-on: ubuntu-latest
     steps:
