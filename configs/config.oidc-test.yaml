@@ -1,0 +1,125 @@
+# Local OIDC-only test configuration. Uses SQLite and the mock IdP in tests/manual/oidc-mock.
+server:
+  listenAddr: ":8028"
+  readTimeout: 30
+  writeTimeout: 300
+  idleTimeout: 120
+  shutdownTimeout: 10
+
+database:
+  driver: sqlite
+  dsn: "/tmp/gateyes-oidc-test.db"
+  autoMigrate: true
+  maxOpenConns: 10
+  maxIdleConns: 5
+  connMaxLifetimeSeconds: 300
+
+redis:
+  addr: ""
+  password: ""
+  db: 0
+
+metrics:
+  namespace: gateway
+  enabled: false
+
+router:
+  strategy: least_load
+  inferenceMetrics:
+    enabled: false
+  ranker:
+    enabled: false
+  ruleEngine:
+    enabled: false
+
+limiter:
+  globalQPS: 1000
+  globalTPM: 1000000
+  globalTokenBurst: 100000
+  perUserRequestBurst: 100
+  tenantTPM: 500000
+  tenantTPMBurst: 50000
+  tenantRPM: 1000
+  tenantRPMBurst: 100
+  providerTPM: 300000
+  providerTPMBurst: 30000
+  providerRPM: 600
+  providerRPMBurst: 60
+  modelTPM: 200000
+  modelTPMBurst: 20000
+  modelRPM: 400
+  modelRPMBurst: 40
+  queueSize: 1000
+
+alert:
+  enabled: false
+
+healthCheck:
+  enabled: false
+
+circuitBreaker:
+  failureThreshold: 5
+  recoveryTimeout: 60
+  halfOpenMaxRequests: 1
+
+retry:
+  maxRetries: 2
+  initialDelayMs: 100
+  maxDelayMs: 5000
+  backoffFactor: 2.0
+
+cache:
+  enabled: true
+  backend: memory
+  defaultTTL: 300
+  capacity: 1000
+  skipStream: false
+  skipTools: true
+  singleflight: true
+  promptRewrite: true
+
+providers:
+  - name: mock-upstream
+    type: openai
+    vendor: openai
+    endpoint: chat
+    baseURL: http://127.0.0.1:18080/v1
+    apiKey: sk-mock
+    model: mock-model
+    weight: 1
+    enabled: true
+    capabilities:
+      chat: true
+      stream: true
+      embeddings: false
+
+apiKeys: []
+
+admin:
+  defaultTenant: default
+  bootstrapKey: admin-key-001
+  bootstrapSecret: ${GATEYES_ADMIN_BOOTSTRAP_SECRET}
+
+plugins:
+  enabled: false
+  directory: "./plugins"
+  autoReload: false
+
+wasmPlugins: []
+grpcPlugins: []
+
+rbac:
+  cacheTTLSeconds: 300
+
+oidc:
+  enabled: true
+  issuerURL: "http://localhost:8090"
+  clientID: "gateyes-local"
+  clientSecret: "gateyes-local-secret"
+  redirectURL: "http://localhost:8028/admin/auth/callback"
+  postLoginURL: "http://localhost:5173/oidc/callback"
+  scopes:
+    - openid
+    - email
+    - profile
+  jwtSecret: "local-jwt-secret-for-testing-only"
