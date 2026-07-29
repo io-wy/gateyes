@@ -9,6 +9,7 @@ import { AppLayout } from '@/components/layout/app-layout'
 import {
   DashboardPage,
   LoginPage,
+  OIDCCallbackPage,
   PlaygroundPage,
   ProvidersPage,
   KeysPage,
@@ -38,6 +39,12 @@ const loginRoute = createRoute({
       throw redirect({ to: '/' })
     }
   },
+})
+
+const oidcCallbackRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/oidc/callback',
+  component: OIDCCallbackPage,
 })
 
 const authLayoutRoute = createRoute({
@@ -132,11 +139,12 @@ const settingsRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
-    authLayoutRoute.addChildren([
-      dashboardRoute,
-      playgroundRoute,
-      providersRoute,
-      keysRoute,
+  oidcCallbackRoute,
+  authLayoutRoute.addChildren([
+    dashboardRoute,
+    playgroundRoute,
+    providersRoute,
+    keysRoute,
     virtualKeysRoute,
     projectsRoute,
     usersRoute,

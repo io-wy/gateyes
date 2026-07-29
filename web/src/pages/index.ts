@@ -1,5 +1,6 @@
 export * from './dashboard'
 export * from './login'
+export * from './oidc-callback'
 export * from './playground'
 export * from './providers'
 export * from './keys'
