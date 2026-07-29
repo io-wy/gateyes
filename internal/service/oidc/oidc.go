@@ -71,6 +71,11 @@ func (s *Service) Enabled() bool {
 	return s.cfg.Enabled
 }
 
+// PostLoginURL returns the SPA URL to redirect to after a successful OIDC callback.
+func (s *Service) PostLoginURL() string {
+	return s.cfg.PostLoginURL
+}
+
 // PKCE holds code verifier/challenge pair.
 type PKCE struct {
 	Verifier  string

@@ -74,6 +74,7 @@ func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mwSvc 
 	adminAuth := engine.Group("/admin/auth")
 	adminAuth.Use(func(c *gin.Context) { c.Set("middleware", mwSvc); c.Next() })
 	{
+		adminAuth.GET("/oidc/status", adminH.OIDCStatus)
 		adminAuth.GET("/oidc/login", adminH.OIDCLogin)
 		adminAuth.GET("/callback", adminH.OIDCCallback)
 		adminAuth.POST("/refresh", adminH.OIDCRefresh)

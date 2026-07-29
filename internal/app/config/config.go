@@ -313,6 +313,7 @@ type OIDCConfig struct {
 	ClientID     string   `yaml:"clientID"`
 	ClientSecret string   `yaml:"clientSecret"`
 	RedirectURL  string   `yaml:"redirectURL"`
+	PostLoginURL string   `yaml:"postLoginURL"`
 	Scopes       []string `yaml:"scopes"`
 	JWTSecret    string   `yaml:"jwtSecret"`
 }

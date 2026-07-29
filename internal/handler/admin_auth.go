@@ -1,13 +1,21 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
+	"net/url"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/gateyes/gateway/internal/handler/middleware"
 	"github.com/gateyes/gateway/internal/service/oidc"
 )
+
+func (h *AdminHandler) OIDCStatus(c *gin.Context) {
+	mwSvc := middlewareFromContext(c)
+	enabled := mwSvc != nil && mwSvc.OIDC() != nil && mwSvc.OIDC().Enabled()
+	writeOK(c, gin.H{"enabled": enabled})
+}
 
 func (h *AdminHandler) OIDCLogin(c *gin.Context) {
 	mwSvc := middlewareFromContext(c)
@@ -107,6 +115,18 @@ func (h *AdminHandler) OIDCCallback(c *gin.Context) {
 	c.SetCookie("oidc_verifier", "", -1, "/", "", false, true)
 
 	h.recordAudit(c, "oidc.callback", "user", user.ID, gin.H{"email": result.Claims.Email})
+
+	if postLoginURL := mwSvc.OIDC().PostLoginURL(); postLoginURL != "" {
+		location := fmt.Sprintf("%s#access_token=%s&refresh_token=%s&expires_in=%d",
+			postLoginURL,
+			url.QueryEscape(accessToken),
+			url.QueryEscape(refreshToken),
+			900,
+		)
+		c.Redirect(http.StatusFound, location)
+		return
+	}
+
 	writeOK(c, gin.H{
 		"access_token":  accessToken,
 		"refresh_token": refreshToken,
