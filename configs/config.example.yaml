@@ -88,6 +88,23 @@ circuitBreaker:
   recoveryTimeout: 60
   halfOpenMaxRequests: 1
 
+persistence:
+  busBuffer: 10000
+  busWorkers: 8
+  handlerTimeoutSeconds: 5
+  kafka:
+    enabled: false
+    brokers:
+      - localhost:9092
+    topic: gateyes.events
+    consumerGroup: gateyes
+    clientID: gateyes-gateway
+    batchSize: 100
+    batchTimeoutMs: 50
+    readMinBytes: 1
+    readMaxBytes: 10485760
+    maxAttempts: 3
+
 providers:
   - name: longcat-openai
     type: openai

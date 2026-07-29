@@ -18,6 +18,7 @@ import (
 	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/gateyes/gateway/internal/handler/middleware"
 	"github.com/gateyes/gateway/internal/repository"
+	batchSvc "github.com/gateyes/gateway/internal/service/batch"
 	"github.com/gateyes/gateway/internal/service/catalog"
 	"github.com/gateyes/gateway/internal/service/provider"
 	responseSvc "github.com/gateyes/gateway/internal/service/responses"
@@ -28,6 +29,7 @@ type Handler struct {
 	deps      *Dependencies
 	responses *responseSvc.Service
 	catalog   *catalog.Service
+	batch     *batchSvc.Service
 	metrics   *Metrics
 	logger    *slog.Logger
 }
@@ -39,6 +41,7 @@ type Dependencies struct {
 	ProviderMgr *provider.Manager
 	ResponseSvc *responseSvc.Service
 	CatalogSvc  *catalog.Service
+	BatchSvc    *batchSvc.Service
 	RedisPing   func(ctx context.Context) error
 }
 
@@ -48,6 +51,7 @@ func NewHandler(deps *Dependencies) *Handler {
 		deps:      deps,
 		responses: deps.ResponseSvc,
 		catalog:   deps.CatalogSvc,
+		batch:     deps.BatchSvc,
 		metrics:   deps.Metrics,
 		logger:    slog.With("component", "handler"),
 	}

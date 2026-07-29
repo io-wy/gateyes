@@ -22,6 +22,7 @@ import (
 	"github.com/gateyes/gateway/internal/repository/db"
 	"github.com/gateyes/gateway/internal/repository/sqlstore"
 	"github.com/gateyes/gateway/internal/service/alert"
+	batchSvc "github.com/gateyes/gateway/internal/service/batch"
 	"github.com/gateyes/gateway/internal/service/budget"
 	"github.com/gateyes/gateway/internal/service/cache"
 	"github.com/gateyes/gateway/internal/service/catalog"
@@ -236,13 +237,17 @@ func main() {
 		Workers:        cfg.Persistence.BusWorkers,
 		HandlerTimeout: time.Duration(cfg.Persistence.HandlerTimeoutSeconds) * time.Second,
 		Metrics:        metrics,
-		Stream: eventbus.StreamOptions{
-			Redis:         redisClient,
-			StreamName:    cfg.Persistence.StreamName,
-			ConsumerGroup: cfg.Persistence.ConsumerGroup,
-			MaxLen:        cfg.Persistence.StreamMaxLen,
-			ReadBlock:     time.Duration(cfg.Persistence.ReadBlockSeconds) * time.Second,
-			ClaimMinIdle:  time.Duration(cfg.Persistence.ClaimMinIdleSeconds) * time.Second,
+		Kafka: eventbus.KafkaOptions{
+			Enabled:       cfg.Persistence.Kafka.Enabled,
+			Brokers:       cfg.Persistence.Kafka.Brokers,
+			Topic:         cfg.Persistence.Kafka.Topic,
+			ConsumerGroup: cfg.Persistence.Kafka.ConsumerGroup,
+			ClientID:      cfg.Persistence.Kafka.ClientID,
+			BatchSize:     cfg.Persistence.Kafka.BatchSize,
+			BatchTimeout:  time.Duration(cfg.Persistence.Kafka.BatchTimeoutMs) * time.Millisecond,
+			ReadMinBytes:  cfg.Persistence.Kafka.ReadMinBytes,
+			ReadMaxBytes:  cfg.Persistence.Kafka.ReadMaxBytes,
+			MaxAttempts:   cfg.Persistence.Kafka.MaxAttempts,
 		},
 	})
 	store.SetEventBus(persistBus)
@@ -312,6 +317,11 @@ func main() {
 		responsesService.SetRedis(redisClient)
 		responsesService.RestoreCircuitBreakerState(context.Background())
 	}
+	batchService := batchSvc.New(batchSvc.Dependencies{
+		Store:     store,
+		Responses: responsesService,
+		EventBus:  persistBus,
+	})
 	catalogSvc := catalog.New(&catalog.Dependencies{
 		Store:     store,
 		Auth:      httpMiddleware.AuthService(),
@@ -335,6 +345,7 @@ func main() {
 		ProviderMgr: providerMgr,
 		ResponseSvc: responsesService,
 		CatalogSvc:  catalogSvc,
+		BatchSvc:    batchService,
 		RedisPing:   redisPing,
 	})
 

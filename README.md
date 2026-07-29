@@ -10,6 +10,7 @@ Gateyes is a production-oriented LLM API gateway. It exposes OpenAI-compatible a
 - Redis-backed distributed rate limiting with in-memory fallback
 - Project, tenant, API-key, and virtual-key budget controls
 - L1 response cache with Redis + memory fallback, singleflight, cache hints, and prompt rewrite optimization
+- Kafka-backed durable eventbus and async batch inference jobs
 - Prometheus metrics, OTLP tracing, audit logs, and provider runtime stats
 - WASM and gRPC plugin support across gateway lifecycle phases
 - React admin console for dashboard, providers, keys, services, responses, audit, and API playground
@@ -220,6 +221,7 @@ More details: [TESTING.md](./TESTING.md)
 | [architecture.md](./docs/docs-project/architecture.md) | Architecture and responsibility boundaries |
 | [runtime-mechanisms.md](./docs/docs-project/runtime-mechanisms.md) | Auth, routing, quota, cache, budget mechanics |
 | [cache.md](./docs/docs-project/cache.md) | L1 cache, singleflight, prompt rewrite, and cache observability |
+| [kafka-batch-inference.md](./docs/docs-project/kafka-batch-inference.md) | Kafka eventbus and batch inference jobs |
 | [provider-configuration.md](./docs/docs-project/provider-configuration.md) | Provider setup |
 | [plugin-development.md](./docs/docs-project/plugin-development.md) | WASM and gRPC plugin guide |
 | [deployment.md](./docs/docs-project/deployment.md) | Docker Compose, Helm, production notes |

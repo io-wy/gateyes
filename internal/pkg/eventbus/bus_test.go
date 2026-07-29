@@ -2,14 +2,12 @@ package eventbus
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
-	"github.com/redis/go-redis/v9"
+	"github.com/segmentio/kafka-go"
 )
 
 func TestPublishAndProcess(t *testing.T) {
@@ -205,30 +203,8 @@ func TestMetricsObserved(t *testing.T) {
 	}
 }
 
-func redisTestBus(t *testing.T) (*Bus, *redis.Client, *miniredis.Miniredis) {
-	mr := miniredis.RunT(t)
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	bus := New(Options{
-		Buffer:  4,
-		Workers: 1,
-		Stream: StreamOptions{
-			Redis:         rdb,
-			StreamName:    "test:events",
-			ConsumerGroup: "test-group",
-			ConsumerName:  "test-consumer",
-			ReadBlock:     100 * time.Millisecond,
-			ClaimMinIdle:  200 * time.Millisecond,
-			ClaimInterval: 100 * time.Millisecond,
-		},
-	})
-	return bus, rdb, mr
-}
-
-func TestRedisStreamPublishAndConsume(t *testing.T) {
-	bus, rdb, mr := redisTestBus(t)
-	defer bus.Close()
-	defer mr.Close()
-
+func TestPublishEventInMemoryFallback(t *testing.T) {
+	bus := New(Options{Buffer: 4, Workers: 1})
 	got := make(chan string, 1)
 	bus.RegisterEventHandler("test:echo", func(ctx context.Context, payload []byte) error {
 		got <- string(payload)
@@ -238,6 +214,7 @@ func TestRedisStreamPublishAndConsume(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	bus.Start(ctx)
+	defer bus.Close()
 
 	if !bus.PublishEvent(context.Background(), Event{Type: "test:echo", Payload: []byte("hello")}) {
 		t.Fatal("PublishEvent returned false")
@@ -251,91 +228,38 @@ func TestRedisStreamPublishAndConsume(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("handler was not invoked")
 	}
-
-	// Give ACK time to land, then assert no pending messages.
-	time.Sleep(100 * time.Millisecond)
-	pending, err := rdb.XPending(context.Background(), "test:events", "test-group").Result()
-	if err != nil {
-		t.Fatalf("XPending: %v", err)
-	}
-	if pending.Count != 0 {
-		t.Fatalf("pending count = %d, want 0", pending.Count)
-	}
 }
 
-func TestRedisStreamHandlerErrorRedelivers(t *testing.T) {
-	bus, rdb, mr := redisTestBus(t)
-	defer bus.Close()
-	defer mr.Close()
+func TestHandleKafkaMessageCommitDecisions(t *testing.T) {
+	bus := New(Options{Buffer: 4, Workers: 1})
 
-	var calls atomic.Int32
-	bus.RegisterEventHandler("test:retry", func(ctx context.Context, payload []byte) error {
-		if calls.Add(1) == 1 {
-			return errors.New("transient")
-		}
+	if !bus.handleKafkaMessage(context.Background(), kafka.Message{Value: []byte("not-json")}) {
+		t.Fatal("poison Kafka message should be committed")
+	}
+
+	body := []byte(`{"type":"missing:handler","payload":"eA=="}`)
+	if !bus.handleKafkaMessage(context.Background(), kafka.Message{Value: body}) {
+		t.Fatal("Kafka message with no handler should be committed")
+	}
+
+	bus.RegisterEventHandler("test:fail", func(ctx context.Context, payload []byte) error {
+		return context.DeadlineExceeded
+	})
+	body = []byte(`{"type":"test:fail","payload":"eA=="}`)
+	if bus.handleKafkaMessage(context.Background(), kafka.Message{Value: body}) {
+		t.Fatal("Kafka message with handler error should not be committed")
+	}
+
+	var got string
+	bus.RegisterEventHandler("test:ok", func(ctx context.Context, payload []byte) error {
+		got = string(payload)
 		return nil
 	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	bus.Start(ctx)
-
-	if !bus.PublishEvent(context.Background(), Event{Type: "test:retry", Payload: []byte("x")}) {
-		t.Fatal("PublishEvent returned false")
+	body = []byte(`{"type":"test:ok","payload":"eA=="}`)
+	if !bus.handleKafkaMessage(context.Background(), kafka.Message{Value: body}) {
+		t.Fatal("Kafka message with successful handler should be committed")
 	}
-
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) && calls.Load() < 2 {
-		time.Sleep(50 * time.Millisecond)
-	}
-	if calls.Load() != 2 {
-		t.Fatalf("calls = %d, want 2 (fail + redeliver)", calls.Load())
-	}
-
-	// After success the message must be ACKed.
-	time.Sleep(100 * time.Millisecond)
-	pending, err := rdb.XPending(context.Background(), "test:events", "test-group").Result()
-	if err != nil {
-		t.Fatalf("XPending: %v", err)
-	}
-	if pending.Count != 0 {
-		t.Fatalf("pending count = %d, want 0 after ACK", pending.Count)
-	}
-}
-
-func TestRedisStreamFallbackWhenRedisDown(t *testing.T) {
-	mr := miniredis.RunT(t)
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	bus := New(Options{
-		Buffer:  4,
-		Workers: 1,
-		Stream: StreamOptions{
-			Redis:         rdb,
-			StreamName:    "test:events",
-			ConsumerGroup: "test-group",
-			ConsumerName:  "test-consumer",
-		},
-	})
-
-	var called atomic.Bool
-	bus.RegisterEventHandler("test:fallback", func(ctx context.Context, payload []byte) error {
-		called.Store(true)
-		return nil
-	})
-
-	bus.Start(context.Background())
-	defer bus.Close()
-	mr.Close() // kill redis before publish
-
-	if !bus.PublishEvent(context.Background(), Event{Type: "test:fallback", Payload: []byte("x")}) {
-		t.Fatal("PublishEvent returned false, expected in-memory fallback")
-	}
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && !called.Load() {
-		time.Sleep(50 * time.Millisecond)
-	}
-	if !called.Load() {
-		t.Fatal("in-memory fallback handler was not called after Redis failure")
+	if got != "x" {
+		t.Fatalf("payload = %q, want x", got)
 	}
 }

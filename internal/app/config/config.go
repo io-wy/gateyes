@@ -115,21 +115,30 @@ type PricingConfig struct {
 // work (DB updates, alert webhooks, callbacks) off the request hot path.
 //
 // Defaults are sensible for a single mid-size node; tune Workers up for
-// higher-throughput deployments. When BusBuffer fills (saturated workers),
-// the gateway falls back to inline detached goroutines so no billing data
-// is dropped — observe the dropped counter via metrics.
+// higher-throughput deployments. Closure-based Publish uses the in-process
+// queue; selected billing persistence paths add their own detached fallback
+// when the queue is saturated.
 //
-// If Redis is enabled, the bus can optionally persist events to a Redis
-// Stream for durability across process restarts. See StreamName.
+// Kafka is the durable backend for typed events; when it is disabled, the bus
+// remains in-memory for local development and tests.
 type PersistenceConfig struct {
-	BusBuffer             int    `yaml:"busBuffer"`             // channel capacity, default 10000
-	BusWorkers            int    `yaml:"busWorkers"`            // consumer goroutine count, default 8
-	HandlerTimeoutSeconds int    `yaml:"handlerTimeoutSeconds"` // per-handler timeout, default 5
-	StreamName            string `yaml:"streamName"`            // redis stream name, default "gateyes:events"
-	ConsumerGroup         string `yaml:"consumerGroup"`         // redis consumer group, default "gateyes"
-	StreamMaxLen          int64  `yaml:"streamMaxLen"`          // max stream length (approx), default 100000
-	ReadBlockSeconds      int    `yaml:"readBlockSeconds"`      // XReadGroup block timeout, default 1
-	ClaimMinIdleSeconds   int    `yaml:"claimMinIdleSeconds"`   // idle before claim, default 60
+	BusBuffer             int         `yaml:"busBuffer"`             // channel capacity, default 10000
+	BusWorkers            int         `yaml:"busWorkers"`            // consumer goroutine count, default 8
+	HandlerTimeoutSeconds int         `yaml:"handlerTimeoutSeconds"` // per-handler timeout, default 5
+	Kafka                 KafkaConfig `yaml:"kafka"`                 // optional durable event backend
+}
+
+type KafkaConfig struct {
+	Enabled        bool     `yaml:"enabled"`
+	Brokers        []string `yaml:"brokers"`
+	Topic          string   `yaml:"topic"`
+	ConsumerGroup  string   `yaml:"consumerGroup"`
+	ClientID       string   `yaml:"clientID"`
+	BatchSize      int      `yaml:"batchSize"`
+	BatchTimeoutMs int      `yaml:"batchTimeoutMs"`
+	ReadMinBytes   int      `yaml:"readMinBytes"`
+	ReadMaxBytes   int      `yaml:"readMaxBytes"`
+	MaxAttempts    int      `yaml:"maxAttempts"`
 }
 
 type RedisConfig struct {
@@ -708,11 +717,18 @@ func DefaultConfig() *Config {
 			BusBuffer:             10000,
 			BusWorkers:            8,
 			HandlerTimeoutSeconds: 5,
-			StreamName:            "gateyes:events",
-			ConsumerGroup:         "gateyes",
-			StreamMaxLen:          100000,
-			ReadBlockSeconds:      1,
-			ClaimMinIdleSeconds:   60,
+			Kafka: KafkaConfig{
+				Enabled:        false,
+				Brokers:        []string{"localhost:9092"},
+				Topic:          "gateyes.events",
+				ConsumerGroup:  "gateyes",
+				ClientID:       "gateyes-gateway",
+				BatchSize:      100,
+				BatchTimeoutMs: 50,
+				ReadMinBytes:   1,
+				ReadMaxBytes:   10_485_760,
+				MaxAttempts:    3,
+			},
 		},
 		Admin: AdminConfig{
 			DefaultTenant:   "default",

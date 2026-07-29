@@ -15,14 +15,12 @@
 // is intentional back-pressure to keep the hot path non-blocking. Loss is
 // rare in steady state and observable via the Dropped() counter.
 //
-// # Redis Streams backend
+// # Kafka backend
 //
-// When a *redis.Client is supplied, the bus can also persist typed events to
-// a Redis Stream and consume them via a consumer group. This gives the
-// bookkeeping path durability across gateway process restarts (provided Redis
-// itself is configured with AOF). The closure-based Publish API remains
-// in-memory only; durable work should use PublishEvent with a registered
-// EventHandler.
+// When Kafka is configured, PublishEvent writes typed events to a Kafka topic
+// and consumers process them through a consumer group. If Kafka is disabled or
+// temporarily unavailable, PublishEvent falls back to in-memory dispatch so
+// local development and tests remain lightweight.
 package eventbus
 
 import (
@@ -31,14 +29,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	"github.com/segmentio/kafka-go"
 )
 
 // Handler is the work performed off the hot path. The supplied context is
@@ -48,18 +45,20 @@ type Handler func(ctx context.Context)
 // Event is a serializable, durable work item. Use it with PublishEvent when
 // the work must survive a gateway process restart.
 type Event struct {
+	Key     string `json:"key,omitempty"`
 	Type    string `json:"type"`
 	Payload []byte `json:"payload"`
 }
 
 // EventHandler processes a single durable event. A non-nil error tells the
-// consumer not to ACK the message so Redis will redeliver it.
+// Kafka consumer not to commit the message so Kafka can redeliver it.
 type EventHandler func(ctx context.Context, payload []byte) error
 
 // Event type constants for cross-package coordination.
 const (
 	EventTypeResponseDetails = "response:details"
 	EventTypeResponseUpdate  = "response:update"
+	EventTypeBatchItem       = "batch:item"
 )
 
 // Metrics receives lifecycle observations from a Bus. Implementations must be
@@ -90,44 +89,38 @@ type Bus struct {
 
 	metrics Metrics
 
-	// handlers map event types to processors. Used by both in-memory and
-	// Redis Streams dispatch paths.
+	// handlers map event types to processors. Used by both in-memory fallback
+	// and Kafka dispatch paths.
 	handlers   map[string]EventHandler
 	handlersMu sync.RWMutex
 
-	// redis stream backend (optional)
-	rdb           *redis.Client
-	stream        string
-	group         string
-	consumer      string
-	maxLen        int64
-	readBlock     time.Duration
-	claimMinIdle  time.Duration
-	claimInterval time.Duration
-	streamSem     chan struct{}
+	// kafka backend (optional)
+	kafkaWriter *kafka.Writer
+	kafkaReader *kafka.Reader
+	kafkaTopic  string
 }
 
-// StreamOptions configures the optional Redis Streams backend.
-type StreamOptions struct {
-	// Redis client. If nil, the bus runs in in-memory mode only.
-	Redis *redis.Client
-	// Stream name. Default: "gateyes:events".
-	StreamName string
-	// Consumer group name. Default: "gateyes".
+// KafkaOptions configures the optional Kafka durable event backend.
+type KafkaOptions struct {
+	// Enabled turns on Kafka publishing/consuming when Brokers and Topic are set.
+	Enabled bool
+	// Brokers is the Kafka bootstrap broker list.
+	Brokers []string
+	// Topic stores all typed eventbus events.
+	Topic string
+	// ConsumerGroup enables durable consumption. Default: "gateyes".
 	ConsumerGroup string
-	// Consumer name. Default: os.Hostname() or "gateyes-gateway".
-	ConsumerName string
-	// MaxLen caps the stream length (approximate). Default: 100000.
-	MaxLen int64
-	// ReadBlock is how long XReadGroup blocks waiting for new messages.
-	// Default: 1s.
-	ReadBlock time.Duration
-	// ClaimMinIdle is the idle time before a pending message can be claimed
-	// by another consumer. Default: 60s.
-	ClaimMinIdle time.Duration
-	// ClaimInterval controls how often idle pending messages are reclaimed.
-	// Default: ClaimMinIdle / 2, minimum 10s.
-	ClaimInterval time.Duration
+	// ClientID identifies this gateway process to Kafka.
+	ClientID string
+	// BatchSize controls producer batching. Default: 100.
+	BatchSize int
+	// BatchTimeout controls producer flush latency. Default: 50ms.
+	BatchTimeout time.Duration
+	// ReadMinBytes / ReadMaxBytes tune reader fetch sizes.
+	ReadMinBytes int
+	ReadMaxBytes int
+	// MaxAttempts controls producer retries. Default: 3.
+	MaxAttempts int
 }
 
 // Options configures a Bus.
@@ -142,9 +135,9 @@ type Options struct {
 	// Metrics receives dropped/processed/panic/queue observations.
 	// Optional.
 	Metrics Metrics
-	// Stream configures the optional Redis Streams backend.
-	// Optional; if Redis is nil, the bus is in-memory only.
-	Stream StreamOptions
+	// Kafka configures the optional Kafka durable backend.
+	// Optional; if disabled, PublishEvent uses in-memory fallback.
+	Kafka KafkaOptions
 }
 
 // New constructs a Bus. Call Start before Publish or PublishEvent.
@@ -159,53 +152,57 @@ func New(opts Options) *Bus {
 		opts.HandlerTimeout = 5 * time.Second
 	}
 
-	stream := opts.Stream
-	if stream.Redis != nil {
-		if stream.StreamName == "" {
-			stream.StreamName = "gateyes:events"
+	kafkaOpts := opts.Kafka
+	var kafkaWriter *kafka.Writer
+	var kafkaReader *kafka.Reader
+	if kafkaOpts.Enabled && len(kafkaOpts.Brokers) > 0 && kafkaOpts.Topic != "" {
+		if kafkaOpts.ConsumerGroup == "" {
+			kafkaOpts.ConsumerGroup = "gateyes"
 		}
-		if stream.ConsumerGroup == "" {
-			stream.ConsumerGroup = "gateyes"
+		if kafkaOpts.ClientID == "" {
+			kafkaOpts.ClientID = "gateyes-gateway"
 		}
-		if stream.ConsumerName == "" {
-			if host, err := os.Hostname(); err == nil && host != "" {
-				stream.ConsumerName = host
-			} else {
-				stream.ConsumerName = "gateyes-gateway"
-			}
+		if kafkaOpts.BatchSize <= 0 {
+			kafkaOpts.BatchSize = 100
 		}
-		if stream.MaxLen <= 0 {
-			stream.MaxLen = 100000
+		if kafkaOpts.BatchTimeout <= 0 {
+			kafkaOpts.BatchTimeout = 50 * time.Millisecond
 		}
-		if stream.ReadBlock <= 0 {
-			stream.ReadBlock = time.Second
+		if kafkaOpts.ReadMinBytes <= 0 {
+			kafkaOpts.ReadMinBytes = 1
 		}
-		if stream.ClaimMinIdle <= 0 {
-			stream.ClaimMinIdle = 60 * time.Second
+		if kafkaOpts.ReadMaxBytes <= 0 {
+			kafkaOpts.ReadMaxBytes = 10e6
 		}
-		if stream.ClaimInterval <= 0 {
-			stream.ClaimInterval = stream.ClaimMinIdle / 2
-			if stream.ClaimInterval < 10*time.Second {
-				stream.ClaimInterval = 10 * time.Second
-			}
+		if kafkaOpts.MaxAttempts <= 0 {
+			kafkaOpts.MaxAttempts = 3
 		}
+		kafkaWriter = &kafka.Writer{
+			Addr:         kafka.TCP(kafkaOpts.Brokers...),
+			Topic:        kafkaOpts.Topic,
+			Balancer:     &kafka.Hash{},
+			BatchSize:    kafkaOpts.BatchSize,
+			BatchTimeout: kafkaOpts.BatchTimeout,
+			MaxAttempts:  kafkaOpts.MaxAttempts,
+		}
+		kafkaReader = kafka.NewReader(kafka.ReaderConfig{
+			Brokers:  kafkaOpts.Brokers,
+			GroupID:  kafkaOpts.ConsumerGroup,
+			Topic:    kafkaOpts.Topic,
+			MinBytes: kafkaOpts.ReadMinBytes,
+			MaxBytes: kafkaOpts.ReadMaxBytes,
+		})
 	}
 
 	return &Bus{
-		ch:            make(chan Handler, opts.Buffer),
-		workers:       opts.Workers,
-		timeout:       opts.HandlerTimeout,
-		metrics:       opts.Metrics,
-		handlers:      make(map[string]EventHandler),
-		rdb:           stream.Redis,
-		stream:        stream.StreamName,
-		group:         stream.ConsumerGroup,
-		consumer:      stream.ConsumerName,
-		maxLen:        stream.MaxLen,
-		readBlock:     stream.ReadBlock,
-		claimMinIdle:  stream.ClaimMinIdle,
-		claimInterval: stream.ClaimInterval,
-		streamSem:     make(chan struct{}, opts.Workers),
+		ch:          make(chan Handler, opts.Buffer),
+		workers:     opts.Workers,
+		timeout:     opts.HandlerTimeout,
+		metrics:     opts.Metrics,
+		handlers:    make(map[string]EventHandler),
+		kafkaWriter: kafkaWriter,
+		kafkaReader: kafkaReader,
+		kafkaTopic:  kafkaOpts.Topic,
 	}
 }
 
@@ -244,16 +241,9 @@ func (b *Bus) Start(ctx context.Context) {
 			b.wg.Add(1)
 			go b.workerLoop(runCtx)
 		}
-		if b.rdb != nil {
-			if err := b.ensureGroup(runCtx); err != nil {
-				slog.Error("eventbus failed to create redis stream consumer group",
-					"stream", b.stream,
-					"group", b.group,
-					"error", err,
-				)
-			}
+		if b.kafkaReader != nil {
 			b.wg.Add(1)
-			go b.streamReader(runCtx)
+			go b.kafkaReaderLoop(runCtx)
 		}
 	})
 }
@@ -344,11 +334,11 @@ func (b *Bus) Publish(h Handler) bool {
 	}
 }
 
-// PublishEvent persists a typed event. When Redis Streams is configured, the
-// event is written to the stream; otherwise it is dispatched in-memory.
-// If Redis is unavailable, the bus falls back to in-memory dispatch so that
-// data is not lost. Returns false only when the bus is closed or no handler
-// is registered for the event type.
+// PublishEvent persists a typed event. When Kafka is configured, the event is
+// written to Kafka. If Kafka is disabled or temporarily unavailable, the bus
+// falls back to in-memory dispatch so that single-process deployments and tests
+// continue to work. Returns false only when the bus is closed or no handler is
+// registered for the event type.
 func (b *Bus) PublishEvent(ctx context.Context, e Event) bool {
 	if b == nil {
 		return false
@@ -360,12 +350,13 @@ func (b *Bus) PublishEvent(ctx context.Context, e Event) bool {
 		}
 		return false
 	}
-	if b.rdb != nil {
-		if err := b.xadd(ctx, e); err == nil {
+	if b.kafkaWriter != nil {
+		if err := b.writeKafka(ctx, e); err == nil {
 			return true
 		} else {
-			slog.Warn("eventbus redis stream XAdd failed, falling back to in-memory dispatch",
-				"stream", b.stream,
+			slog.Warn("eventbus kafka write failed, falling back",
+				"topic", b.kafkaTopic,
+				"type", e.Type,
 				"error", err,
 			)
 		}
@@ -373,19 +364,23 @@ func (b *Bus) PublishEvent(ctx context.Context, e Event) bool {
 	return b.dispatchEventInMemory(e)
 }
 
-func (b *Bus) xadd(ctx context.Context, e Event) error {
+func (b *Bus) writeKafka(ctx context.Context, e Event) error {
 	body, err := json.Marshal(e)
 	if err != nil {
 		return fmt.Errorf("marshal event: %w", err)
 	}
-	return b.rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: b.stream,
-		MaxLen: b.maxLen,
-		Approx: true,
-		Values: map[string]interface{}{
-			"event": string(body),
+	key := e.Key
+	if key == "" {
+		key = e.Type
+	}
+	return b.kafkaWriter.WriteMessages(ctx, kafka.Message{
+		Key:   []byte(key),
+		Value: body,
+		Headers: []kafka.Header{
+			{Key: "event_type", Value: []byte(e.Type)},
 		},
-	}).Err()
+		Time: time.Now(),
+	})
 }
 
 func (b *Bus) dispatchEventInMemory(e Event) bool {
@@ -424,138 +419,39 @@ func (b *Bus) dispatchEventInMemory(e Event) bool {
 	return true
 }
 
-// streamReader consumes messages from the Redis Stream and dispatches them.
-func (b *Bus) streamReader(ctx context.Context) {
+func (b *Bus) kafkaReaderLoop(ctx context.Context) {
 	defer b.wg.Done()
-	claimTicker := time.NewTicker(b.claimInterval)
-	defer claimTicker.Stop()
-
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-claimTicker.C:
-			b.claimAndProcess(ctx)
-		default:
-		}
-
-		if b.readAndProcess(ctx, ">", b.readBlock) {
-			continue
-		}
-		if b.readAndProcess(ctx, "0", 0) {
-			continue
-		}
-		if b.claimAndProcess(ctx) {
-			continue
-		}
-	}
-}
-
-func (b *Bus) ensureGroup(ctx context.Context) error {
-	err := b.rdb.XGroupCreateMkStream(ctx, b.stream, b.group, "0").Err()
-	if err == nil || strings.Contains(err.Error(), "BUSYGROUP") {
-		return nil
-	}
-	return err
-}
-
-func (b *Bus) readAndProcess(ctx context.Context, id string, block time.Duration) bool {
-	if ctx.Err() != nil {
-		return false
-	}
-	streams, err := b.rdb.XReadGroup(ctx, &redis.XReadGroupArgs{
-		Group:    b.group,
-		Consumer: b.consumer,
-		Streams:  []string{b.stream, id},
-		Count:    10,
-		Block:    block,
-	}).Result()
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, redis.ErrClosed) || errors.Is(err, redis.Nil) {
-			return false
-		}
-		// Timeout from blocking read is not an error.
-		if strings.Contains(err.Error(), "timeout") {
-			return false
-		}
-		slog.Error("eventbus XReadGroup failed",
-			"stream", b.stream,
-			"group", b.group,
-			"id", id,
-			"error", err,
-		)
-		time.Sleep(time.Second)
-		return false
-	}
-	return b.processStreams(ctx, streams)
-}
-
-func (b *Bus) claimAndProcess(ctx context.Context) bool {
-	if ctx.Err() != nil {
-		return false
-	}
-	start := "-"
-	processed := false
-	for {
-		claimed, next, err := b.rdb.XAutoClaim(ctx, &redis.XAutoClaimArgs{
-			Stream:   b.stream,
-			Group:    b.group,
-			Consumer: b.consumer,
-			MinIdle:  b.claimMinIdle,
-			Start:    start,
-			Count:    10,
-		}).Result()
+		msg, err := b.kafkaReader.FetchMessage(ctx)
 		if err != nil {
-			if !errors.Is(err, context.Canceled) && !errors.Is(err, redis.ErrClosed) {
-				slog.Error("eventbus XAutoClaim failed",
-					"stream", b.stream,
-					"group", b.group,
+			if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "use of closed network connection") {
+				return
+			}
+			slog.Error("eventbus kafka fetch failed", "topic", b.kafkaTopic, "error", err)
+			time.Sleep(time.Second)
+			continue
+		}
+		if b.handleKafkaMessage(ctx, msg) {
+			if err := b.kafkaReader.CommitMessages(ctx, msg); err != nil {
+				slog.Error("eventbus kafka commit failed",
+					"topic", msg.Topic,
+					"partition", msg.Partition,
+					"offset", msg.Offset,
 					"error", err,
 				)
 			}
-			return processed
-		}
-		if len(claimed) > 0 {
-			b.processStreams(ctx, []redis.XStream{{Messages: claimed}})
-			processed = true
-		}
-		if next == "0-0" || len(claimed) < 10 {
-			break
-		}
-		start = next
-	}
-	return processed
-}
-
-func (b *Bus) processStreams(ctx context.Context, streams []redis.XStream) bool {
-	processed := false
-	for _, stream := range streams {
-		for _, msg := range stream.Messages {
-			processed = true
-			b.processStreamMessage(ctx, msg)
 		}
 	}
-	return processed
 }
 
-func (b *Bus) processStreamMessage(ctx context.Context, msg redis.XMessage) {
-	b.wg.Add(1)
-	go func() {
-		defer b.wg.Done()
-		b.streamSem <- struct{}{}
-		defer func() { <-b.streamSem }()
-		b.handleStreamMessage(ctx, msg)
-	}()
-}
-
-func (b *Bus) handleStreamMessage(ctx context.Context, msg redis.XMessage) {
+func (b *Bus) handleKafkaMessage(ctx context.Context, msg kafka.Message) bool {
 	defer func() {
 		b.processed.Add(1)
 		if b.metrics != nil {
 			b.metrics.IncEventBusProcessed()
 		}
 		if r := recover(); r != nil {
-			slog.Error("eventbus stream handler panic",
+			slog.Error("eventbus kafka handler panic",
 				"recover", r,
 				"stack", string(debug.Stack()),
 			)
@@ -566,63 +462,40 @@ func (b *Bus) handleStreamMessage(ctx context.Context, msg redis.XMessage) {
 		}
 	}()
 
-	e, err := b.parseMessage(msg)
-	if err != nil {
-		slog.Error("eventbus failed to parse stream message, acknowledging to prevent poison",
-			"stream", b.stream,
-			"message_id", msg.ID,
+	var e Event
+	if err := json.Unmarshal(msg.Value, &e); err != nil {
+		slog.Error("eventbus failed to parse kafka message, committing to prevent poison",
+			"topic", msg.Topic,
+			"partition", msg.Partition,
+			"offset", msg.Offset,
 			"error", err,
 		)
-		b.ack(ctx, msg.ID)
-		return
+		return true
 	}
-
 	h := b.handler(e.Type)
 	if h == nil {
-		slog.Error("eventbus no handler for stream message, acknowledging to prevent poison",
-			"stream", b.stream,
-			"message_id", msg.ID,
+		slog.Error("eventbus no handler for kafka message, committing to prevent poison",
+			"topic", msg.Topic,
+			"partition", msg.Partition,
+			"offset", msg.Offset,
 			"type", e.Type,
 		)
-		b.ack(ctx, msg.ID)
-		return
+		return true
 	}
 
 	hCtx, cancel := context.WithTimeout(context.Background(), b.timeout)
 	defer cancel()
 	if err := h(hCtx, e.Payload); err != nil {
-		slog.Error("eventbus stream handler failed, message will be redelivered",
-			"stream", b.stream,
-			"message_id", msg.ID,
+		slog.Error("eventbus kafka handler failed, message will be redelivered",
+			"topic", msg.Topic,
+			"partition", msg.Partition,
+			"offset", msg.Offset,
 			"type", e.Type,
 			"error", err,
 		)
-		return
+		return false
 	}
-	b.ack(ctx, msg.ID)
-}
-
-func (b *Bus) parseMessage(msg redis.XMessage) (Event, error) {
-	var e Event
-	body, ok := msg.Values["event"].(string)
-	if !ok {
-		return e, fmt.Errorf("message missing event field")
-	}
-	if err := json.Unmarshal([]byte(body), &e); err != nil {
-		return e, fmt.Errorf("unmarshal event: %w", err)
-	}
-	return e, nil
-}
-
-func (b *Bus) ack(ctx context.Context, ids ...string) {
-	if err := b.rdb.XAck(ctx, b.stream, b.group, ids...).Err(); err != nil {
-		slog.Error("eventbus XAck failed",
-			"stream", b.stream,
-			"group", b.group,
-			"message_ids", ids,
-			"error", err,
-		)
-	}
+	return true
 }
 
 // Close stops accepting new work, waits for the channel to drain, and
@@ -636,8 +509,8 @@ func (b *Bus) Close() error {
 	var err error
 	b.stopOnce.Do(func() {
 		b.closed.Store(true)
-		if b.rdb != nil && b.cancel != nil {
-			// Cancel the stream reader first so it stops blocking on Redis.
+		if b.kafkaReader != nil && b.cancel != nil {
+			// Cancel the Kafka reader first so it stops blocking on fetch.
 			b.cancel()
 		}
 		close(b.ch)
@@ -653,6 +526,12 @@ func (b *Bus) Close() error {
 		}
 		if b.cancel != nil {
 			b.cancel()
+		}
+		if b.kafkaReader != nil {
+			_ = b.kafkaReader.Close()
+		}
+		if b.kafkaWriter != nil {
+			_ = b.kafkaWriter.Close()
 		}
 	})
 	return err

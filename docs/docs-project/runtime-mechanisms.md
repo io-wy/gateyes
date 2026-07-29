@@ -269,7 +269,7 @@ Admin 关键写操作会记录到 `audit_logs` 表：
 - service 发布、回滚、订阅审核
 - OIDC 登录回调和 logout
 
-请求完成后的 usage、budget、audit、alert 等工作通过 `internal/pkg/eventbus` 异步执行，避免阻塞主请求路径；当事件队列满时会记录 metrics 并退化为 detached goroutine，保证计费数据不丢。
+请求完成后的 usage、budget、audit、alert 等工作通过 `internal/pkg/eventbus` 异步执行，避免阻塞主请求路径。闭包型 `Publish` 负责进程内 best-effort 任务；响应详情、响应状态更新、batch item 等 typed event 通过 Kafka durable eventbus 投递，Kafka 未启用或写入失败时才降级为进程内 dispatch。响应持久化路径在队列满时会记录 metrics 并退化为 detached goroutine，保证计费数据不丢。
 
 ---
 

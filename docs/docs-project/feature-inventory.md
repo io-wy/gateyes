@@ -1,6 +1,6 @@
 # Gateyes 功能盘点
 
-> 更新时间：2026-07-28
+> 更新时间：2026-07-29
 
 本文档记录当前仓库里已经落地的功能，作为 README 和面试材料之外的工程事实索引。
 
@@ -16,6 +16,7 @@ Gateyes 对外提供多种 LLM API surface，并在内部收敛到 `provider.Res
 | Embeddings | `POST /v1/embeddings` | 选择支持 embeddings 的 provider |
 | Images | `POST /v1/images/generations` | 选择支持 images 的 provider |
 | Service runtime | `POST /service/:prefix/*` | 基于 prompt/service catalog 的业务级入口 |
+| Batch inference | `POST /v1/batches`、`GET /v1/batches/:id` | 异步批量推理任务，复用 Responses 内核 |
 
 `GET /v1/models` 会返回当前租户可用模型、provider、健康状态和能力 catalog。
 
@@ -60,6 +61,7 @@ Gateyes 对外提供多种 LLM API surface，并在内部收敛到 `provider.Res
 - Tracing：W3C `traceparent` 传播，OTLP exporter。
 - Audit log：admin 关键写操作落库，可在后台查询。
 - Provider runtime stats：provider 当前负载、TPM、错误率、健康状态。
+- Kafka eventbus：typed durable event 承载 response detail/update 与 batch item，eventbus dropped/processed/panic/queue size 可观测。
 
 ## 7. 插件与扩展
 
@@ -84,6 +86,7 @@ Gateyes 对外提供多种 LLM API surface，并在内部收敛到 `provider.Res
 ## 9. 运维交付
 
 - 配置：`configs/config.yaml` / `configs/config.example.yaml`。
+- Kafka：`persistence.kafka` 配置 durable eventbus，batch inference 基于同一 topic/consumer group 调度。
 - 数据库迁移：`internal/repository/db/migrations`。
 - 部署：Docker Compose、Helm chart、ingress template。
 - Runbook：备份恢复、升级、回滚、CI/CD、secrets/config、vLLM cache experiment。

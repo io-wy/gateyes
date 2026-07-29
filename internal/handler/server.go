@@ -37,6 +37,10 @@ func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mwSvc 
 	{
 		v1.GET("/responses/:id", h.GetResponse)
 		v1.GET("/models", h.Models)
+		v1.POST("/batches", h.CreateBatch)
+		v1.GET("/batches", h.ListBatches)
+		v1.GET("/batches/:id", h.GetBatch)
+		v1.GET("/batches/:id/items", h.ListBatchItems)
 	}
 
 	llm := v1.Group("")
