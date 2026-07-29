@@ -16,7 +16,7 @@ Gateyes 对外提供多种 LLM API surface，并在内部收敛到 `provider.Res
 | Embeddings | `POST /v1/embeddings` | 选择支持 embeddings 的 provider |
 | Images | `POST /v1/images/generations` | 选择支持 images 的 provider |
 | Service runtime | `POST /service/:prefix/*` | 基于 prompt/service catalog 的业务级入口 |
-| Batch inference | `POST /v1/batches`、`GET /v1/batches/:id` | 异步批量推理任务，复用 Responses 内核 |
+| Batch inference | `POST /v1/batches`、`GET /v1/batches/:id`、`POST /v1/batches/:id/cancel` | 异步批量推理任务，复用 Responses 内核，支持进度、token 汇总和取消 |
 
 `GET /v1/models` 会返回当前租户可用模型、provider、健康状态和能力 catalog。
 

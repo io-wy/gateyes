@@ -21,6 +21,8 @@ type Store interface {
 	MarkBatchItemRunning(ctx context.Context, tenantID, itemID string) (bool, error)
 	CompleteBatchItem(ctx context.Context, tenantID, itemID string, update repository.BatchItemUpdate) error
 	FailBatchItem(ctx context.Context, tenantID, itemID string, update repository.BatchItemUpdate) error
+	CancelBatchItem(ctx context.Context, tenantID, itemID string) error
+	CancelBatchJob(ctx context.Context, tenantID, id string) (*repository.BatchJobRecord, error)
 }
 
 type Service struct {
@@ -36,9 +38,11 @@ type Dependencies struct {
 }
 
 type CreateRequest struct {
-	Endpoint string        `json:"endpoint"`
-	Model    string        `json:"model"`
-	Requests []RequestItem `json:"requests"`
+	Endpoint         string          `json:"endpoint"`
+	Model            string          `json:"model"`
+	CompletionWindow string          `json:"completion_window"`
+	Metadata         json.RawMessage `json:"metadata"`
+	Requests         []RequestItem   `json:"requests"`
 }
 
 type RequestItem struct {
@@ -83,6 +87,17 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 	if req.Endpoint != "/v1/responses" && req.Endpoint != "/v1/chat/completions" && req.Endpoint != "/v1/messages" {
 		return nil, fmt.Errorf("unsupported batch endpoint: %s", req.Endpoint)
 	}
+	if req.CompletionWindow == "" {
+		req.CompletionWindow = "24h"
+	}
+	if req.CompletionWindow != "24h" {
+		return nil, fmt.Errorf("unsupported completion_window: %s", req.CompletionWindow)
+	}
+	if len(req.Metadata) == 0 {
+		req.Metadata = json.RawMessage(`{}`)
+	} else if !json.Valid(req.Metadata) {
+		return nil, fmt.Errorf("metadata must be valid JSON")
+	}
 	if len(rawBody) == 0 {
 		rawBody, _ = json.Marshal(req)
 	}
@@ -96,14 +111,16 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 	}
 
 	job, err := s.store.CreateBatchJob(ctx, repository.CreateBatchJobParams{
-		TenantID:    identity.TenantID,
-		ProjectID:   identity.ProjectID,
-		UserID:      identity.UserID,
-		APIKeyID:    identity.APIKeyID,
-		Endpoint:    req.Endpoint,
-		Model:       req.Model,
-		TotalItems:  len(req.Requests),
-		RequestBody: rawBody,
+		TenantID:         identity.TenantID,
+		ProjectID:        identity.ProjectID,
+		UserID:           identity.UserID,
+		APIKeyID:         identity.APIKeyID,
+		Endpoint:         req.Endpoint,
+		Model:            req.Model,
+		CompletionWindow: req.CompletionWindow,
+		TotalItems:       len(req.Requests),
+		RequestBody:      rawBody,
+		Metadata:         req.Metadata,
 	})
 	if err != nil {
 		return nil, err
@@ -135,6 +152,13 @@ func (s *Service) List(ctx context.Context, tenantID string, limit, offset int) 
 
 func (s *Service) Items(ctx context.Context, tenantID, jobID string) ([]repository.BatchItemRecord, error) {
 	return s.store.ListBatchItems(ctx, tenantID, jobID)
+}
+
+func (s *Service) Cancel(ctx context.Context, tenantID, id string) (*repository.BatchJobRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("batch service not configured")
+	}
+	return s.store.CancelBatchJob(ctx, tenantID, id)
 }
 
 func (s *Service) publishItem(ctx context.Context, identity repository.AuthIdentity, jobID, itemID, tenantID, endpoint string, body []byte) {
@@ -175,6 +199,13 @@ func (s *Service) handleBatchItemEvent(ctx context.Context, payload []byte) erro
 	if !claimed {
 		return nil
 	}
+	job, err := s.store.GetBatchJob(ctx, event.TenantID, event.JobID)
+	if err != nil {
+		return err
+	}
+	if job.Status == repository.BatchStatusCancelling || job.Status == repository.BatchStatusCancelled {
+		return s.store.CancelBatchItem(ctx, event.TenantID, event.ItemID)
+	}
 	var req provider.ResponseRequest
 	if err := json.Unmarshal(event.RequestBody, &req); err != nil {
 		failErr := s.store.FailBatchItem(ctx, event.TenantID, event.ItemID, repository.BatchItemUpdate{Error: err.Error()})
@@ -195,8 +226,12 @@ func (s *Service) handleBatchItemEvent(ctx context.Context, payload []byte) erro
 	}
 	body, _ := json.Marshal(result.Response)
 	return s.store.CompleteBatchItem(ctx, event.TenantID, event.ItemID, repository.BatchItemUpdate{
-		ResponseBody: body,
-		ResponseID:   result.Response.ID,
+		ResponseBody:     body,
+		ResponseID:       result.Response.ID,
+		PromptTokens:     result.Response.Usage.PromptTokens,
+		CompletionTokens: result.Response.Usage.CompletionTokens,
+		TotalTokens:      result.Response.Usage.TotalTokens,
+		CachedTokens:     result.Response.Usage.CachedTokens,
 	})
 }
 

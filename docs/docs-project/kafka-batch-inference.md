@@ -82,6 +82,8 @@ curl -X POST http://127.0.0.1:8028/v1/batches \
   -d '{
     "endpoint": "/v1/responses",
     "model": "gpt-4.1-mini",
+    "completion_window": "24h",
+    "metadata": {"source": "nightly-eval"},
     "requests": [
       {"custom_id": "task-1", "body": {"input": "summarize A"}},
       {"custom_id": "task-2", "body": {"input": "summarize B"}}
@@ -103,6 +105,13 @@ curl http://127.0.0.1:8028/v1/batches/<batch_id>/items \
   -H "Authorization: Bearer <api_key>:<api_secret>"
 ```
 
+取消 batch：
+
+```bash
+curl -X POST http://127.0.0.1:8028/v1/batches/<batch_id>/cancel \
+  -H "Authorization: Bearer <api_key>:<api_secret>"
+```
+
 支持 endpoint：
 
 | Endpoint | Worker surface |
@@ -112,6 +121,27 @@ curl http://127.0.0.1:8028/v1/batches/<batch_id>/items \
 | `/v1/messages` | `messages` |
 
 batch item 会强制 `stream=false`。如果 item body 未设置 `model`，会继承 batch 顶层 `model`。
+
+响应里的进度字段参考 Taichu/OpenAI Batch 形态：
+
+| 字段 | 说明 |
+| --- | --- |
+| `request_counts.total/completed/failed/cancelled` | 任务总数、成功数、失败数、取消数 |
+| `prompt_tokens/completion_tokens/total_tokens/cached_tokens` | 已完成 item 的 token 汇总 |
+| `in_progress_at/completed_at/failed_at/cancelled_at` | Unix 秒级状态时间 |
+| `completion_window` | 当前仅支持 `24h` |
+| `metadata` | 创建 batch 时传入的 JSON metadata |
+
+状态流转：
+
+```text
+pending -> running -> completed
+pending/running -> failed
+pending/running -> cancelling -> cancelled
+pending/running -> cancelled
+```
+
+取消不会中断已经发到上游的 HTTP 调用；它会阻止未开始的 item 被 claim。已 claim 的 item 在真正调用上游前会再次读取 job 状态，如果发现 batch 已进入取消态，会把该 item 标记为 `cancelled` 并 commit Kafka 消息。
 
 ---
 
@@ -135,6 +165,7 @@ DB 是状态真相源：
 
 - `batch_jobs`：batch 元数据、总数、完成数、失败数、状态。
 - `batch_items`：单条请求、响应、错误、关联 response id。
+- job token counters 在 item 首次 `completed` 时累加；终态更新幂等，Kafka redelivery 不会重复计数。
 
 Kafka 是调度和解耦层：
 

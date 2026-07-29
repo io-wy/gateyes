@@ -82,6 +82,28 @@ func (h *Handler) GetBatch(c *gin.Context) {
 	writeOK(c, batchJobToResponse(*job))
 }
 
+func (h *Handler) CancelBatch(c *gin.Context) {
+	if h.batch == nil {
+		writeError(c, http.StatusNotImplemented, CodeServiceUnavailable, "batch service not configured")
+		return
+	}
+	identity, ok := middleware.Identity(c)
+	if !ok || identity == nil {
+		writeError(c, http.StatusUnauthorized, CodeInvalidAPIKey, "invalid API key")
+		return
+	}
+	job, err := h.batch.Cancel(c.Request.Context(), identity.TenantID, c.Param("id"))
+	if err != nil {
+		if err == repository.ErrNotFound {
+			writeError(c, http.StatusNotFound, CodeInvalidParameter, "batch not found")
+			return
+		}
+		writeError(c, http.StatusBadRequest, CodeInvalidParameter, err.Error())
+		return
+	}
+	writeOK(c, batchJobToResponse(*job))
+}
+
 func (h *Handler) ListBatchItems(c *gin.Context) {
 	if h.batch == nil {
 		writeError(c, http.StatusNotImplemented, CodeServiceUnavailable, "batch service not configured")
@@ -106,20 +128,37 @@ func (h *Handler) ListBatchItems(c *gin.Context) {
 
 func batchJobToResponse(record repository.BatchJobRecord) gin.H {
 	return gin.H{
-		"id":              record.ID,
-		"tenant_id":       record.TenantID,
-		"project_id":      record.ProjectID,
-		"user_id":         record.UserID,
-		"api_key_id":      record.APIKeyID,
-		"status":          record.Status,
-		"endpoint":        record.Endpoint,
-		"model":           record.Model,
-		"total_items":     record.TotalItems,
-		"completed_items": record.CompletedItems,
-		"failed_items":    record.FailedItems,
-		"error":           record.Error,
-		"created_at":      record.CreatedAt,
-		"updated_at":      record.UpdatedAt,
+		"id":                record.ID,
+		"tenant_id":         record.TenantID,
+		"project_id":        record.ProjectID,
+		"user_id":           record.UserID,
+		"api_key_id":        record.APIKeyID,
+		"status":            record.Status,
+		"endpoint":          record.Endpoint,
+		"model":             record.Model,
+		"completion_window": record.CompletionWindow,
+		"total_items":       record.TotalItems,
+		"completed_items":   record.CompletedItems,
+		"failed_items":      record.FailedItems,
+		"cancelled_items":   record.CancelledItems,
+		"request_counts": gin.H{
+			"total":     record.TotalItems,
+			"completed": record.CompletedItems,
+			"failed":    record.FailedItems,
+			"cancelled": record.CancelledItems,
+		},
+		"prompt_tokens":     record.PromptTokens,
+		"completion_tokens": record.CompletionTokens,
+		"total_tokens":      record.TotalTokens,
+		"cached_tokens":     record.CachedTokens,
+		"metadata":          jsonRawOrString(record.Metadata),
+		"error":             record.Error,
+		"in_progress_at":    record.InProgressAt,
+		"completed_at":      record.CompletedAt,
+		"failed_at":         record.FailedAt,
+		"cancelled_at":      record.CancelledAt,
+		"created_at":        record.CreatedAt,
+		"updated_at":        record.UpdatedAt,
 	}
 }
 

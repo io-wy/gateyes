@@ -40,6 +40,7 @@ func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mwSvc 
 		v1.POST("/batches", h.CreateBatch)
 		v1.GET("/batches", h.ListBatches)
 		v1.GET("/batches/:id", h.GetBatch)
+		v1.POST("/batches/:id/cancel", h.CancelBatch)
 		v1.GET("/batches/:id/items", h.ListBatchItems)
 	}
 
