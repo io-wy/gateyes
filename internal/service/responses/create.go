@@ -13,7 +13,6 @@ import (
 	"github.com/gateyes/gateway/internal/service/cache"
 	"github.com/gateyes/gateway/internal/service/guardrail"
 	"github.com/gateyes/gateway/internal/service/provider"
-	"github.com/gateyes/gateway/internal/service/router"
 )
 
 func buildUpstreamRequest(req *provider.ResponseRequest) *provider.ResponseRequest {
@@ -102,6 +101,9 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 		}
 	}
 	req = s.applyCachePromptRewrite(ctx, identity, req)
+	if err := s.admitRequest(ctx, identity, req); err != nil {
+		return nil, err
+	}
 
 	// L1 cache fast path
 	if entry, hit := s.lookupCache(ctx, identity, req); hit {
@@ -264,14 +266,7 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 			CreatedAt: time.Now().Unix(),
 		})
 		if s.router != nil {
-			s.router.PromoteAffinity(router.RouteContext{
-				Model:        req.Model,
-				SessionID:    sessionID,
-				InputText:    req.InputText(),
-				PromptTokens: req.EstimatePromptTokens(),
-				Stream:       req.Stream,
-				HasTools:     len(req.Tools) > 0,
-			}, providerName)
+			s.router.PromoteAffinity(buildRouteContext(ctx, req, sessionID), providerName)
 		}
 
 		return &CreateResult{

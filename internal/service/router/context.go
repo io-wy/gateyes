@@ -9,4 +9,6 @@ type RouteContext struct {
 	HasTools            bool
 	HasImages           bool
 	HasStructuredOutput bool
+	RoutingProfile      string
+	StrategyOverride    string
 }

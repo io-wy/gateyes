@@ -13,6 +13,7 @@ import (
 	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/auth"
+	"github.com/gateyes/gateway/internal/service/limiter"
 	"github.com/gateyes/gateway/internal/service/provider"
 )
 
@@ -72,6 +73,7 @@ func TestWrapErrorAndGinError(t *testing.T) {
 		{err: auth.ErrModelNotAllowed, wantStatus: 403, wantType: "invalid_request_error"},
 		{err: auth.ErrQuotaExceeded, wantStatus: 429, wantType: "rate_limit_error"},
 		{err: auth.ErrBudgetExceeded, wantStatus: 429, wantType: "rate_limit_error"},
+		{err: ErrRateLimited, wantStatus: 429, wantType: "rate_limit_error"},
 		{err: ErrOutputBudgetTooLow, wantStatus: 400, wantType: "invalid_request_error"},
 		{err: ErrNoProvider, wantStatus: 503, wantType: "internal_error"},
 		{err: errors.New("boom"), wantStatus: 500, wantType: "internal_error"},
@@ -105,7 +107,7 @@ func TestBuildRouteContextExtractsRoutingFeatures(t *testing.T) {
 		},
 	}
 
-	ctx := buildRouteContext(req, "session-1")
+	ctx := buildRouteContext(context.Background(), req, "session-1")
 	if ctx.Model != "public-model" || ctx.SessionID != "session-1" || !ctx.Stream {
 		t.Fatalf("buildRouteContext() basic fields = %+v, want model/session/stream", ctx)
 	}
@@ -114,6 +116,60 @@ func TestBuildRouteContextExtractsRoutingFeatures(t *testing.T) {
 	}
 	if ctx.InputText == "" || ctx.PromptTokens <= 0 {
 		t.Fatalf("buildRouteContext() text/tokens = %+v, want non-empty text and prompt tokens", ctx)
+	}
+}
+
+func TestCreateAdmissionRejectsRateLimitedRequest(t *testing.T) {
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		upstreamURL: "https://openai.example",
+		providers:   []string{"test-openai"},
+	})
+	env.service.limiter = limiter.NewLimiter(config.LimiterConfig{
+		GlobalTPM:        60,
+		GlobalTokenBurst: 1,
+		QueueSize:        4,
+	})
+	t.Cleanup(env.service.limiter.Stop)
+
+	_, err := env.service.Create(context.Background(), env.identity, &provider.ResponseRequest{
+		Model:           "public-model",
+		Input:           "hello",
+		MaxOutputTokens: 16,
+	}, "")
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("Service.Create(rate limited) error = %v, want %v", err, ErrRateLimited)
+	}
+}
+
+func TestCreateAdmissionMarkerSkipsDuplicateLimiterCheck(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-upstream","object":"chat.completion","created":1700000000,"model":"provider-model","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer upstream.Close()
+
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		upstreamURL: upstream.URL,
+		endpoint:    "chat",
+		providers:   []string{"test-openai"},
+	})
+	env.service.limiter = limiter.NewLimiter(config.LimiterConfig{
+		GlobalTPM:        60,
+		GlobalTokenBurst: 1,
+		QueueSize:        4,
+	})
+	t.Cleanup(env.service.limiter.Stop)
+
+	result, err := env.service.Create(WithAdmissionChecked(context.Background()), env.identity, &provider.ResponseRequest{
+		Model:           "public-model",
+		Input:           "hello",
+		MaxOutputTokens: 16,
+	}, "")
+	if err != nil {
+		t.Fatalf("Service.Create(admission checked) error = %v", err)
+	}
+	if result == nil || result.Response == nil || result.Response.Usage.TotalTokens != 2 {
+		t.Fatalf("Service.Create(admission checked) = %+v, want upstream result", result)
 	}
 }
 
@@ -352,6 +408,54 @@ func TestPlanCandidatesCapturesKeyProviderScopeTrace(t *testing.T) {
 	}
 	if trace == nil || len(trace.FilteredOut) != 1 || trace.FilteredOut[0].Provider != "openai-a" || trace.FilteredOut[0].Reason != "key_provider_scope" {
 		t.Fatalf("planCandidates() trace = %+v, want provider scope filter", trace)
+	}
+}
+
+func TestPlanCandidatesAppliesRoutingProfileTrace(t *testing.T) {
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		upstreamURL: "https://openai.example",
+		providers:   []string{"expensive", "cheap"},
+		providerConfigs: []config.ProviderConfig{
+			{
+				Name:        "expensive",
+				Type:        "openai",
+				BaseURL:     "https://openai.example",
+				Endpoint:    "chat",
+				APIKey:      "upstream-key",
+				Model:       "gpt-expensive",
+				PriceInput:  1.0,
+				PriceOutput: 1.0,
+				Timeout:     5,
+				Enabled:     true,
+				MaxTokens:   256,
+			},
+			{
+				Name:        "cheap",
+				Type:        "openai",
+				BaseURL:     "https://openai.example",
+				Endpoint:    "chat",
+				APIKey:      "upstream-key",
+				Model:       "gpt-cheap",
+				PriceInput:  0.1,
+				PriceOutput: 0.1,
+				Timeout:     5,
+				Enabled:     true,
+				MaxTokens:   256,
+			},
+		},
+		routerConfig: config.RouterConfig{Strategy: "round_robin"},
+	})
+
+	ctx := WithRoutingHints(context.Background(), RoutingHints{Profile: "cost", StrategyOverride: "cost_based"})
+	candidates, trace := env.service.planCandidates(ctx, env.identity, "session-1", &provider.ResponseRequest{
+		Model: "public-model",
+		Input: "hello",
+	})
+	if len(candidates) != 2 || candidates[0].Name() != "cheap" {
+		t.Fatalf("planCandidates(cost profile) = %v, want cheap first", providerNames(candidates))
+	}
+	if trace == nil || trace.Router.RoutingProfile != "cost" || trace.Router.Strategy != "cost_based" {
+		t.Fatalf("planCandidates() trace = %+v, want cost/cost_based", trace)
 	}
 }
 

@@ -3,15 +3,16 @@ package router
 import "github.com/gateyes/gateway/internal/service/provider"
 
 type OrderTrace struct {
-	Initial       []string  `json:"initial"`
-	Rule          RuleTrace `json:"rule"`
-	AfterRule     []string  `json:"after_rule"`
-	Ranker        string    `json:"ranker"`
-	AfterRanker   []string  `json:"after_ranker"`
-	Affinity      string    `json:"affinity"`
-	AfterAffinity []string  `json:"after_affinity"`
-	Strategy      string    `json:"strategy"`
-	Ordered       []string  `json:"ordered"`
+	Initial        []string  `json:"initial"`
+	Rule           RuleTrace `json:"rule"`
+	AfterRule      []string  `json:"after_rule"`
+	Ranker         string    `json:"ranker"`
+	AfterRanker    []string  `json:"after_ranker"`
+	Affinity       string    `json:"affinity"`
+	AfterAffinity  []string  `json:"after_affinity"`
+	RoutingProfile string    `json:"routing_profile,omitempty"`
+	Strategy       string    `json:"strategy"`
+	Ordered        []string  `json:"ordered"`
 }
 
 type RuleTrace struct {

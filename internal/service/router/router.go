@@ -18,6 +18,8 @@ type Router struct {
 	rrWeights        map[string]int
 	mu               sync.Mutex
 	affinity         Affinity
+	profileSession   *SessionAffinity
+	profilePrefix    *PrefixAffinity
 	inferenceScraper *InferenceScraper
 }
 
@@ -37,8 +39,20 @@ func NewRouter(cfg config.RouterConfig, stats *provider.Stats) *Router {
 		rrWeights: make(map[string]int),
 		affinity:  NoopAffinity,
 	}
+	r.initProfileAffinities()
 	r.initAffinity()
 	return r
+}
+
+func (r *Router) initProfileAffinities() {
+	sessionTTL := time.Duration(r.cfg.Affinity.SessionTTL) * time.Second
+	prefixTTL := time.Duration(r.cfg.Affinity.PrefixTTL) * time.Second
+	prefixDepth := r.cfg.Affinity.PrefixDepth
+	if prefixDepth < 0 {
+		prefixDepth = 0
+	}
+	r.profileSession = NewSessionAffinity(sessionTTL)
+	r.profilePrefix = NewPrefixAffinity(prefixDepth, prefixTTL)
 }
 
 func (r *Router) initAffinity() {
@@ -127,8 +141,9 @@ func (r *Router) OrderCandidates(candidates []provider.Provider, ctx RouteContex
 
 	ordered = r.applyRuleEngineLocked(ordered, ctx)
 	ordered = r.applyRankerLocked(ordered, ctx)
+	beforeAffinity := ordered
 	ordered = r.applyAffinityLocked(ordered, ctx)
-	ordered = r.orderByStrategyLocked(ordered, ctx.SessionID)
+	ordered = r.orderByStrategyLocked(ordered, r.strategyAfterAffinity(ctx, beforeAffinity, ordered))
 	if len(ordered) == 0 {
 		return nil
 	}
@@ -139,11 +154,13 @@ func (r *Router) ExplainOrderCandidates(candidates []provider.Provider, ctx Rout
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	routingProfile, _ := NormalizeRoutingProfile(ctx.RoutingProfile)
 	trace := OrderTrace{
-		Initial:  providerNameList(candidates),
-		Ranker:   r.cfg.Ranker.Method,
-		Affinity: r.affinityName(),
-		Strategy: r.cfg.Strategy,
+		Initial:        providerNameList(candidates),
+		Ranker:         r.cfg.Ranker.Method,
+		Affinity:       r.affinityName(ctx),
+		RoutingProfile: routingProfile,
+		Strategy:       ResolveRouteStrategy(r.cfg.Strategy, ctx),
 	}
 	if len(candidates) == 0 {
 		return nil, trace
@@ -156,9 +173,11 @@ func (r *Router) ExplainOrderCandidates(candidates []provider.Provider, ctx Rout
 	trace.AfterRule = providerNameList(ordered)
 	ordered = r.applyRankerLocked(ordered, ctx)
 	trace.AfterRanker = providerNameList(ordered)
+	beforeAffinity := ordered
 	ordered = r.applyAffinityLocked(ordered, ctx)
 	trace.AfterAffinity = providerNameList(ordered)
-	ordered = r.orderByStrategyLocked(ordered, ctx.SessionID)
+	trace.Strategy = r.strategyAfterAffinity(ctx, beforeAffinity, ordered)
+	ordered = r.orderByStrategyLocked(ordered, trace.Strategy)
 	trace.Ordered = providerNameList(ordered)
 	if len(ordered) == 0 {
 		return nil, trace
@@ -166,7 +185,7 @@ func (r *Router) ExplainOrderCandidates(candidates []provider.Provider, ctx Rout
 	return ordered, trace
 }
 
-func (r *Router) orderByStrategyLocked(candidates []provider.Provider, sessionID string) []provider.Provider {
+func (r *Router) orderByStrategyLocked(candidates []provider.Provider, strategy string) []provider.Provider {
 	if len(candidates) <= 1 {
 		return candidates
 	}
@@ -174,7 +193,7 @@ func (r *Router) orderByStrategyLocked(candidates []provider.Provider, sessionID
 	ordered := make([]provider.Provider, len(candidates))
 	copy(ordered, candidates)
 
-	switch r.cfg.Strategy {
+	switch strategy {
 	case "round_robin":
 		return r.weightedRoundRobin(ordered)
 	case "least_load":
@@ -258,6 +277,22 @@ func (r *Router) orderByStrategyLocked(candidates []provider.Provider, sessionID
 	}
 }
 
+func (r *Router) strategyAfterAffinity(ctx RouteContext, before, after []provider.Provider) string {
+	strategy := ResolveRouteStrategy(r.cfg.Strategy, ctx)
+	profile, _ := NormalizeRoutingProfile(ctx.RoutingProfile)
+	if profile == RoutingProfileCache && firstCandidateChanged(before, after) {
+		return "sticky"
+	}
+	return strategy
+}
+
+func firstCandidateChanged(before, after []provider.Provider) bool {
+	if len(before) == 0 || len(after) == 0 {
+		return false
+	}
+	return before[0].Name() != after[0].Name()
+}
+
 func (r *Router) weightedRoundRobin(candidates []provider.Provider) []provider.Provider {
 	if len(candidates) <= 1 {
 		return candidates
@@ -291,25 +326,45 @@ func (r *Router) weightedRoundRobin(candidates []provider.Provider) []provider.P
 }
 
 func (r *Router) applyAffinityLocked(candidates []provider.Provider, ctx RouteContext) []provider.Provider {
-	if r.affinity == nil || len(candidates) <= 1 {
+	if len(candidates) <= 1 {
 		return candidates
 	}
-	return r.affinity.Pin(candidates, ctx)
+	ordered := candidates
+	if r.affinity != nil {
+		ordered = r.affinity.Pin(candidates, ctx)
+	}
+	switch profile, _ := NormalizeRoutingProfile(ctx.RoutingProfile); profile {
+	case RoutingProfileSticky:
+		if r.profileSession != nil {
+			ordered = r.profileSession.Pin(ordered, ctx)
+		}
+	case RoutingProfileCache:
+		if r.profilePrefix != nil {
+			ordered = r.profilePrefix.Pin(ordered, ctx)
+		}
+	}
+	return ordered
 }
 
-func (r *Router) affinityName() string {
+func (r *Router) affinityName(ctx RouteContext) string {
+	base := "custom"
 	switch r.affinity.(type) {
 	case *CompositeAffinity:
-		return "composite"
+		base = "composite"
 	case *SessionAffinity:
-		return "session"
+		base = "session"
 	case *PrefixAffinity:
-		return "prefix"
+		base = "prefix"
 	case noopAffinity:
-		return "none"
-	default:
-		return "custom"
+		base = "none"
 	}
+	switch profile, _ := NormalizeRoutingProfile(ctx.RoutingProfile); profile {
+	case RoutingProfileSticky:
+		return base + "+profile:sticky"
+	case RoutingProfileCache:
+		return base + "+profile:cache"
+	}
+	return base
 }
 
 // inferenceLoadLocked returns the synthetic load score for a provider as
@@ -332,6 +387,16 @@ func (r *Router) PromoteAffinity(ctx RouteContext, providerName string) {
 	if r.affinity != nil {
 		r.affinity.Promote(ctx, providerName)
 	}
+	switch profile, _ := NormalizeRoutingProfile(ctx.RoutingProfile); profile {
+	case RoutingProfileSticky:
+		if r.profileSession != nil {
+			r.profileSession.Promote(ctx, providerName)
+		}
+	case RoutingProfileCache:
+		if r.profilePrefix != nil {
+			r.profilePrefix.Promote(ctx, providerName)
+		}
+	}
 }
 
 func (r *Router) Strategy() string {
@@ -343,6 +408,9 @@ func (r *Router) Reload(cfg *config.Config) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cfg = cfg.Router
+	r.affinity = NoopAffinity
+	r.initProfileAffinities()
+	r.initAffinity()
 	return nil
 }
 

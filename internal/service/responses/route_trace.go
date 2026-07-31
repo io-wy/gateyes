@@ -130,14 +130,15 @@ func (s *Service) planCandidates(ctx context.Context, identity *repository.AuthI
 	ordered := routable
 	if s.router != nil {
 		var routerTrace routeSvc.OrderTrace
-		ordered, routerTrace = s.router.ExplainOrderCandidates(routable, buildRouteContext(req, sessionID))
+		routeCtx := buildRouteContext(ctx, req, sessionID)
+		ordered, routerTrace = s.router.ExplainOrderCandidates(routable, routeCtx)
 		trace.Router = routerTrace
 	}
 
 	// Try gRPC router plugin (outside lock — it's IO).
 	if s.pluginMgr != nil {
 		if pr := s.pluginMgr.Router(); pr != nil {
-			pluginOrdered := s.tryPluginRouter(ctx, pr, ordered, buildRouteContext(req, sessionID))
+			pluginOrdered := s.tryPluginRouter(ctx, pr, ordered, buildRouteContext(ctx, req, sessionID))
 			if pluginOrdered != nil {
 				ordered = pluginOrdered
 				trace.Router.Strategy = "plugin:" + pr.Name()
@@ -183,6 +184,8 @@ func (s *Service) tryPluginRouter(ctx context.Context, pr pluginSvc.Router, cand
 		HasTools:            routeCtx.HasTools,
 		HasImages:           routeCtx.HasImages,
 		HasStructuredOutput: routeCtx.HasStructuredOutput,
+		RoutingProfile:      routeCtx.RoutingProfile,
+		StrategyOverride:    routeCtx.StrategyOverride,
 	}
 
 	names, ok := pr.OrderCandidates(ctx, candInfos, pluginCtx)

@@ -15,7 +15,6 @@ import (
 	"github.com/gateyes/gateway/internal/service/cache"
 	"github.com/gateyes/gateway/internal/service/guardrail"
 	"github.com/gateyes/gateway/internal/service/provider"
-	"github.com/gateyes/gateway/internal/service/router"
 )
 
 // drainStreamForUsage continues reading from a provider's stream channel
@@ -116,6 +115,9 @@ func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIde
 				req = &transformed
 			}
 		}
+	}
+	if err := s.admitRequest(ctx, identity, req); err != nil {
+		return nil, err
 	}
 
 	candidates, trace := s.planCandidates(ctx, identity, sessionID, req)
@@ -577,14 +579,7 @@ providerLoop:
 						}, responseID, tenantID, identity.UserID, req.Model, req.Stream)
 
 						if s.router != nil {
-							s.router.PromoteAffinity(router.RouteContext{
-								Model:        req.Model,
-								SessionID:    sessionID,
-								InputText:    req.InputText(),
-								PromptTokens: req.EstimatePromptTokens(),
-								Stream:       req.Stream,
-								HasTools:     len(req.Tools) > 0,
-							}, providerName)
+							s.router.PromoteAffinity(buildRouteContext(ctx, req, sessionID), providerName)
 						}
 						s.providerMgr.Stats.DecrementLoad(providerName)
 						if s.circuitBreaker != nil {

@@ -174,6 +174,116 @@ func TestRouter_CostBased(t *testing.T) {
 	}
 }
 
+func TestNormalizeRoutingProfile(t *testing.T) {
+	tests := []struct {
+		raw          string
+		wantProfile  string
+		wantStrategy string
+	}{
+		{"", "", ""},
+		{"default", "", ""},
+		{"latency", RoutingProfileLatency, "least_load"},
+		{"least-load", RoutingProfileLatency, "least_load"},
+		{"cost", RoutingProfileCost, "cost_based"},
+		{"least_tpm", RoutingProfileThroughput, "least_tpm"},
+		{"session", RoutingProfileSticky, "sticky"},
+		{"cache", RoutingProfileCache, ""},
+		{"round-robin", RoutingProfileBalanced, "round_robin"},
+		{"unknown", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.raw, func(t *testing.T) {
+			profile, strategy := NormalizeRoutingProfile(tt.raw)
+			if profile != tt.wantProfile || strategy != tt.wantStrategy {
+				t.Fatalf("NormalizeRoutingProfile(%q) = (%q, %q), want (%q, %q)", tt.raw, profile, strategy, tt.wantProfile, tt.wantStrategy)
+			}
+		})
+	}
+}
+
+func TestRouter_RoutingProfileCostOverridesDefaultStrategy(t *testing.T) {
+	cfg := config.RouterConfig{Strategy: "round_robin"}
+	r := NewRouter(cfg, nil)
+
+	providers := []provider.Provider{
+		&mockProvider{name: "expensive", model: "m1", cost: 1.0},
+		&mockProvider{name: "cheap", model: "m1", cost: 0.1},
+	}
+	r.SetProviders(providers)
+
+	ordered, trace := r.ExplainOrderCandidates(providers, RouteContext{RoutingProfile: "cost"})
+	if len(ordered) != 2 || ordered[0].Name() != "cheap" {
+		t.Fatalf("OrderCandidates(cost profile) = %v, want cheap first", providerNames(ordered))
+	}
+	if trace.RoutingProfile != RoutingProfileCost || trace.Strategy != "cost_based" {
+		t.Fatalf("trace = %+v, want cost/cost_based", trace)
+	}
+}
+
+func TestRouter_RoutingProfileLatencyOverridesDefaultStrategy(t *testing.T) {
+	stats := provider.NewStats()
+	p1 := &mockProvider{name: "busy-cheap", model: "m1", cost: 0.1}
+	p2 := &mockProvider{name: "idle-expensive", model: "m1", cost: 1.0}
+	stats.Register(p1)
+	stats.Register(p2)
+	stats.IncrementLoad("busy-cheap")
+
+	r := NewRouter(config.RouterConfig{Strategy: "cost_based"}, stats)
+	providers := []provider.Provider{p1, p2}
+	r.SetProviders(providers)
+
+	ordered, trace := r.ExplainOrderCandidates(providers, RouteContext{RoutingProfile: "latency"})
+	if len(ordered) != 2 || ordered[0].Name() != "idle-expensive" {
+		t.Fatalf("OrderCandidates(latency profile) = %v, want idle-expensive first", providerNames(ordered))
+	}
+	if trace.Strategy != "least_load" {
+		t.Fatalf("trace.Strategy = %q, want least_load", trace.Strategy)
+	}
+}
+
+func TestRouter_RoutingProfileStickyWorksWithoutGlobalAffinity(t *testing.T) {
+	r := NewRouter(config.RouterConfig{Strategy: "cost_based"}, nil)
+	providers := []provider.Provider{
+		&mockProvider{name: "p1", model: "m1", cost: 0.1},
+		&mockProvider{name: "p2", model: "m1", cost: 1.0},
+	}
+	r.SetProviders(providers)
+
+	ctx := RouteContext{RoutingProfile: "sticky", SessionID: "sess-1"}
+	r.PromoteAffinity(ctx, "p2")
+
+	ordered, trace := r.ExplainOrderCandidates(providers, ctx)
+	if len(ordered) != 2 || ordered[0].Name() != "p2" {
+		t.Fatalf("OrderCandidates(sticky profile) = %v, want p2 first", providerNames(ordered))
+	}
+	if trace.Affinity != "none+profile:sticky" {
+		t.Fatalf("trace.Affinity = %q, want none+profile:sticky", trace.Affinity)
+	}
+}
+
+func TestRouter_RoutingProfileCachePinsPromptPrefix(t *testing.T) {
+	r := NewRouter(config.RouterConfig{
+		Strategy: "cost_based",
+		Affinity: config.AffinityConfig{
+			PrefixDepth: 5,
+		},
+	}, nil)
+	providers := []provider.Provider{
+		&mockProvider{name: "cheap", model: "m1", cost: 0.1},
+		&mockProvider{name: "cached", model: "m1", cost: 1.0},
+	}
+	r.SetProviders(providers)
+
+	r.PromoteAffinity(RouteContext{RoutingProfile: "cache", InputText: "hello first prompt"}, "cached")
+	ordered, trace := r.ExplainOrderCandidates(providers, RouteContext{RoutingProfile: "cache", InputText: "hello second prompt"})
+	if len(ordered) != 2 || ordered[0].Name() != "cached" {
+		t.Fatalf("OrderCandidates(cache profile) = %v, want cached first", providerNames(ordered))
+	}
+	if trace.Strategy != "sticky" || trace.Affinity != "none+profile:cache" {
+		t.Fatalf("trace = %+v, want sticky with profile cache affinity", trace)
+	}
+}
+
 func TestRouter_Sticky(t *testing.T) {
 	cfg := config.RouterConfig{
 		Strategy: "sticky",

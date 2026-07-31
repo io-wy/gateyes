@@ -72,7 +72,7 @@ func TestBuildRouteContext(t *testing.T) {
 			Type: "json_schema",
 		},
 	}
-	ctx := buildRouteContext(req, "session-1")
+	ctx := buildRouteContext(context.Background(), req, "session-1")
 	if ctx.Model != "public-model" || ctx.SessionID != "session-1" || !ctx.Stream {
 		t.Fatalf("buildRouteContext() basic fields = %+v", ctx)
 	}

@@ -283,12 +283,12 @@ func modelRequiredButUnavailable(req *provider.ResponseRequest, all []provider.P
 	return true
 }
 
-func buildRouteContext(req *provider.ResponseRequest, sessionID string) router.RouteContext {
+func buildRouteContext(ctx context.Context, req *provider.ResponseRequest, sessionID string) router.RouteContext {
 	if req == nil {
-		return router.RouteContext{SessionID: sessionID}
+		return applyRoutingHints(ctx, router.RouteContext{SessionID: sessionID})
 	}
 	req.Normalize()
-	return router.RouteContext{
+	return applyRoutingHints(ctx, router.RouteContext{
 		Model:               req.Model,
 		SessionID:           sessionID,
 		InputText:           req.InputText(),
@@ -297,7 +297,7 @@ func buildRouteContext(req *provider.ResponseRequest, sessionID string) router.R
 		HasTools:            req.HasToolsRequested(),
 		HasImages:           req.HasImageInput(),
 		HasStructuredOutput: req.HasStructuredOutputRequest(),
-	}
+	})
 }
 
 // GetCircuitBreakerStates returns all circuit breaker states for metrics collection

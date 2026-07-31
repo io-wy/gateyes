@@ -9,6 +9,7 @@ import (
 
 var (
 	ErrNoProvider         = errors.New("no provider available")
+	ErrRateLimited        = errors.New("rate limit exceeded")
 	ErrUnauthorized       = errors.New("unauthorized")
 	ErrForbidden          = errors.New("forbidden")
 	ErrOutputBudgetTooLow = errors.New("output budget too low")
@@ -25,6 +26,8 @@ func WrapError(err error) ginError {
 	case errors.Is(err, auth.ErrQuotaExceeded):
 		return ginError{Status: 429, Message: err.Error(), Type: "rate_limit_error"}
 	case errors.Is(err, auth.ErrBudgetExceeded):
+		return ginError{Status: 429, Message: err.Error(), Type: "rate_limit_error"}
+	case errors.Is(err, ErrRateLimited):
 		return ginError{Status: 429, Message: err.Error(), Type: "rate_limit_error"}
 	case errors.Is(err, ErrOutputBudgetTooLow):
 		return ginError{Status: 400, Message: err.Error(), Type: "invalid_request_error"}

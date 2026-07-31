@@ -23,6 +23,7 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 	if raw := responseSvc.RawBodyFromContext(ctx); len(raw) > 0 {
 		ctx = responseSvc.WithRawRequestBody(ctx, raw)
 	}
+	ctx = responseSvc.WithAdmissionChecked(ctx)
 	result, err := s.responses.Create(ctx, identity, preparedReq, sessionID)
 	if err != nil {
 		return nil, runtime.service, err
@@ -38,6 +39,7 @@ func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIde
 	if err != nil {
 		return nil, nil, err
 	}
+	ctx = responseSvc.WithAdmissionChecked(ctx)
 	stream, err := s.responses.CreateStream(ctx, identity, preparedReq, sessionID)
 	if err != nil {
 		return nil, runtime.service, err
@@ -63,6 +65,7 @@ func (s *Service) CreatePromptInvocation(ctx context.Context, identity *reposito
 	if err != nil {
 		return nil, nil, err
 	}
+	ctx = responseSvc.WithAdmissionChecked(ctx)
 	result, err := s.responses.Create(ctx, identity, prepared, sessionID)
 	if err != nil {
 		return nil, runtime.service, err
@@ -78,6 +81,7 @@ func (s *Service) CreatePromptInvocationStream(ctx context.Context, identity *re
 	if err != nil {
 		return nil, nil, err
 	}
+	ctx = responseSvc.WithAdmissionChecked(ctx)
 	stream, err := s.responses.CreateStream(ctx, identity, prepared, sessionID)
 	if err != nil {
 		return nil, runtime.service, err
