@@ -1,120 +1,145 @@
 # Gateyes
 
-Gateyes is a production-oriented LLM API gateway. It exposes OpenAI-compatible and Anthropic-compatible endpoints, routes requests across providers, and centralizes auth, quota, budgets, caching, tracing, metrics, and plugin execution.
+Gateyes 是一个面向生产环境的 LLM 推理控制面。它提供 OpenAI 兼容和 Anthropic 兼容接口，统一本地 GPU 推理集群与云端 LLM API，并集中管理模型发现、智能路由、自动扩缩容、响应缓存、鉴权、配额、预算、追踪、指标和插件执行。
 
-## What It Provides
+## 能提供什么
 
-- Unified API surfaces: `/v1/responses`, `/v1/chat/completions`, `/v1/messages`, `/v1/embeddings`, `/v1/images/generations`
-- Multi-tenant auth, RBAC, OIDC admin login, API keys, and virtual keys
-- Provider routing with fallback, retry, circuit breaker, and health checks
-- Redis-backed distributed rate limiting with in-memory fallback
-- Project, tenant, API-key, and virtual-key budget controls
-- L1 response cache with Redis + memory fallback, singleflight, cache hints, and prompt rewrite optimization
-- Kafka-backed durable eventbus and async batch inference jobs
-- Prometheus metrics, OTLP tracing, audit logs, and provider runtime stats
-- WASM and gRPC plugin support across gateway lifecycle phases
-- React admin console for dashboard, providers, keys, services, responses, audit, and API playground
+- 统一 API 接口：`/v1/responses`、`/v1/chat/completions`、`/v1/messages`、`/v1/embeddings`、`/v1/images/generations`
+- 多租户鉴权、RBAC、OIDC 管理登录、API key 和 virtual key
+- 带 fallback、重试、熔断和健康检查的 provider 路由
+- 基于 Redis 的分布式限流，带内存降级
+- 面向 project、tenant、API key 和 virtual key 的预算与限额控制
+- 带 Redis + 内存降级的 L1 响应缓存、singleflight、cache hint 和 prompt rewrite 优化
+- 基于 Kafka 的持久化 eventbus 和异步 batch 推理任务
+- Prometheus 指标、OTLP tracing、审计日志和 provider 运行态统计
+- WASM 和 gRPC 插件支持，覆盖 gateway 生命周期各阶段
+- React 管理后台：dashboard、providers、keys、services、responses、audit 和 API playground
+- Kubernetes operator 模式，支持 `InferenceService`、`ModelEndpoint`、`RoutePolicy`、`BudgetPolicy` 和 `InferenceAutoscalePolicy`
 
-## Repository Layout
+## 部署模式
+
+| 模式 | 含义 |
+| --- | --- |
+| `gateway` | 仅数据面和管理 API |
+| `maas` | gateway 加租户侧 MaaS 能力 |
+| `operator` | 仅 CRD 和 operator 控制面 |
+| `full` | gateway、MaaS、CRD 和 operator 全部启用 |
+
+Helm chart 使用 `platform.mode` 表示部署意图。
+
+## 仓库布局
 
 ```text
-cmd/                         binaries: gateway, migration runner, and vllm helper
-configs/                     runtime config examples and local config entrypoints
-deploy/                      Docker and Helm deployment assets, Grafana/Prometheus
-docs/docs-project/           project documentation, runbooks, and operations guides
-docs/docs-ref/               reusable reference material and archived templates
-docs/docs-tmp/               ignored temporary documentation cache metadata
-internal/app/config/         config loading, validation, and reload orchestration
-internal/domain/plugin/      internal plugin domain types and contracts
-internal/handler/            HTTP handlers, middleware, metrics, and server wiring
-internal/handler/middleware/ auth, guard, rate-limit filter pipeline, and tracing
-internal/pkg/                internal shared libraries: db/redis wrappers, trace, eventbus, logging
-internal/repository/         repository contracts and domain persistence interfaces
-internal/repository/db/      database driver, connection pool, and migrations
-internal/repository/sqlstore/ SQL implementations of repository.Store
-internal/service/            business services: routing, provider, limiter, responses, auth, etc.
-internal/service/extension/  extension runtimes: WASM filter and gRPC/WASM plugin adapters
-internal/testutil/           shared test helpers and fixtures
-pkg/plugin/v1/               generated public gRPC plugin contracts
-proto/plugin/v1/             plugin protocol source files
-plugins/                     plugin SDK and examples
-web/                         React admin console and API playground
+cmd/gateway/               gateway 二进制和 admin API
+cmd/operator/              Kubernetes CRD 读取与 reconcile 循环
+configs/                   运行配置示例和本地配置入口
+deploy/                    Docker 与 Helm 部署资产、Grafana/Prometheus
+docs/docs-project/         项目文档、runbook 和运维说明
+internal/app/config/       配置加载、校验和热更新编排
+internal/handler/          HTTP handler、中间件、指标和服务装配
+internal/pkg/              内部通用库：db/redis、trace、eventbus、logging
+internal/service/          业务服务：routing、provider、limiter、responses、auth、platform sync
+internal/service/platform/  CRD 形状的平台资源、autoscale 和 workload 规划
+plugins/                   插件 SDK 和示例
+proto/plugin/v1/           插件协议源码
+web/                       React 管理后台和 API playground
 ```
 
-## Configuration
+## 快速开始
 
-Gateyes loads YAML config through Viper. Local `.env` values are loaded before parsing `${VAR}` placeholders; real process environment variables take precedence over `.env`.
+Gateyes 通过 Viper 读取 YAML 配置。`.env` 会先于 `${VAR}` 占位符解析加载，真实环境变量优先于 `.env`。
 
 ```bash
 cp .env.example .env
 cp configs/config.example.yaml configs/config.yaml
-# edit .env: database DSN, provider keys, bootstrap secrets
+# 编辑 .env：数据库 DSN、provider key、bootstrap secret
 ```
 
-Run locally:
+本地运行：
 
 ```bash
 go run ./cmd/gateway -config configs/config.yaml
 ```
 
-For the demo config:
+演示配置：
 
 ```bash
 go run ./cmd/gateway -config configs/demo-mock.yaml
 ```
 
+## Kubernetes / Operator
 
-## Cold Start (Shared PostgreSQL)
+Gateyes 的 Kubernetes 形态分成 gateway 数据面和可选 operator 控制面。gateway 仍然是纯请求路径进程，不在推理流量中查询 Kubernetes API。operator 读取 Gateyes CRD，并把声明式资源同步到 Admin API 状态和 Kubernetes 工作负载。
 
-For local development with a shared PostgreSQL instance (container name `postgres` on port `5432`):
+chart 会安装这些 CRD：
+
+- `GateyesGateway`
+- `ModelEndpoint`
+- `RoutePolicy`
+- `BudgetPolicy`
+- `InferenceAutoscalePolicy`
+- `InferenceService`
+
+启用 operator：
 
 ```bash
-# 1. Configure secrets (if you haven't already)
-cp .env.example .env
-# edit .env: GATEYES_ADMIN_BOOTSTRAP_SECRET, GATEYES_DEMO_SECRET, provider keys
+helm upgrade --install gateyes ./deploy/helm/gateyes \
+  -n gateyes --create-namespace \
+  --set platform.mode=full \
+  --set platform.operator.enabled=true
+```
 
-# 2. One-shot: infra + DB + gateway + verified admin
+默认情况下 operator 运行在 dry-run 模式。它会读取上面的 CRD，并输出 provider、router、budget、autoscale decision 和 workload 的计数。设置 `platform.operator.dryRun=false` 后，它会先把 `InferenceService` reconcile 成 Kubernetes `Deployment` / `Service`，再通过 Admin API 同步 provider、router 和 budget 变更。
+
+`InferenceService.spec.exposeAsModelEndpoint` 默认为 true，因此自托管服务也会被暴露成一个 `ModelEndpoint`，指向 `http://<service>.<namespace>.svc:<port>/<openAIPath>`。`routeLabels` 会复制到 provider labels，供 `RoutePolicy.spec.endpointSelector` 使用。`InferenceAutoscalePolicy` 在 `mode=enforce` 时会在规划阶段调整 workload replicas。
+
+`platform.operator.namespace` 为空表示使用集群级 RBAC；如果设置为具体 namespace，就只在该 namespace 内运行。
+
+## 冷启动（共享 PostgreSQL）
+
+本地开发使用共享 PostgreSQL 实例时（容器名 `postgres`，端口 `5432`）：
+
+```bash
+# 1. 配置密钥（如果还没有）
+cp .env.example .env
+# 编辑 .env：GATEYES_ADMIN_BOOTSTRAP_SECRET、GATEYES_DEMO_SECRET、provider key
+
+# 2. 一键：基础设施 + DB + gateway + admin 验证
 make give-me-an-admin
 ```
 
-The command will:
-1. Start `postgres:16-alpine` and `redis:7-alpine` containers if absent.
-2. Create the `gateyes` role and database, and fix PostgreSQL 15+ `public` schema ownership so migrations can run.
-3. Start the gateway and wait for `/ready` to return 200.
-4. Verify that the bootstrap admin (`admin-key-001`) can authenticate.
+这个命令会：
+1. 如果不存在，就启动 `postgres:16-alpine` 和 `redis:7-alpine`
+2. 创建 `gateyes` role 和 database，并修正 PostgreSQL 15+ `public` schema 的 owner
+3. 启动 gateway，等待 `/ready` 返回 200
+4. 验证 bootstrap admin（`admin-key-001`）可以正常认证
 
-After it finishes, you can use:
+完成后可以使用：
 
-- **Admin**: `Authorization: Bearer admin-key-001:$GATEYES_ADMIN_BOOTSTRAP_SECRET`
-- **Demo user**: `Authorization: Bearer demo-key-001:$GATEYES_DEMO_SECRET`
+- **Admin**：`Authorization: Bearer admin-key-001:$GATEYES_ADMIN_BOOTSTRAP_SECRET`
+- **Demo user**：`Authorization: Bearer demo-key-001:$GATEYES_DEMO_SECRET`
 
-Manual equivalent:
+手动等价操作：
 
 ```bash
-make provision-db   # only DB provisioning
-make run            # go run ./cmd/gateway -config configs/config.yaml
+make provision-db
+make run
 ```
 
-### Why the `public` schema fix matters
+## 告警
 
-PostgreSQL 15+ no longer grants `CREATE` on the `public` schema to non-superusers.
-If you create a dedicated `gateyes` role/database in a shared Postgres instance, the gateway's migrations will fail with `permission denied for schema public`.
-`make give-me-an-admin` handles this automatically by running `ALTER SCHEMA public OWNER TO gateyes`.
+Gateyes 可以在预算耗尽、provider 状态变化或配额跨阈值时发送告警。
 
-## Alerts
+### Webhook（默认）
 
-Gateyes can send alerts when budgets are exhausted, providers change state, or quotas cross thresholds.
+在 `config.yaml` 中配置 `alert.webhookURL` / `webhookSecret`，或使用 `alert.channels` 进行多 webhook 和标签路由。
 
-### Webhook (default)
+### 飞书（Lark）
 
-Set `alert.webhookURL` / `webhookSecret` in `config.yaml`, or use `alert.channels` for multiple webhooks with label-based routing.
+使用官方 Feishu SDK channel 向用户或群聊发送文本或交互卡片消息。
 
-### Feishu (Lark)
-
-Use the official Feishu SDK channel to send text or interactive card messages to a user or group chat.
-
-1. Create a Feishu app and grant it the `im:chat:send` / `im:message:send` permissions.
-2. Add to `configs/config.yaml`:
+1. 创建飞书应用，并授予 `im:chat:send` / `im:message:send` 权限
+2. 在 `configs/config.yaml` 中加入：
 
 ```yaml
 alert:
@@ -124,14 +149,14 @@ alert:
       type: feishu
       feishuAppId: ${FEISHU_APP_ID}
       feishuAppSecret: ${FEISHU_APP_SECRET}
-      feishuReceiveType: chat_id   # or open_id / user_id / email
+      feishuReceiveType: chat_id
       feishuReceiveId: ${FEISHU_CHAT_ID}
-      feishuMsgType: interactive   # or text
+      feishuMsgType: interactive
       labels:
         severity: critical
 ```
 
-3. Set the secrets in `.env`:
+3. 在 `.env` 中设置：
 
 ```bash
 FEISHU_APP_ID=cli_xxx
@@ -139,11 +164,9 @@ FEISHU_APP_SECRET=xxx
 FEISHU_CHAT_ID=oc_xxx
 ```
 
-## Model Aliases
+## 模型别名
 
-Providers can declare aliases so clients can use their native model names while
-the gateway forwards the provider-specific name upstream. This is useful when
-routing Anthropic clients like Claude Code to OpenAI-compatible providers.
+provider 可以声明 alias，让客户端继续使用原生模型名，而 gateway 在上游转发时映射成 provider-specific 名称。
 
 ```yaml
 providers:
@@ -156,87 +179,80 @@ providers:
       gpt-5.4: deepseek-v4-flash
 ```
 
-With the above, a request for `claude-sonnet-4-6` is routed to the `deepseek`
-provider and forwarded to DeepSeek as `deepseek-v4-flash`. The response still
-reports the original requested model name to the client.
+## API 接口
 
-## API Surfaces
-
-| Endpoint | Compatibility | Purpose |
+| 接口 | 兼容性 | 用途 |
 | --- | --- | --- |
-| `/v1/responses` | OpenAI Responses | Primary internal request path |
-| `/v1/chat/completions` | OpenAI Chat Completions | Existing OpenAI SDK clients |
-| `/v1/messages` | Anthropic Messages | Anthropic SDK clients |
-| `/v1/embeddings` | OpenAI Embeddings | Text embeddings |
-| `/v1/images/generations` | OpenAI Images | Image generation |
+| `/v1/responses` | OpenAI Responses | 主请求路径 |
+| `/v1/chat/completions` | OpenAI Chat Completions | 兼容现有 OpenAI SDK |
+| `/v1/messages` | Anthropic Messages | 兼容 Anthropic SDK |
+| `/v1/embeddings` | OpenAI Embeddings | 文本向量 |
+| `/v1/images/generations` | OpenAI Images | 图片生成 |
 
-All request surfaces share provider selection, retry/fallback, usage persistence, budgets, rate limits, tracing, and metrics.
+所有请求接口共享 provider 选择、重试/fallback、持久化、预算、限流、追踪和指标。
 
-## Plugins
+## 插件
 
-Plugin protocol sources live in `proto/plugin/v1/`; generated Go contracts live in `pkg/plugin/v1/`.
+插件协议源码在 `proto/plugin/v1/`；生成后的 Go 代码在 `pkg/plugin/v1/`。
 
 ```bash
 make proto
 ```
 
-- WASM plugins use the local SDK in `plugins/sdk/gateyes`.
-- gRPC plugins import `github.com/gateyes/gateway/pkg/plugin/v1`.
-- Runtime adapters live under `internal/extension/plugin`.
+- WASM 插件使用 `plugins/sdk/gateyes`
+- gRPC 插件 import `github.com/gateyes/gateway/pkg/plugin/v1`
+- 运行时适配器在 `internal/extension/plugin`
 
-Full guide: [docs/docs-project/plugin-development.md](./docs/docs-project/plugin-development.md)
+完整指南：[docs/docs-project/plugin-development.md](./docs/docs-project/plugin-development.md)
 
-## Development Commands
+## 开发
 
 ```bash
-make fmt          # gofmt all packages
-make test         # go test ./...
-make vet          # go vet ./...
-make lint-arch    # harness layer dependency check
-make proto        # regenerate plugin protobuf code
-make run          # run gateway with configs/config.example.yaml
+make fmt
+make test
+make vet
+make lint-arch
+make proto
+make run
 ```
 
-## Testing
-
-Default regression:
+默认回归：
 
 ```bash
 go test ./...
 ```
 
-Focused gateway compatibility:
+聚焦 gateway 兼容性：
 
 ```bash
 go test ./internal/service/provider ./internal/service/responses ./internal/handler
 ```
 
-More details: [TESTING.md](./TESTING.md)
+## 文档
 
-## Documentation
-
-| Document | Purpose |
+| 文档 | 用途 |
 | --- | --- |
-| [feature-inventory.md](./docs/docs-project/feature-inventory.md) | Current implemented capability inventory |
-| [architecture.md](./docs/docs-project/architecture.md) | Architecture and responsibility boundaries |
-| [runtime-mechanisms.md](./docs/docs-project/runtime-mechanisms.md) | Auth, routing, quota, cache, budget mechanics |
-| [cache.md](./docs/docs-project/cache.md) | L1 cache, singleflight, prompt rewrite, and cache observability |
-| [kafka-batch-inference.md](./docs/docs-project/kafka-batch-inference.md) | Kafka eventbus and batch inference jobs |
-| [provider-configuration.md](./docs/docs-project/provider-configuration.md) | Provider setup |
-| [plugin-development.md](./docs/docs-project/plugin-development.md) | WASM and gRPC plugin guide |
-| [deployment.md](./docs/docs-project/deployment.md) | Docker Compose, Helm, production notes |
-| [monitoring.md](./docs/docs-project/monitoring.md) | Metrics and alerts |
-| [operations/runbook.md](./docs/docs-project/operations/runbook.md) | Operational runbook |
+| [feature-inventory.md](./docs/docs-project/feature-inventory.md) | 当前已实现能力清单 |
+| [architecture.md](./docs/docs-project/architecture.md) | 架构和职责边界 |
+| [runtime-mechanisms.md](./docs/docs-project/runtime-mechanisms.md) | 鉴权、路由、限额、缓存、预算机制 |
+| [cache.md](./docs/docs-project/cache.md) | L1 cache、singleflight、prompt rewrite 和可观测性 |
+| [kafka-batch-inference.md](./docs/docs-project/kafka-batch-inference.md) | Kafka eventbus 和 batch 推理任务 |
+| [provider-configuration.md](./docs/docs-project/provider-configuration.md) | provider 配置 |
+| [plugin-development.md](./docs/docs-project/plugin-development.md) | WASM 与 gRPC 插件指南 |
+| [deployment.md](./docs/docs-project/deployment.md) | Docker Compose、Helm、生产说明和 operator 模式 |
+| [monitoring.md](./docs/docs-project/monitoring.md) | 指标和告警 |
+| [operations/runbook.md](./docs/docs-project/operations/runbook.md) | 运维 runbook |
+| [acceptance-validation-plan.md](./docs/docs-project/runbook/acceptance-validation-plan.md) | 逐功能印证 / 提测计划 |
 
-## Deployment
+## 部署
 
-Docker Compose:
+Docker Compose：
 
 ```bash
 docker compose up --build -d
 ```
 
-Helm:
+Helm：
 
 ```bash
 helm upgrade --install gateyes ./deploy/helm/gateyes \
@@ -245,4 +261,4 @@ helm upgrade --install gateyes ./deploy/helm/gateyes \
   -f ./deploy/helm/gateyes/values-prod.yaml
 ```
 
-Use `.env` for local development secrets. In production, use Kubernetes Secrets or an external secret manager; do not commit provider keys or bootstrap secrets.
+本地开发用 `.env` 保存密钥。生产环境请使用 Kubernetes Secret 或外部密钥管理系统，不要把 provider key 或 bootstrap secret 提交到仓库。
