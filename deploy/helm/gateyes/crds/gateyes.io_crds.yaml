@@ -1,0 +1,825 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: gateyesgateways.gateyes.io
+spec:
+  group: gateyes.io
+  scope: Namespaced
+  names:
+    plural: gateyesgateways
+    singular: gateyesgateway
+    kind: GateyesGateway
+    shortNames:
+      - ggw
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              properties:
+                mode:
+                  type: string
+                  enum: ["gateway", "maas", "operator", "full"]
+                  default: "gateway"
+                replicas:
+                  type: integer
+                  minimum: 0
+                  default: 2
+                image:
+                  type: string
+                configRef:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                    key:
+                      type: string
+                admin:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: true
+                    oidcEnabled:
+                      type: boolean
+                dataPlane:
+                  type: object
+                  properties:
+                    listenAddr:
+                      type: string
+                    ingressClassName:
+                      type: string
+                    strategyOverrideHeader:
+                      type: string
+                    allowedStrategyOverrides:
+                      type: array
+                      items:
+                        type: string
+                dependencies:
+                  type: object
+                  properties:
+                    database:
+                      type: object
+                      properties:
+                        driver:
+                          type: string
+                          enum: ["sqlite", "postgres", "mysql"]
+                        dsnSecretRef:
+                          type: object
+                          properties:
+                            name:
+                              type: string
+                            key:
+                              type: string
+                    redis:
+                      type: object
+                      properties:
+                        addr:
+                          type: string
+                        secretRef:
+                          type: object
+                          properties:
+                            name:
+                              type: string
+                            key:
+                              type: string
+                    kafka:
+                      type: object
+                      properties:
+                        enabled:
+                          type: boolean
+                        brokers:
+                          type: array
+                          items:
+                            type: string
+                        topic:
+                          type: string
+                observability:
+                  type: object
+                  properties:
+                    prometheus:
+                      type: boolean
+                    otlpEndpoint:
+                      type: string
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                observedGeneration:
+                  type: integer
+                  format: int64
+                endpoints:
+                  type: array
+                  items:
+                    type: string
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required: ["type", "status"]
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: modelendpoints.gateyes.io
+spec:
+  group: gateyes.io
+  scope: Namespaced
+  names:
+    plural: modelendpoints
+    singular: modelendpoint
+    kind: ModelEndpoint
+    shortNames:
+      - mep
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - type
+                - model
+              properties:
+                type:
+                  type: string
+                  enum: ["openai", "anthropic", "azure", "vllm", "sglang", "kserve", "external"]
+                vendor:
+                  type: string
+                endpoint:
+                  type: string
+                  enum: ["chat", "responses", "messages", "embeddings", "images"]
+                baseURL:
+                  type: string
+                serviceRef:
+                  type: object
+                  properties:
+                    namespace:
+                      type: string
+                    name:
+                      type: string
+                    port:
+                      type: integer
+                      minimum: 1
+                      maximum: 65535
+                    path:
+                      type: string
+                apiKeySecretRef:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                    key:
+                      type: string
+                model:
+                  type: string
+                modelAliases:
+                  type: object
+                  additionalProperties:
+                    type: string
+                weight:
+                  type: integer
+                  minimum: 0
+                  default: 1
+                timeoutSeconds:
+                  type: integer
+                  minimum: 1
+                metrics:
+                  type: object
+                  properties:
+                    url:
+                      type: string
+                    scrapeIntervalSeconds:
+                      type: integer
+                      minimum: 1
+                pricing:
+                  type: object
+                  properties:
+                    input:
+                      type: number
+                    output:
+                      type: number
+                capabilities:
+                  type: object
+                  properties:
+                    chat:
+                      type: boolean
+                    responses:
+                      type: boolean
+                    messages:
+                      type: boolean
+                    stream:
+                      type: boolean
+                    tools:
+                      type: boolean
+                    images:
+                      type: boolean
+                    structuredOutput:
+                      type: boolean
+                    longContext:
+                      type: boolean
+                    embeddings:
+                      type: boolean
+                routeLabels:
+                  type: object
+                  additionalProperties:
+                    type: string
+                drain:
+                  type: boolean
+                  default: false
+                enabled:
+                  type: boolean
+                  default: true
+            status:
+              type: object
+              properties:
+                health:
+                  type: string
+                  enum: ["unknown", "healthy", "degraded", "unhealthy"]
+                resolvedURL:
+                  type: string
+                observedGeneration:
+                  type: integer
+                  format: int64
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required: ["type", "status"]
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: routepolicies.gateyes.io
+spec:
+  group: gateyes.io
+  scope: Namespaced
+  names:
+    plural: routepolicies
+    singular: routepolicy
+    kind: RoutePolicy
+    shortNames:
+      - grp
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              properties:
+                priority:
+                  type: integer
+                  default: 0
+                targetRefs:
+                  type: array
+                  items:
+                    type: object
+                    required: ["kind", "name"]
+                    properties:
+                      kind:
+                        type: string
+                      name:
+                        type: string
+                tenantSelector:
+                  type: object
+                  additionalProperties:
+                    type: string
+                modelSelector:
+                  type: object
+                  properties:
+                    names:
+                      type: array
+                      items:
+                        type: string
+                    families:
+                      type: array
+                      items:
+                        type: string
+                    aliases:
+                      type: array
+                      items:
+                        type: string
+                match:
+                  type: object
+                  properties:
+                    headers:
+                      type: object
+                      additionalProperties:
+                        type: string
+                    minPromptTokens:
+                      type: integer
+                      minimum: 0
+                    maxPromptTokens:
+                      type: integer
+                      minimum: 0
+                    hasTools:
+                      type: boolean
+                    hasImages:
+                      type: boolean
+                    hasStructuredOutput:
+                      type: boolean
+                    stream:
+                      type: boolean
+                    anyRegex:
+                      type: array
+                      items:
+                        type: string
+                strategy:
+                  type: string
+                  enum: ["round_robin", "random", "least_load", "least_tpm", "cost_based", "least_latency", "power_of_two", "least_kv_cache", "least_gpu_cache", "ml_rank"]
+                  default: "least_load"
+                affinity:
+                  type: object
+                  properties:
+                    session:
+                      type: object
+                      properties:
+                        enabled:
+                          type: boolean
+                        ttlSeconds:
+                          type: integer
+                          minimum: 0
+                    prefix:
+                      type: object
+                      properties:
+                        enabled:
+                          type: boolean
+                        depth:
+                          type: integer
+                          minimum: 0
+                        ttlSeconds:
+                          type: integer
+                          minimum: 0
+                endpointSelector:
+                  type: object
+                  additionalProperties:
+                    type: string
+                fallback:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: true
+                    maxAttempts:
+                      type: integer
+                      minimum: 1
+                    onStatus:
+                      type: array
+                      items:
+                        type: integer
+            status:
+              type: object
+              properties:
+                active:
+                  type: boolean
+                observedGeneration:
+                  type: integer
+                  format: int64
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required: ["type", "status"]
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: budgetpolicies.gateyes.io
+spec:
+  group: gateyes.io
+  scope: Namespaced
+  names:
+    plural: budgetpolicies
+    singular: budgetpolicy
+    kind: BudgetPolicy
+    shortNames:
+      - gbp
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - subject
+              properties:
+                subject:
+                  type: object
+                  required: ["kind", "name"]
+                  properties:
+                    kind:
+                      type: string
+                      enum: ["tenant", "project", "apiKey", "virtualKey", "service"]
+                    name:
+                      type: string
+                limits:
+                  type: object
+                  properties:
+                    qps:
+                      type: number
+                      minimum: 0
+                    rpm:
+                      type: integer
+                      minimum: 0
+                    tpm:
+                      type: integer
+                      minimum: 0
+                    requestBurst:
+                      type: integer
+                      minimum: 0
+                    tokenBurst:
+                      type: integer
+                      minimum: 0
+                    monthlyTokens:
+                      type: integer
+                      minimum: 0
+                    monthlyCost:
+                      type: number
+                      minimum: 0
+                enforcement:
+                  type: string
+                  enum: ["hard_reject", "soft_alert", "grace"]
+                  default: "hard_reject"
+                alertThresholds:
+                  type: array
+                  items:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+                reset:
+                  type: object
+                  properties:
+                    period:
+                      type: string
+                      enum: ["hourly", "daily", "weekly", "monthly", "never"]
+                      default: "monthly"
+                    timezone:
+                      type: string
+            status:
+              type: object
+              properties:
+                usedTokens:
+                  type: integer
+                  format: int64
+                usedCost:
+                  type: number
+                exhausted:
+                  type: boolean
+                observedGeneration:
+                  type: integer
+                  format: int64
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required: ["type", "status"]
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: inferenceautoscalepolicies.gateyes.io
+spec:
+  group: gateyes.io
+  scope: Namespaced
+  names:
+    plural: inferenceautoscalepolicies
+    singular: inferenceautoscalepolicy
+    kind: InferenceAutoscalePolicy
+    shortNames:
+      - iap
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - targetRef
+              properties:
+                targetRef:
+                  type: object
+                  required: ["kind", "name"]
+                  properties:
+                    kind:
+                      type: string
+                    name:
+                      type: string
+                mode:
+                  type: string
+                  enum: ["observe", "recommend", "enforce"]
+                  default: "recommend"
+                minReplicas:
+                  type: integer
+                  minimum: 0
+                  default: 1
+                maxReplicas:
+                  type: integer
+                  minimum: 1
+                metrics:
+                  type: object
+                  properties:
+                    queueDepth:
+                      type: integer
+                      minimum: 0
+                    runningRequests:
+                      type: integer
+                      minimum: 0
+                    ttftMs:
+                      type: integer
+                      minimum: 0
+                    p95LatencyMs:
+                      type: integer
+                      minimum: 0
+                    gpuUtilization:
+                      type: number
+                      minimum: 0
+                      maximum: 1
+                    gpuCacheUsage:
+                      type: number
+                      minimum: 0
+                      maximum: 1
+                    cpuCacheUsage:
+                      type: number
+                      minimum: 0
+                      maximum: 1
+                    tpm:
+                      type: integer
+                      minimum: 0
+                    rpm:
+                      type: integer
+                      minimum: 0
+                behavior:
+                  type: object
+                  properties:
+                    scaleUpStabilizationSeconds:
+                      type: integer
+                      minimum: 0
+                    scaleDownStabilizationSeconds:
+                      type: integer
+                      minimum: 0
+                    maxScaleUpStep:
+                      type: integer
+                      minimum: 1
+                    maxScaleDownStep:
+                      type: integer
+                      minimum: 1
+            status:
+              type: object
+              properties:
+                currentReplicas:
+                  type: integer
+                desiredReplicas:
+                  type: integer
+                mode:
+                  type: string
+                reason:
+                  type: string
+                observedGeneration:
+                  type: integer
+                  format: int64
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required: ["type", "status"]
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: inferenceservices.gateyes.io
+spec:
+  group: gateyes.io
+  scope: Namespaced
+  names:
+    plural: inferenceservices
+    singular: inferenceservice
+    kind: InferenceService
+    shortNames:
+      - gis
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - runtime
+                - model
+              properties:
+                runtime:
+                  type: string
+                  enum: ["vllm", "sglang", "kserve", "external"]
+                model:
+                  type: string
+                image:
+                  type: string
+                replicas:
+                  type: integer
+                  minimum: 0
+                serving:
+                  type: object
+                  properties:
+                    port:
+                      type: integer
+                      minimum: 1
+                      maximum: 65535
+                      default: 8000
+                    openAIPath:
+                      type: string
+                      default: "/v1"
+                    metricsPath:
+                      type: string
+                      default: "/metrics"
+                    apiKeySecretRef:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        key:
+                          type: string
+                resources:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                roles:
+                  type: array
+                  items:
+                    type: object
+                    required: ["name", "type"]
+                    properties:
+                      name:
+                        type: string
+                      type:
+                        type: string
+                        enum: ["router", "worker", "prefill", "decode"]
+                      replicas:
+                        type: integer
+                        minimum: 0
+                      resources:
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
+                      args:
+                        type: array
+                        items:
+                          type: string
+                modelAdapters:
+                  type: array
+                  items:
+                    type: object
+                    required: ["name"]
+                    properties:
+                      name:
+                        type: string
+                      source:
+                        type: string
+                      enabled:
+                        type: boolean
+                        default: true
+                autoscalePolicyRef:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                exposeAsModelEndpoint:
+                  type: boolean
+                  default: true
+                routeLabels:
+                  type: object
+                  additionalProperties:
+                    type: string
+            status:
+              type: object
+              properties:
+                endpointRef:
+                  type: string
+                readyReplicas:
+                  type: integer
+                observedGeneration:
+                  type: integer
+                  format: int64
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required: ["type", "status"]
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time

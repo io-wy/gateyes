@@ -11,6 +11,7 @@ import (
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/catalog"
 	"github.com/gateyes/gateway/internal/service/provider"
+	"github.com/gateyes/gateway/internal/service/router"
 )
 
 type AdminHandler struct {
@@ -18,6 +19,7 @@ type AdminHandler struct {
 	providerMgr        *provider.Manager
 	providerRuntimeSvc *provider.RuntimeRegistryService
 	catalogSvc         *catalog.Service
+	routerSvc          *router.Router
 	reloader           *config.Reloader
 	healthChecker      *provider.HealthChecker
 	metrics            *Metrics
@@ -43,6 +45,10 @@ func (h *AdminHandler) SetHealthChecker(hc *provider.HealthChecker) {
 
 func (h *AdminHandler) SetMetrics(metrics *Metrics) {
 	h.metrics = metrics
+}
+
+func (h *AdminHandler) SetRouter(routerSvc *router.Router) {
+	h.routerSvc = routerSvc
 }
 
 func (h *AdminHandler) SetPluginDirectory(dir string) {

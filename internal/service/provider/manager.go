@@ -260,6 +260,7 @@ func providerConfigFromRegistry(record repository.ProviderRegistryRecord) config
 		cfg.Headers = cloneStringMap(record.RuntimeConfig.Headers)
 		cfg.ExtraBody = cloneAnyMap(record.RuntimeConfig.ExtraBody)
 		cfg.ModelAliases = cloneStringMap(record.RuntimeConfig.ModelAliases)
+		cfg.Labels = cloneStringMap(record.RuntimeConfig.Labels)
 	}
 	return cfg
 }

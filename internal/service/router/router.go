@@ -179,6 +179,7 @@ func (r *Router) ExplainOrderCandidates(candidates []provider.Provider, ctx Rout
 	trace.Strategy = r.strategyAfterAffinity(ctx, beforeAffinity, ordered)
 	ordered = r.orderByStrategyLocked(ordered, trace.Strategy)
 	trace.Ordered = providerNameList(ordered)
+	trace.Scores = r.scoreTraceLocked(ordered, trace.Strategy)
 	if len(ordered) == 0 {
 		return nil, trace
 	}
@@ -214,6 +215,47 @@ func (r *Router) orderByStrategyLocked(candidates []provider.Provider, strategy 
 			return ordered[i].Weight() > ordered[j].Weight()
 		})
 		return ordered
+	case "least_latency":
+		sort.SliceStable(ordered, func(i, j int) bool {
+			latI, hasI := r.avgLatencyLocked(ordered[i].Name())
+			latJ, hasJ := r.avgLatencyLocked(ordered[j].Name())
+			if hasI && hasJ && latI != latJ {
+				return latI < latJ
+			}
+			if hasI != hasJ {
+				return hasI
+			}
+			return ordered[i].Weight() > ordered[j].Weight()
+		})
+		return ordered
+	case "least_kv_cache":
+		sort.SliceStable(ordered, func(i, j int) bool {
+			cacheI, hasI := r.kvCacheUsageLocked(ordered[i].Name())
+			cacheJ, hasJ := r.kvCacheUsageLocked(ordered[j].Name())
+			if hasI && hasJ && cacheI != cacheJ {
+				return cacheI < cacheJ
+			}
+			if hasI != hasJ {
+				return hasI
+			}
+			return ordered[i].Weight() > ordered[j].Weight()
+		})
+		return ordered
+	case "least_gpu_cache":
+		sort.SliceStable(ordered, func(i, j int) bool {
+			cacheI, hasI := r.gpuCacheUsageLocked(ordered[i].Name())
+			cacheJ, hasJ := r.gpuCacheUsageLocked(ordered[j].Name())
+			if hasI && hasJ && cacheI != cacheJ {
+				return cacheI < cacheJ
+			}
+			if hasI != hasJ {
+				return hasI
+			}
+			return ordered[i].Weight() > ordered[j].Weight()
+		})
+		return ordered
+	case "power_of_two":
+		return r.powerOfTwoChoices(ordered)
 	case "least_tpm":
 		sort.SliceStable(ordered, func(i, j int) bool {
 			var tpmI, tpmJ int64
@@ -325,6 +367,37 @@ func (r *Router) weightedRoundRobin(candidates []provider.Provider) []provider.P
 	return result
 }
 
+func (r *Router) powerOfTwoChoices(candidates []provider.Provider) []provider.Provider {
+	if len(candidates) <= 2 {
+		return r.orderByStrategyLocked(candidates, "least_load")
+	}
+	i := rand.Intn(len(candidates))
+	j := rand.Intn(len(candidates) - 1)
+	if j >= i {
+		j++
+	}
+	pick, other := candidates[i], candidates[j]
+	scorePick := r.comparableLoadLocked(pick.Name())
+	scoreOther := r.comparableLoadLocked(other.Name())
+	if scoreOther < scorePick {
+		pick = other
+	}
+	result := make([]provider.Provider, 0, len(candidates))
+	result = append(result, pick)
+	for idx, candidate := range candidates {
+		if idx == i || idx == j {
+			continue
+		}
+		result = append(result, candidate)
+	}
+	if pick.Name() == candidates[i].Name() {
+		result = append(result, candidates[j])
+	} else {
+		result = append(result, candidates[i])
+	}
+	return result
+}
+
 func (r *Router) applyAffinityLocked(candidates []provider.Provider, ctx RouteContext) []provider.Provider {
 	if len(candidates) <= 1 {
 		return candidates
@@ -379,6 +452,121 @@ func (r *Router) inferenceLoadLocked(name string) (float64, bool) {
 		return 0, false
 	}
 	return state.LoadScore(), true
+}
+
+func (r *Router) comparableLoadLocked(name string) float64 {
+	if score, ok := r.inferenceLoadLocked(name); ok {
+		return score
+	}
+	if r.stats == nil {
+		return 0
+	}
+	return float64(r.stats.CurrentLoad(name))
+}
+
+func (r *Router) avgLatencyLocked(name string) (float64, bool) {
+	if r.stats == nil {
+		return 0, false
+	}
+	stats, ok := r.stats.Get(name)
+	if !ok || stats.AvgLatencyMs <= 0 {
+		return 0, false
+	}
+	return stats.AvgLatencyMs, true
+}
+
+func (r *Router) kvCacheUsageLocked(name string) (float64, bool) {
+	if r.inferenceScraper == nil {
+		return 0, false
+	}
+	state, ok := r.inferenceScraper.Get(name)
+	if !ok || state.Stale {
+		return 0, false
+	}
+	return state.GPUCacheUsagePerc + state.CPUCacheUsagePerc, true
+}
+
+func (r *Router) gpuCacheUsageLocked(name string) (float64, bool) {
+	if r.inferenceScraper == nil {
+		return 0, false
+	}
+	state, ok := r.inferenceScraper.Get(name)
+	if !ok || state.Stale {
+		return 0, false
+	}
+	return state.GPUCacheUsagePerc, true
+}
+
+func (r *Router) scoreTraceLocked(candidates []provider.Provider, strategy string) []ScoreTrace {
+	if len(candidates) == 0 {
+		return nil
+	}
+	scores := make([]ScoreTrace, 0, len(candidates))
+	for _, candidate := range candidates {
+		score := ScoreTrace{
+			Provider:      candidate.Name(),
+			LowerIsBetter: true,
+			Components:    map[string]float64{},
+		}
+		switch strategy {
+		case "least_load", "power_of_two":
+			if inferenceLoad, ok := r.inferenceLoadLocked(candidate.Name()); ok {
+				score.Components["inference_load"] = inferenceLoad
+				score.Total = inferenceLoad
+			} else if r.stats != nil {
+				load := float64(r.stats.CurrentLoad(candidate.Name()))
+				score.Components["current_load"] = load
+				score.Total = load
+			}
+		case "least_latency":
+			if latency, ok := r.avgLatencyLocked(candidate.Name()); ok {
+				score.Components["avg_latency_ms"] = latency
+				score.Total = latency
+			}
+		case "least_tpm":
+			if r.stats != nil {
+				tpm := float64(r.stats.TPM(candidate.Name()))
+				score.Components["tpm"] = tpm
+				score.Total = tpm
+			}
+		case "cost_based":
+			cost := candidate.UnitCost()
+			score.Components["unit_cost"] = cost
+			score.Total = cost
+		case "least_kv_cache":
+			if state, ok := r.inferenceStateLocked(candidate.Name()); ok {
+				score.Components["gpu_cache_usage"] = state.GPUCacheUsagePerc
+				score.Components["cpu_cache_usage"] = state.CPUCacheUsagePerc
+				score.Total = state.GPUCacheUsagePerc + state.CPUCacheUsagePerc
+			}
+		case "least_gpu_cache":
+			if state, ok := r.inferenceStateLocked(candidate.Name()); ok {
+				score.Components["gpu_cache_usage"] = state.GPUCacheUsagePerc
+				score.Total = state.GPUCacheUsagePerc
+			}
+		default:
+			weight := float64(candidate.Weight())
+			score.LowerIsBetter = false
+			score.Components["weight"] = weight
+			score.Total = weight
+		}
+		if len(score.Components) == 0 {
+			score.Components = nil
+		}
+		scores = append(scores, score)
+	}
+	return scores
+}
+
+func (r *Router) inferenceStateLocked(name string) (InferenceState, bool) {
+	if r.inferenceScraper == nil {
+		return InferenceState{}, false
+	}
+	state, ok := r.inferenceScraper.Get(name)
+	if !ok || state.Stale {
+		return InferenceState{}, false
+	}
+	return state, true
 }
 
 func (r *Router) PromoteAffinity(ctx RouteContext, providerName string) {

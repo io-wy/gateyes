@@ -1,4 +1,4 @@
-{{- if .Values.migrationJob.enabled }}
+{{- if and (ne .Values.platform.mode "operator") .Values.migrationJob.enabled }}
 apiVersion: batch/v1
 kind: Job
 metadata:

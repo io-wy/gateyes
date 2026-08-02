@@ -1,4 +1,4 @@
-{{- if .Values.persistence.enabled }}
+{{- if and (ne .Values.platform.mode "operator") .Values.persistence.enabled }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

@@ -1,6 +1,6 @@
 apiVersion: v2
 name: gateyes
-description: Gateyes AI gateway
+description: Gateyes LLM gateway and MaaS control plane
 type: application
 version: 0.1.0
 appVersion: "0.1.0"

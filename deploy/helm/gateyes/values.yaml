@@ -1,3 +1,20 @@
+platform:
+  # gateway: data plane and admin APIs only.
+  # maas: gateway plus tenant-facing MaaS console/API surfaces.
+  # operator: CRDs and operator control plane only.
+  # full: gateway, MaaS, CRDs, and operator control plane.
+  mode: gateway
+  crds:
+    # Helm installs files under crds/ before templates. Keep this switch as
+    # deployment intent for external installers and future operator templates.
+    install: true
+  operator:
+    enabled: false
+    adminURL: http://gateyes:8028
+    namespace: ""
+    dryRun: true
+    syncInterval: 30s
+
 replicaCount: 1
 
 image:

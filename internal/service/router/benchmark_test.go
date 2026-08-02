@@ -16,10 +16,13 @@ type benchProvider struct {
 	wgt   int
 }
 
-func (m *benchProvider) Name() string      { return m.name }
-func (m *benchProvider) Type() string      { return "mock" }
-func (m *benchProvider) BaseURL() string   { return "http://test.com" }
-func (m *benchProvider) Model() string     { return m.model }
+func (m *benchProvider) Name() string    { return m.name }
+func (m *benchProvider) Type() string    { return "mock" }
+func (m *benchProvider) BaseURL() string { return "http://test.com" }
+func (m *benchProvider) Model() string   { return m.model }
+func (m *benchProvider) Labels() map[string]string {
+	return nil
+}
 func (m *benchProvider) Weight() int       { return m.wgt }
 func (m *benchProvider) UnitCost() float64 { return m.cost }
 func (m *benchProvider) Cost(prompt, completion int) float64 {

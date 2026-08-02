@@ -803,6 +803,7 @@ type ProviderRuntimeConfig struct {
 	Headers      map[string]string `json:"headers,omitempty"`
 	ExtraBody    map[string]any    `json:"extra_body,omitempty"`
 	ModelAliases map[string]string `json:"model_aliases,omitempty"`
+	Labels       map[string]string `json:"labels,omitempty"`
 }
 
 type UpdateProviderRegistryParams struct {

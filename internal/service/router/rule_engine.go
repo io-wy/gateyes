@@ -36,7 +36,7 @@ func (r *Router) applyRuleEngineTraceLocked(candidates []provider.Provider, ctx 
 		if !matchRouteRule(rule.Match, ctx) {
 			continue
 		}
-		filtered := filterProvidersByName(candidates, rule.Action.Providers)
+		filtered := filterProviders(candidates, rule.Action)
 		if len(filtered) > 0 {
 			return filtered, RuleTrace{
 				Matched:   true,
@@ -95,10 +95,21 @@ func matchAnyRegex(patterns []string, input string) bool {
 	return false
 }
 
-func filterProvidersByName(candidates []provider.Provider, names []string) []provider.Provider {
-	if len(names) == 0 {
+func filterProviders(candidates []provider.Provider, action config.RouteActionConfig) []provider.Provider {
+	filtered := candidates
+	if len(action.Providers) > 0 {
+		filtered = filterProvidersByName(filtered, action.Providers)
+	}
+	if len(action.ProviderLabels) > 0 {
+		filtered = filterProvidersByLabels(filtered, action.ProviderLabels)
+	}
+	if len(action.Providers) == 0 && len(action.ProviderLabels) == 0 {
 		return nil
 	}
+	return filtered
+}
+
+func filterProvidersByName(candidates []provider.Provider, names []string) []provider.Provider {
 	filtered := make([]provider.Provider, 0, len(candidates))
 	for _, candidate := range candidates {
 		if containsString(names, candidate.Name()) {
@@ -106,6 +117,25 @@ func filterProvidersByName(candidates []provider.Provider, names []string) []pro
 		}
 	}
 	return filtered
+}
+
+func filterProvidersByLabels(candidates []provider.Provider, labels map[string]string) []provider.Provider {
+	filtered := make([]provider.Provider, 0, len(candidates))
+	for _, candidate := range candidates {
+		if providerLabelsMatch(candidate.Labels(), labels) {
+			filtered = append(filtered, candidate)
+		}
+	}
+	return filtered
+}
+
+func providerLabelsMatch(providerLabels map[string]string, required map[string]string) bool {
+	for key, value := range required {
+		if providerLabels[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 func containsString(values []string, target string) bool {

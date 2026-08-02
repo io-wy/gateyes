@@ -188,11 +188,11 @@ type TracingConfig struct {
 }
 
 type RouterConfig struct {
-	Strategy         string                 `yaml:"strategy"`
-	Ranker           RankerConfig           `yaml:"ranker"`
-	RuleEngine       RuleEngineConfig       `yaml:"ruleEngine"`
-	Affinity         AffinityConfig         `yaml:"affinity"`
-	InferenceMetrics InferenceMetricsConfig `yaml:"inferenceMetrics"`
+	Strategy         string                 `yaml:"strategy" json:"strategy"`
+	Ranker           RankerConfig           `yaml:"ranker" json:"ranker"`
+	RuleEngine       RuleEngineConfig       `yaml:"ruleEngine" json:"ruleEngine"`
+	Affinity         AffinityConfig         `yaml:"affinity" json:"affinity"`
+	InferenceMetrics InferenceMetricsConfig `yaml:"inferenceMetrics" json:"inferenceMetrics"`
 }
 
 // InferenceMetricsConfig configures Prometheus-style scraping of
@@ -203,39 +203,40 @@ type RouterConfig struct {
 //
 // Per-provider metricsURL is read from each provider's MetricsURL field.
 type InferenceMetricsConfig struct {
-	Enabled               bool `yaml:"enabled"`
-	ScrapeIntervalSeconds int  `yaml:"scrapeIntervalSeconds"` // default 5
+	Enabled               bool `yaml:"enabled" json:"enabled"`
+	ScrapeIntervalSeconds int  `yaml:"scrapeIntervalSeconds" json:"scrapeIntervalSeconds"` // default 5
 }
 
 type RankerConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	Method  string `yaml:"method"`
+	Enabled bool   `yaml:"enabled" json:"enabled"`
+	Method  string `yaml:"method" json:"method"`
 }
 
 type RuleEngineConfig struct {
-	Enabled bool              `yaml:"enabled"`
-	Rules   []RouteRuleConfig `yaml:"rules"`
+	Enabled bool              `yaml:"enabled" json:"enabled"`
+	Rules   []RouteRuleConfig `yaml:"rules" json:"rules"`
 }
 
 type RouteRuleConfig struct {
-	Name   string            `yaml:"name"`
-	Match  RouteMatchConfig  `yaml:"match"`
-	Action RouteActionConfig `yaml:"action"`
+	Name   string            `yaml:"name" json:"name"`
+	Match  RouteMatchConfig  `yaml:"match" json:"match"`
+	Action RouteActionConfig `yaml:"action" json:"action"`
 }
 
 type RouteMatchConfig struct {
-	Models              []string `yaml:"models"`
-	MinPromptTokens     int      `yaml:"minPromptTokens"`
-	MaxPromptTokens     int      `yaml:"maxPromptTokens"`
-	HasTools            *bool    `yaml:"hasTools"`
-	HasImages           *bool    `yaml:"hasImages"`
-	HasStructuredOutput *bool    `yaml:"hasStructuredOutput"`
-	Stream              *bool    `yaml:"stream"`
-	AnyRegex            []string `yaml:"anyRegex"`
+	Models              []string `yaml:"models" json:"models"`
+	MinPromptTokens     int      `yaml:"minPromptTokens" json:"minPromptTokens"`
+	MaxPromptTokens     int      `yaml:"maxPromptTokens" json:"maxPromptTokens"`
+	HasTools            *bool    `yaml:"hasTools" json:"hasTools"`
+	HasImages           *bool    `yaml:"hasImages" json:"hasImages"`
+	HasStructuredOutput *bool    `yaml:"hasStructuredOutput" json:"hasStructuredOutput"`
+	Stream              *bool    `yaml:"stream" json:"stream"`
+	AnyRegex            []string `yaml:"anyRegex" json:"anyRegex"`
 }
 
 type RouteActionConfig struct {
-	Providers []string `yaml:"providers"`
+	Providers      []string          `yaml:"providers" json:"providers"`
+	ProviderLabels map[string]string `yaml:"providerLabels" json:"providerLabels"`
 }
 
 type LimiterConfig struct {
@@ -277,6 +278,7 @@ type ProviderConfig struct {
 	Capabilities ProviderCapabilitiesConfig `yaml:"capabilities"`
 	Headers      map[string]string          `yaml:"headers"`
 	ExtraBody    map[string]any             `yaml:"extraBody"`
+	Labels       map[string]string          `yaml:"labels"`
 	EnvFile      string                     `yaml:"envFile"`    // 敏感字段外置 .env 文件路径，空则自动尝试 .env1, .env2...
 	MetricsURL   string                     `yaml:"metricsURL"` // optional: Prometheus /metrics endpoint for inference-aware routing (vLLM)
 	// ModelAliases maps incoming model names (e.g. "claude-sonnet-4-6") to
@@ -387,11 +389,11 @@ type CacheConfig struct {
 }
 
 type AffinityConfig struct {
-	Enabled       bool   `yaml:"enabled"`
-	SessionHeader string `yaml:"sessionHeader"` // header used for session affinity, e.g. "X-Session-ID"
-	SessionTTL    int    `yaml:"sessionTTL"`    // seconds; 0 = no expiry
-	PrefixTTL     int    `yaml:"prefixTTL"`     // seconds; 0 = no expiry
-	PrefixDepth   int    `yaml:"prefixDepth"`   // 0 = use full prompt prefix
+	Enabled       bool   `yaml:"enabled" json:"enabled"`
+	SessionHeader string `yaml:"sessionHeader" json:"sessionHeader"` // header used for session affinity, e.g. "X-Session-ID"
+	SessionTTL    int    `yaml:"sessionTTL" json:"sessionTTL"`       // seconds; 0 = no expiry
+	PrefixTTL     int    `yaml:"prefixTTL" json:"prefixTTL"`         // seconds; 0 = no expiry
+	PrefixDepth   int    `yaml:"prefixDepth" json:"prefixDepth"`     // 0 = use full prompt prefix
 }
 
 func replaceEnvVars(data []byte) []byte {
@@ -557,7 +559,7 @@ func (c *Config) Validate() error {
 	if !containsString([]string{"postgres", "sqlite", ""}, c.Database.Driver) {
 		return fmt.Errorf("unsupported database.driver (only postgres or sqlite is supported): %s", c.Database.Driver)
 	}
-	if !containsString([]string{"round_robin", "random", "least_load", "least_tpm", "cost_based", "sticky", "ml_rank", ""}, c.Router.Strategy) {
+	if !containsString([]string{"round_robin", "random", "least_load", "least_tpm", "cost_based", "sticky", "ml_rank", "least_latency", "power_of_two", "least_kv_cache", "least_gpu_cache", ""}, c.Router.Strategy) {
 		return fmt.Errorf("unsupported router.strategy: %s", c.Router.Strategy)
 	}
 	if !containsString([]string{"", "none", "ml_rank"}, c.Router.Ranker.Method) {

@@ -1,4 +1,4 @@
-{{- if .Values.monitoring.grafanaDashboard.enabled }}
+{{- if and (ne .Values.platform.mode "operator") .Values.monitoring.grafanaDashboard.enabled }}
 {{- $dashboardJson := .Files.Get "files/grafana-dashboard.json" -}}
 apiVersion: v1
 kind: ConfigMap

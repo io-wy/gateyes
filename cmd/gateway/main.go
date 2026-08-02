@@ -350,6 +350,7 @@ func main() {
 	})
 
 	adminHandler := handler.NewAdminHandler(store, providerMgr, catalogSvc, reloader)
+	adminHandler.SetRouter(routerSvc)
 	adminHandler.SetMetrics(metrics)
 	adminHandler.SetHealthChecker(healthChecker)
 	adminHandler.SetPluginDirectory(cfg.Plugins.Directory)

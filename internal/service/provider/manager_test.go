@@ -16,6 +16,7 @@ func (p *closableProviderStub) Name() string                                    
 func (p *closableProviderStub) Type() string                                    { return "test" }
 func (p *closableProviderStub) BaseURL() string                                 { return "" }
 func (p *closableProviderStub) Model() string                                   { return "" }
+func (p *closableProviderStub) Labels() map[string]string                       { return nil }
 func (p *closableProviderStub) UnitCost() float64                               { return 0 }
 func (p *closableProviderStub) Cost(promptTokens, completionTokens int) float64 { return 0 }
 func (p *closableProviderStub) CreateResponse(ctx context.Context, req *ResponseRequest) (*Response, error) {

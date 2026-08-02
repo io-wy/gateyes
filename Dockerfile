@@ -14,6 +14,7 @@ ARG COMMIT=unknown
 ARG BUILD_DATE=unknown
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -trimpath -ldflags="-s -w" -o /out/gateway ./cmd/gateway
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -trimpath -ldflags="-s -w" -o /out/gateway-migrate ./cmd/migrate
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -trimpath -ldflags="-s -w" -o /out/gateway-operator ./cmd/operator
 
 FROM alpine:3.21 AS runtime
 RUN apk add --no-cache ca-certificates tzdata wget
@@ -21,6 +22,7 @@ WORKDIR /app
 
 COPY --from=builder /out/gateway /app/gateway
 COPY --from=builder /out/gateway-migrate /app/gateway-migrate
+COPY --from=builder /out/gateway-operator /app/gateway-operator
 COPY configs /app/configs
 COPY docs/docs-project/assets/openapi.json /app/docs/openapi.json
 

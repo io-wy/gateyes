@@ -75,10 +75,21 @@ func TestZeroTimeOrValue(t *testing.T) {
 }
 
 func TestProviderConfigFromCreateRequest(t *testing.T) {
-	req := CreateProviderRequest{Name: "p1", Model: "m1", RoutingWeight: 3, Type: "openai", BaseURL: "http://x", APIKey: "k"}
+	req := CreateProviderRequest{
+		Name:          "p1",
+		Model:         "m1",
+		RoutingWeight: 3,
+		Type:          "openai",
+		BaseURL:       "http://x",
+		APIKey:        "k",
+		Labels:        map[string]string{"accelerator": "h100"},
+	}
 	cfg := providerConfigFromCreateRequest(req)
 	if cfg.Name != "p1" || cfg.Model != "m1" || cfg.Weight != 3 {
 		t.Fatalf("providerConfigFromCreateRequest mismatch: %+v", cfg)
+	}
+	if cfg.Labels["accelerator"] != "h100" {
+		t.Fatalf("providerConfigFromCreateRequest labels = %#v, want accelerator label", cfg.Labels)
 	}
 	req2 := CreateProviderRequest{Name: "p2", Model: "m2", RoutingWeight: 0}
 	cfg2 := providerConfigFromCreateRequest(req2)
@@ -92,10 +103,18 @@ func TestMergeProviderUpdate(t *testing.T) {
 	enabled := false
 	model := "m2"
 	weight := 7
-	req := UpdateProviderRequest{Enabled: &enabled, Model: &model, RoutingWeight: &weight}
+	req := UpdateProviderRequest{
+		Enabled:       &enabled,
+		Model:         &model,
+		RoutingWeight: &weight,
+		Labels:        map[string]string{"runtime": "vllm"},
+	}
 	updated := mergeProviderUpdate(current, req)
 	if updated.Model != "m2" || updated.Enabled != false || updated.RoutingWeight != 7 {
 		t.Fatalf("mergeProviderUpdate mismatch: model=%s enabled=%v weight=%d", updated.Model, updated.Enabled, updated.RoutingWeight)
+	}
+	if updated.RuntimeConfig.Labels["runtime"] != "vllm" {
+		t.Fatalf("mergeProviderUpdate labels = %#v, want runtime label", updated.RuntimeConfig.Labels)
 	}
 }
 

@@ -17,10 +17,14 @@ func TestDefaultRegistryRecordFromConfigAndManagerFiltering(t *testing.T) {
 		Enabled:   true,
 		MaxTokens: 64000,
 		Weight:    7,
+		Labels:    map[string]string{"accelerator": "h100"},
 	}
 	record := DefaultRegistryRecordFromConfig(openaiCfg)
 	if !record.SupportsChat || !record.SupportsResponses || !record.SupportsMessages || !record.SupportsLongContext || record.RoutingWeight != 7 {
 		t.Fatalf("DefaultRegistryRecordFromConfig(openai) = %+v, want openai capability defaults", record)
+	}
+	if record.RuntimeConfig.Labels["accelerator"] != "h100" {
+		t.Fatalf("DefaultRegistryRecordFromConfig(openai) labels = %#v, want accelerator label", record.RuntimeConfig.Labels)
 	}
 	if record.SupportsEmbeddings {
 		t.Fatalf("DefaultRegistryRecordFromConfig(openai responses) SupportsEmbeddings = true, want false unless explicitly configured")

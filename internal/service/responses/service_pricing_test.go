@@ -35,10 +35,13 @@ type pricingMockProvider struct {
 	priceOut float64
 }
 
-func (p *pricingMockProvider) Name() string      { return p.name }
-func (p *pricingMockProvider) Type() string      { return "mock" }
-func (p *pricingMockProvider) Model() string     { return p.model }
-func (p *pricingMockProvider) BaseURL() string   { return "" }
+func (p *pricingMockProvider) Name() string    { return p.name }
+func (p *pricingMockProvider) Type() string    { return "mock" }
+func (p *pricingMockProvider) Model() string   { return p.model }
+func (p *pricingMockProvider) BaseURL() string { return "" }
+func (p *pricingMockProvider) Labels() map[string]string {
+	return nil
+}
 func (p *pricingMockProvider) Weight() int       { return 1 }
 func (p *pricingMockProvider) UnitCost() float64 { return p.priceIn + p.priceOut }
 func (p *pricingMockProvider) Cost(prompt, completion int) float64 {

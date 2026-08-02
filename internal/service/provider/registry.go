@@ -99,6 +99,7 @@ func runtimeConfigFromProviderConfig(cfg config.ProviderConfig) *repository.Prov
 		Headers:      cfg.Headers,
 		ExtraBody:    cfg.ExtraBody,
 		ModelAliases: cfg.ModelAliases,
+		Labels:       cfg.Labels,
 	}
 }
 

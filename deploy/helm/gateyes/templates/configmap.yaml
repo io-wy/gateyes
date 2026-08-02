@@ -1,3 +1,4 @@
+{{- if ne .Values.platform.mode "operator" }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -5,3 +6,4 @@ metadata:
 data:
   config.yaml: |
 {{ .Values.appConfig | indent 4 }}
+{{- end }}

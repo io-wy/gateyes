@@ -1,0 +1,45 @@
+{{- if or .Values.platform.operator.enabled (eq .Values.platform.mode "operator") (eq .Values.platform.mode "full") }}
+{{- $clusterScope := not .Values.platform.operator.namespace }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: {{ ternary "ClusterRole" "Role" $clusterScope }}
+metadata:
+  name: {{ include "gateyes.fullname" . }}-operator
+  labels:
+    {{- include "gateyes.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+rules:
+  - apiGroups: ["gateyes.io"]
+    resources:
+      - gateyesgateways
+      - modelendpoints
+      - routepolicies
+      - budgetpolicies
+      - inferenceautoscalepolicies
+      - inferenceservices
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["gateyes.io"]
+    resources:
+      - gateyesgateways/status
+      - modelendpoints/status
+      - routepolicies/status
+      - budgetpolicies/status
+      - inferenceautoscalepolicies/status
+      - inferenceservices/status
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: {{ ternary "ClusterRoleBinding" "RoleBinding" $clusterScope }}
+metadata:
+  name: {{ include "gateyes.fullname" . }}-operator
+  labels:
+    {{- include "gateyes.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gateyes.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: {{ ternary "ClusterRole" "Role" $clusterScope }}
+  name: {{ include "gateyes.fullname" . }}-operator
+{{- end }}

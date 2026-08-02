@@ -118,55 +118,74 @@ Deployment assets already wire:
 1. readiness: `/ready`
 2. liveness: `/health`
 
-## 5. Ingress Controller 部署
+## 5. CRD / Operator 部署
 
-Gateyes 可作为集群 Ingress Controller 运行，与 Nginx Ingress Controller 并存或替代。
+Gateyes 的 Kubernetes 形态分成 gateway 数据面和可选 operator 控制面。gateway 仍然是纯 AI gateway，不在请求热路径中查询 Kubernetes API；operator 负责监听 CRD，并把声明式资源同步到 Gateyes Admin API、数据库或运行时配置缓存。
 
-### 5.1 启用 Ingress Controller
+Helm chart 已包含 CRD manifests：
 
-```yaml
-ingressController:
-  enabled: true
-  class: gateyes
-  watchNamespace: ""
-  tlsEnabled: false
-  proxy:
-    connectTimeout: 5
-    readTimeout: 60
-    maxIdleConns: 100
-  discovery:
-    type: kubernetes
+```text
+deploy/helm/gateyes/crds/gateyes.io_crds.yaml
 ```
 
-Helm 会自动创建 `IngressClass` 资源并扩展 RBAC 权限。
+当前声明式资源包括：
 
-### 5.2 使用 Gateyes 接管 Ingress
+| CRD | 作用 |
+| --- | --- |
+| `GateyesGateway` | 声明 gateway / MaaS / operator / full 部署形态 |
+| `ModelEndpoint` | 声明 OpenAI、Anthropic、Azure、vLLM、SGLang、KServe 或 external 上游 |
+| `RoutePolicy` | 声明租户、模型、标签、header、亲和和路由策略 |
+| `BudgetPolicy` | 声明租户、项目、API key、virtual key、service 的预算和限流 |
+| `InferenceAutoscalePolicy` | 声明 observe / recommend / enforce 扩缩容策略 |
+| `InferenceService` | 声明自托管 vLLM / SGLang / KServe / external 推理服务 |
 
-将现有 Ingress 的 `ingressClassName` 改为 `gateyes`：
+### 5.1 安装 CRD
+
+Helm 会在安装 chart 时先安装 `crds/` 目录下的 CRD。也可以单独安装：
+
+```bash
+kubectl apply -f deploy/helm/gateyes/crds/gateyes.io_crds.yaml
+```
+
+### 5.2 平台模式
+
+`values.yaml` 提供 `platform.mode` 作为部署意图：
 
 ```yaml
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: my-app
-spec:
-  ingressClassName: gateyes
-  rules:
-    - host: app.example.com
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: my-svc
-                port:
-                  number: 8080
+platform:
+  mode: gateway # gateway | maas | operator | full
+  crds:
+    install: true
+  operator:
+    enabled: false
 ```
+
+当前 chart 的 gateway 数据面仍由 `Deployment` 管理；operator deployment 作为独立控制面运行，使用 `client-go` dynamic client 读取 Gateyes CRD，并通过 Admin sync API 同步 provider、router 和 budget。Kubernetes 依赖只存在于 `/app/gateway-operator`，不得引入 `cmd/gateway` 请求热路径。
+
+### 5.3 启用 operator skeleton
+
+当前镜像包含三个二进制：
+
+| Binary | 作用 |
+| --- | --- |
+| `/app/gateway` | Gateway 数据面和 Admin API |
+| `/app/gateway-migrate` | 数据库迁移 |
+| `/app/gateway-operator` | CRD/operator 控制面入口 |
+
+启用 operator：
+
+```bash
+helm upgrade --install gateyes ./deploy/helm/gateyes \
+  -n gateyes --create-namespace \
+  --set platform.mode=full \
+  --set platform.operator.enabled=true
+```
+
+operator 默认以 dry-run 运行，会读取 `ModelEndpoint`、`RoutePolicy`、`BudgetPolicy` 和 `InferenceAutoscalePolicy` 并输出同步计划计数。设置 `platform.operator.dryRun=false` 后，operator 会调用 Gateyes Admin API 应用 provider、router 和 budget 变更。`platform.operator.namespace` 为空时 chart 生成 `ClusterRole/ClusterRoleBinding`，指定 namespace 时生成 `Role/RoleBinding`。
 
 ## 6. Production notes
 
 1. Prefer Postgres/MySQL in staging/prod
 2. Do not keep provider keys in repo or values files
 3. Use external secret manager or pre-created K8s Secret for production
-4. Ingress Controller 多副本时建议开启 leader election（controller-runtime 默认未启用）
+4. CRD/operator 模式下，operator 必须使用独立 ServiceAccount 和最小 RBAC 权限

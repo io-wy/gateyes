@@ -142,6 +142,7 @@ type Provider interface {
 	Type() string
 	BaseURL() string
 	Model() string
+	Labels() map[string]string
 	Weight() int
 	UnitCost() float64
 	Cost(promptTokens, completionTokens int) float64

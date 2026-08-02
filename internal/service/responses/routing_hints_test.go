@@ -38,7 +38,11 @@ func TestParseRoutingHintsFromHeaders(t *testing.T) {
 		{"empty", nil, RoutingHints{}},
 		{"cost", map[string]string{RoutingProfileHeader: "cost"}, RoutingHints{Profile: routeSvc.RoutingProfileCost, StrategyOverride: "cost_based"}},
 		{"latency alias", map[string]string{RoutingProfileHeader: "least-load"}, RoutingHints{Profile: routeSvc.RoutingProfileLatency, StrategyOverride: "least_load"}},
+		{"least latency", map[string]string{RoutingProfileHeader: "least-latency"}, RoutingHints{Profile: routeSvc.RoutingProfileLatency, StrategyOverride: "least_latency"}},
 		{"cache", map[string]string{RoutingProfileHeader: "cache"}, RoutingHints{Profile: routeSvc.RoutingProfileCache}},
+		{"least kv cache", map[string]string{RoutingProfileHeader: "least-kv-cache"}, RoutingHints{Profile: routeSvc.RoutingProfileCache, StrategyOverride: "least_kv_cache"}},
+		{"least gpu cache", map[string]string{RoutingProfileHeader: "least-gpu-cache"}, RoutingHints{Profile: routeSvc.RoutingProfileCache, StrategyOverride: "least_gpu_cache"}},
+		{"power of two", map[string]string{RoutingProfileHeader: "p2c"}, RoutingHints{Profile: routeSvc.RoutingProfileBalanced, StrategyOverride: "power_of_two"}},
 		{"aibrix alias", map[string]string{"X-AIBrix-Routing-Profile": "session"}, RoutingHints{Profile: routeSvc.RoutingProfileSticky, StrategyOverride: "sticky"}},
 		{"unknown", map[string]string{RoutingProfileHeader: "bogus"}, RoutingHints{}},
 	}

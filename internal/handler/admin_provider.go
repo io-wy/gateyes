@@ -64,6 +64,7 @@ type CreateProviderRequest struct {
 	Enabled                  bool              `json:"enabled"`
 	Headers                  map[string]string `json:"headers"`
 	ExtraBody                map[string]any    `json:"extra_body"`
+	Labels                   map[string]string `json:"labels"`
 	SupportsChat             *bool             `json:"supports_chat"`
 	SupportsResponses        *bool             `json:"supports_responses"`
 	SupportsMessages         *bool             `json:"supports_messages"`
@@ -127,6 +128,7 @@ type UpdateProviderRequest struct {
 	Timeout                  *int              `json:"timeout"`
 	Headers                  map[string]string `json:"headers"`
 	ExtraBody                map[string]any    `json:"extra_body"`
+	Labels                   map[string]string `json:"labels"`
 	SupportsChat             *bool             `json:"supports_chat"`
 	SupportsResponses        *bool             `json:"supports_responses"`
 	SupportsMessages         *bool             `json:"supports_messages"`
@@ -311,6 +313,7 @@ func providerRegistryToResponse(record repository.ProviderRegistryRecord) gin.H 
 		response["price_output"] = record.RuntimeConfig.PriceOutput
 		response["headers"] = record.RuntimeConfig.Headers
 		response["extra_body"] = record.RuntimeConfig.ExtraBody
+		response["labels"] = record.RuntimeConfig.Labels
 		response["has_api_key"] = record.RuntimeConfig.APIKey != ""
 	}
 	return response
@@ -349,6 +352,7 @@ func providerConfigFromCreateRequest(req CreateProviderRequest) config.ProviderC
 		Enabled:     req.Enabled,
 		Headers:     req.Headers,
 		ExtraBody:   req.ExtraBody,
+		Labels:      req.Labels,
 	}
 }
 
@@ -404,6 +408,9 @@ func mergeProviderUpdate(current repository.ProviderRegistryRecord, req UpdatePr
 	}
 	if req.ExtraBody != nil {
 		next.RuntimeConfig.ExtraBody = req.ExtraBody
+	}
+	if req.Labels != nil {
+		next.RuntimeConfig.Labels = req.Labels
 	}
 	next.RuntimeConfig.Enabled = next.Enabled
 	applyProviderCapabilityOverrides(&next, providerCapabilityOverrides{

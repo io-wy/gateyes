@@ -102,6 +102,7 @@ func NewServer(cfg config.ServerConfig, h *Handler, adminH *AdminHandler, mwSvc 
 
 func registerAdminRoutes(g *gin.RouterGroup, adminH *AdminHandler, mwSvc *mw.Middleware) {
 	g.GET("/dashboard", mwSvc.RequirePermission(mw.PermUsageRead), adminH.Dashboard)
+	g.GET("/catalog", mwSvc.RequirePermission(mw.PermUsageRead), adminH.GetCatalog)
 	g.GET("/cache/summary", mwSvc.RequirePermission(mw.PermUsageRead), adminH.GetCacheSummary)
 	g.GET("/providers", mwSvc.RequirePermission(mw.PermProviderRead), adminH.GetProviders)
 	g.POST("/providers/check", mwSvc.RequirePermission(mw.PermProviderRead), adminH.CheckProviders)
@@ -163,6 +164,8 @@ func registerAdminRoutes(g *gin.RouterGroup, adminH *AdminHandler, mwSvc *mw.Mid
 	g.GET("/usage/breakdown", mwSvc.RequirePermission(mw.PermUsageRead), adminH.GetUsageBreakdown)
 	g.GET("/usage/trend", mwSvc.RequirePermission(mw.PermUsageRead), adminH.GetUsageTrend)
 	g.POST("/reload", mwSvc.RequirePermission(mw.PermConfigWrite), adminH.ReloadConfig)
+	g.POST("/sync/router", mwSvc.RequirePermission(mw.PermConfigWrite), adminH.SyncRouter)
+	g.POST("/sync/budget", mwSvc.RequirePermission(mw.PermConfigWrite), adminH.SyncBudget)
 	g.GET("/roles", mwSvc.RequirePermission(mw.PermConfigWrite), adminH.ListRoles)
 	g.POST("/roles", mwSvc.RequirePermission(mw.PermConfigWrite), adminH.CreateRole)
 	g.GET("/roles/:id", mwSvc.RequirePermission(mw.PermConfigWrite), adminH.GetRole)

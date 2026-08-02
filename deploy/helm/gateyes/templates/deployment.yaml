@@ -1,3 +1,4 @@
+{{- if ne .Values.platform.mode "operator" }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -104,4 +105,5 @@ spec:
 {{- else }}
         - name: data
           emptyDir: {}
+{{- end }}
 {{- end }}

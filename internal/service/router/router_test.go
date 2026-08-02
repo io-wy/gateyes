@@ -2,7 +2,10 @@ package router
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/gateyes/gateway/internal/service/provider"
@@ -10,16 +13,20 @@ import (
 
 // mockProvider 用于测试的 mock
 type mockProvider struct {
-	name  string
-	model string
-	cost  float64
-	load  int64
+	name   string
+	model  string
+	cost   float64
+	load   int64
+	labels map[string]string
 }
 
-func (m *mockProvider) Name() string      { return m.name }
-func (m *mockProvider) Type() string      { return "mock" }
-func (m *mockProvider) BaseURL() string   { return "http://test.com" }
-func (m *mockProvider) Model() string     { return m.model }
+func (m *mockProvider) Name() string    { return m.name }
+func (m *mockProvider) Type() string    { return "mock" }
+func (m *mockProvider) BaseURL() string { return "http://test.com" }
+func (m *mockProvider) Model() string   { return m.model }
+func (m *mockProvider) Labels() map[string]string {
+	return m.labels
+}
 func (m *mockProvider) Weight() int       { return 0 }
 func (m *mockProvider) UnitCost() float64 { return m.cost }
 func (m *mockProvider) Cost(prompt, completion int) float64 {
@@ -154,6 +161,68 @@ func TestRouter_LeastTPM(t *testing.T) {
 	}
 }
 
+func TestRouter_LeastLatency(t *testing.T) {
+	stats := provider.NewStats()
+	p1 := &mockProvider{name: "slow", model: "m1", cost: 1.0}
+	p2 := &mockProvider{name: "fast", model: "m1", cost: 1.0}
+	stats.Register(p1)
+	stats.Register(p2)
+	stats.RecordRequest("slow", true, 100, 300)
+	stats.RecordRequest("fast", true, 100, 80)
+
+	r := NewRouter(config.RouterConfig{Strategy: "least_latency"}, stats)
+	r.SetProviders([]provider.Provider{p1, p2})
+
+	ordered := r.OrderCandidates(r.List(), RouteContext{})
+	if ordered[0].Name() != "fast" {
+		t.Fatalf("least_latency selected %s, want fast", ordered[0].Name())
+	}
+
+	ordered, trace := r.ExplainOrderCandidates(r.List(), RouteContext{})
+	if ordered[0].Name() != "fast" {
+		t.Fatalf("ExplainOrderCandidates least_latency selected %s, want fast", ordered[0].Name())
+	}
+	if len(trace.Scores) != 2 || trace.Scores[0].Provider != "fast" || trace.Scores[0].Components["avg_latency_ms"] != 80 {
+		t.Fatalf("trace.Scores = %#v, want fast avg_latency_ms=80 first", trace.Scores)
+	}
+}
+
+func TestRouter_InferenceCacheStrategies(t *testing.T) {
+	low := newMetricsServer(t, `vllm:gpu_cache_usage_perc 0.20
+vllm:cpu_cache_usage_perc 0.10
+`)
+	high := newMetricsServer(t, `vllm:gpu_cache_usage_perc 0.80
+vllm:cpu_cache_usage_perc 0.05
+`)
+	scraper := NewInferenceScraper(map[string]string{
+		"low-cache":  low.URL,
+		"high-cache": high.URL,
+	}, 10*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	scraper.Start(ctx)
+	waitForInferenceState(t, scraper, "low-cache")
+	waitForInferenceState(t, scraper, "high-cache")
+
+	p1 := &mockProvider{name: "high-cache", model: "m1", cost: 1.0}
+	p2 := &mockProvider{name: "low-cache", model: "m1", cost: 1.0}
+	providers := []provider.Provider{p1, p2}
+
+	r := NewRouter(config.RouterConfig{Strategy: "least_gpu_cache"}, nil)
+	r.SetInferenceScraper(scraper)
+	ordered := r.OrderCandidates(providers, RouteContext{})
+	if ordered[0].Name() != "low-cache" {
+		t.Fatalf("least_gpu_cache selected %s, want low-cache", ordered[0].Name())
+	}
+
+	r = NewRouter(config.RouterConfig{Strategy: "least_kv_cache"}, nil)
+	r.SetInferenceScraper(scraper)
+	ordered = r.OrderCandidates(providers, RouteContext{})
+	if ordered[0].Name() != "low-cache" {
+		t.Fatalf("least_kv_cache selected %s, want low-cache", ordered[0].Name())
+	}
+}
+
 func TestRouter_CostBased(t *testing.T) {
 	cfg := config.RouterConfig{
 		Strategy: "cost_based",
@@ -184,10 +253,14 @@ func TestNormalizeRoutingProfile(t *testing.T) {
 		{"default", "", ""},
 		{"latency", RoutingProfileLatency, "least_load"},
 		{"least-load", RoutingProfileLatency, "least_load"},
+		{"least-latency", RoutingProfileLatency, "least_latency"},
 		{"cost", RoutingProfileCost, "cost_based"},
 		{"least_tpm", RoutingProfileThroughput, "least_tpm"},
+		{"power-of-two", RoutingProfileBalanced, "power_of_two"},
 		{"session", RoutingProfileSticky, "sticky"},
 		{"cache", RoutingProfileCache, ""},
+		{"least-kv-cache", RoutingProfileCache, "least_kv_cache"},
+		{"least-gpu-cache", RoutingProfileCache, "least_gpu_cache"},
 		{"round-robin", RoutingProfileBalanced, "round_robin"},
 		{"unknown", "", ""},
 	}
@@ -398,6 +471,32 @@ func TestRouter_OrderCandidatesRuleEngineFiltersProviders(t *testing.T) {
 	}
 }
 
+func TestRouter_OrderCandidatesRuleEngineFiltersProviderLabels(t *testing.T) {
+	cfg := config.RouterConfig{
+		Strategy: "round_robin",
+		RuleEngine: config.RuleEngineConfig{
+			Enabled: true,
+			Rules: []config.RouteRuleConfig{{
+				Name:  "gpu-route",
+				Match: config.RouteMatchConfig{Models: []string{"qwen"}},
+				Action: config.RouteActionConfig{
+					ProviderLabels: map[string]string{"accelerator": "h100"},
+				},
+			}},
+		},
+	}
+	r := NewRouter(cfg, nil)
+	r.SetProviders([]provider.Provider{
+		&mockProvider{name: "cpu", model: "qwen", labels: map[string]string{"accelerator": "cpu"}},
+		&mockProvider{name: "gpu", model: "qwen", labels: map[string]string{"accelerator": "h100"}},
+	})
+
+	ordered := r.OrderCandidates(r.List(), RouteContext{Model: "qwen"})
+	if len(ordered) != 1 || ordered[0].Name() != "gpu" {
+		t.Fatalf("OrderCandidates(label selector) = %v, want gpu", providerNames(ordered))
+	}
+}
+
 func TestRouter_OrderCandidatesRuleEngineRegexMatch(t *testing.T) {
 	cfg := config.RouterConfig{
 		Strategy: "round_robin",
@@ -506,6 +605,27 @@ func providerNames(providers []provider.Provider) []string {
 		result = append(result, p.Name())
 	}
 	return result
+}
+
+func newMetricsServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func waitForInferenceState(t *testing.T, scraper *InferenceScraper, name string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if state, ok := scraper.Get(name); ok && !state.Stale {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for inference state %s", name)
 }
 
 func boolPtr(v bool) *bool {

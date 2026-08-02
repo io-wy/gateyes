@@ -38,6 +38,29 @@ function StatusBadge({ status }: { status?: string }) {
   return <Badge variant={variant as never}>{value}</Badge>
 }
 
+function ProviderLabels({ labels }: { labels?: Record<string, string> }) {
+  const entries = Object.entries(labels || {})
+  if (entries.length === 0) {
+    return <span className="text-muted-foreground">-</span>
+  }
+
+  const visible = entries.slice(0, 2)
+  return (
+    <div className="flex flex-wrap gap-1">
+      {visible.map(([key, value]) => (
+        <Badge key={key} variant="outline" className="font-normal">
+          {key}={value}
+        </Badge>
+      ))}
+      {entries.length > visible.length && (
+        <Badge variant="outline" className="font-normal">
+          +{entries.length - visible.length}
+        </Badge>
+      )}
+    </div>
+  )
+}
+
 export function ProvidersPage() {
   const queryClient = useQueryClient()
   const [formOpen, setFormOpen] = useState(false)
@@ -158,6 +181,7 @@ export function ProvidersPage() {
                 <TableHead>名称</TableHead>
                 <TableHead>模型</TableHead>
                 <TableHead>类型</TableHead>
+                <TableHead>标签</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead>请求数</TableHead>
                 <TableHead>错误率</TableHead>
@@ -169,7 +193,7 @@ export function ProvidersPage() {
               {providers?.length === 0 && (
                 <TableRow>
                   <TableCell
-                    colSpan={8}
+                    colSpan={9}
                     className="text-muted-foreground text-center"
                   >
                     暂无 Provider
@@ -188,6 +212,9 @@ export function ProvidersPage() {
                   </TableCell>
                   <TableCell>{provider.model}</TableCell>
                   <TableCell>{provider.type}</TableCell>
+                  <TableCell>
+                    <ProviderLabels labels={provider.labels} />
+                  </TableCell>
                   <TableCell>
                     <StatusBadge
                       status={provider.status || provider.health_status}

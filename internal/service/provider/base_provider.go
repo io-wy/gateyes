@@ -72,6 +72,14 @@ func (p *baseProvider) Model() string {
 	return p.cfg.Model
 }
 
+func (p *baseProvider) Labels() map[string]string {
+	labels := make(map[string]string, len(p.cfg.Labels))
+	for key, value := range p.cfg.Labels {
+		labels[key] = value
+	}
+	return labels
+}
+
 func (p *baseProvider) Weight() int {
 	return p.cfg.Weight
 }

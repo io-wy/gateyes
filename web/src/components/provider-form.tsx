@@ -5,7 +5,13 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Textarea } from '@/components/ui/textarea'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import {
   Dialog,
   DialogContent,
@@ -65,6 +71,7 @@ function buildInitialForm(initial?: Provider | null): CreateProviderRequest {
     supports_structured_output: false,
     supports_long_context: false,
     supports_embeddings: false,
+    labels: {},
   }
 
   if (!initial) return defaults
@@ -92,6 +99,7 @@ function buildInitialForm(initial?: Provider | null): CreateProviderRequest {
     supports_structured_output: initial.supports_structured_output ?? false,
     supports_long_context: initial.supports_long_context ?? false,
     supports_embeddings: initial.supports_embeddings ?? false,
+    labels: initial.labels || {},
   }
 }
 
@@ -122,6 +130,9 @@ export function ProviderFormDialog({
   )
   const [extraBodyText, setExtraBodyText] = useState(() =>
     JSON.stringify(initial?.extra_body || {}, null, 2)
+  )
+  const [labelsText, setLabelsText] = useState(() =>
+    JSON.stringify(initial?.labels || {}, null, 2)
   )
   const [jsonError, setJsonError] = useState<string | null>(null)
   const [presetId, setPresetId] = useState(() => buildPresetId(initial))
@@ -157,13 +168,15 @@ export function ProviderFormDialog({
     e.preventDefault()
     let headers: Record<string, string> | undefined
     let extraBody: Record<string, unknown> | undefined
+    let labels: Record<string, string> | undefined
 
     try {
       headers = JSON.parse(headersText)
       extraBody = JSON.parse(extraBodyText)
+      labels = JSON.parse(labelsText)
       setJsonError(null)
     } catch {
-      setJsonError('Headers 或 Extra Body 不是合法 JSON')
+      setJsonError('Headers、Extra Body 或 Labels 不是合法 JSON')
       return
     }
 
@@ -171,6 +184,7 @@ export function ProviderFormDialog({
       ...form,
       headers,
       extra_body: extraBody,
+      labels,
     })
   }
 
@@ -362,6 +376,17 @@ export function ProviderFormDialog({
                 onChange={(e) => setExtraBodyText(e.target.value)}
                 rows={4}
                 className="font-mono text-sm"
+              />
+            </div>
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor="labels">Labels (JSON)</Label>
+              <Textarea
+                id="labels"
+                value={labelsText}
+                onChange={(e) => setLabelsText(e.target.value)}
+                rows={3}
+                className="font-mono text-sm"
+                placeholder='{"accelerator":"h100","runtime":"vllm"}'
               />
             </div>
           </div>

@@ -466,6 +466,7 @@ func newHandlerTestEnv(t *testing.T, cfg handlerTestEnvConfig) *handlerTestEnv {
 		CatalogSvc:  catalogSvc,
 	})
 	adminHandler := NewAdminHandler(store, providerMgr, catalogSvc, nil)
+	adminHandler.SetRouter(routerSvc)
 	healthChecker := provider.NewHealthChecker(config.HealthCheckConfig{
 		Enabled:          true,
 		TimeoutSeconds:   3,

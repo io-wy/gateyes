@@ -124,6 +124,24 @@ func TestValidateRejectsUnsupportedValues(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsInferenceRoutingStrategies(t *testing.T) {
+	for _, strategy := range []string{
+		"least_latency",
+		"power_of_two",
+		"least_kv_cache",
+		"least_gpu_cache",
+	} {
+		t.Run(strategy, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Database.Driver = "postgres"
+			cfg.Router.Strategy = strategy
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("Validate(%s) error = %v", strategy, err)
+			}
+		})
+	}
+}
+
 func TestRedisConfig_Enabled(t *testing.T) {
 	if (RedisConfig{}).Enabled() {
 		t.Error("empty RedisConfig should not be enabled")

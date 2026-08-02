@@ -27,6 +27,7 @@ export interface Provider {
   price_output?: number
   headers?: Record<string, string>
   extra_body?: Record<string, unknown>
+  labels?: Record<string, string>
   has_api_key?: boolean
   // usage stats (from list endpoint)
   status?: string
@@ -64,6 +65,7 @@ export interface CreateProviderRequest {
   enabled: boolean
   headers?: Record<string, string>
   extra_body?: Record<string, unknown>
+  labels?: Record<string, string>
   supports_chat?: boolean
   supports_responses?: boolean
   supports_messages?: boolean

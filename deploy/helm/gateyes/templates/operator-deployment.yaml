@@ -1,0 +1,41 @@
+{{- if or .Values.platform.operator.enabled (eq .Values.platform.mode "operator") (eq .Values.platform.mode "full") }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gateyes.fullname" . }}-operator
+  labels:
+    {{- include "gateyes.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "gateyes.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: operator
+  template:
+    metadata:
+      labels:
+        {{- include "gateyes.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: operator
+    spec:
+      serviceAccountName: {{ include "gateyes.serviceAccountName" . }}
+      containers:
+        - name: operator
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /app/gateway-operator
+          args:
+            - -admin-url
+            - {{ .Values.platform.operator.adminURL | quote }}
+            - -sync-interval
+            - {{ .Values.platform.operator.syncInterval | quote }}
+            - -dry-run={{ .Values.platform.operator.dryRun }}
+{{- if .Values.platform.operator.namespace }}
+            - -namespace
+            - {{ .Values.platform.operator.namespace | quote }}
+{{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ include "gateyes.secretName" . }}
+{{- end }}

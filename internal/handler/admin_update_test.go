@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"testing"
 
@@ -26,6 +27,64 @@ func TestUpdateProvider(t *testing.T) {
 	rec = performJSONRequest(t, env, http.MethodPut, "/admin/providers/missing", adminToken, `{"model":"x"}`)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("PUT missing provider status = %d, want %d: %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+func TestSyncRouter(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	env := newHandlerTestEnv(t, handlerTestEnvConfig{})
+	adminToken := seedAdminToken(t, env, repository.RoleTenantAdmin, "admin-sync-router", "secret").APIKey + ":" + "secret"
+
+	rec := performJSONRequest(t, env, http.MethodPost, "/admin/v1/sync/router", adminToken, `{
+		"strategy":"least_gpu_cache",
+		"ruleEngine":{"enabled":true,"rules":[{"name":"qwen","match":{"models":["qwen"]},"action":{"providers":["test-openai"]}}]}
+	}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST sync router status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	data := decodeBodyMap(t, rec)
+	if data["strategy"] != "least_gpu_cache" || data["rule_count"] != float64(1) {
+		t.Fatalf("POST sync router payload = %#v, want strategy and rule count", data)
+	}
+
+	rec = performJSONRequest(t, env, http.MethodPost, "/admin/v1/sync/router", adminToken, `{"strategy":"bad"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST sync router invalid status = %d, want %d: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func TestSyncBudget(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	env := newHandlerTestEnv(t, handlerTestEnvConfig{})
+	adminToken := seedAdminToken(t, env, repository.RoleTenantAdmin, "admin-sync-budget", "secret").APIKey + ":" + "secret"
+
+	rec := performJSONRequest(t, env, http.MethodPost, "/admin/projects", adminToken, `{"slug":"budget-proj","name":"Budget Project"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST project status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	projectID := decodeBodyMap(t, rec)["id"].(string)
+
+	rec = performJSONRequest(t, env, http.MethodPost, "/admin/v1/sync/budget", adminToken, `{
+		"subject_kind":"project",
+		"subject_name":"`+projectID+`",
+		"budget_usd":42.5,
+		"budget_policy":"soft_alert",
+		"rate_limit_qps":8
+	}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST sync budget status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	project, err := env.store.GetProject(context.Background(), "tenant-a", projectID)
+	if err != nil {
+		t.Fatalf("GetProject() error: %v", err)
+	}
+	if project.BudgetUSD != 42.5 || project.BudgetPolicy != "soft_alert" {
+		t.Fatalf("project budget = %+v, want synced budget", project)
+	}
+
+	rec = performJSONRequest(t, env, http.MethodPost, "/admin/v1/sync/budget", adminToken, `{"subject_kind":"service","subject_name":"svc"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST sync budget unsupported status = %d, want %d: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 }
 

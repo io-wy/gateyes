@@ -22,10 +22,13 @@ type sfMockProvider struct {
 	respText string
 }
 
-func (p *sfMockProvider) Name() string      { return p.name }
-func (p *sfMockProvider) Type() string      { return "mock" }
-func (p *sfMockProvider) Model() string     { return p.model }
-func (p *sfMockProvider) BaseURL() string   { return "" }
+func (p *sfMockProvider) Name() string    { return p.name }
+func (p *sfMockProvider) Type() string    { return "mock" }
+func (p *sfMockProvider) Model() string   { return p.model }
+func (p *sfMockProvider) BaseURL() string { return "" }
+func (p *sfMockProvider) Labels() map[string]string {
+	return nil
+}
 func (p *sfMockProvider) Weight() int       { return 1 }
 func (p *sfMockProvider) UnitCost() float64 { return 0 }
 func (p *sfMockProvider) Cost(promptTokens, completionTokens int) float64 {

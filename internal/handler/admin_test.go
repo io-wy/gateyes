@@ -734,6 +734,49 @@ func TestAdminServiceLifecycleAndSubscriptionReviewEndpoints(t *testing.T) {
 	}
 }
 
+func TestAdminCatalogIncludesProvidersAndServices(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	env := newHandlerTestEnv(t, handlerTestEnvConfig{})
+	seedAdminToken(t, env, repository.RoleTenantAdmin, "tenant-admin-catalog", "tenant-admin-secret")
+	token := "tenant-admin-catalog:tenant-admin-secret"
+
+	createResult, err := env.catalogSvc.CreateService(context.Background(), repository.CreateServiceParams{
+		TenantID:        "tenant-a",
+		Name:            "Catalog Service",
+		RequestPrefix:   "catalog-api",
+		DefaultProvider: "test-openai",
+		DefaultModel:    "provider-model",
+		Enabled:         true,
+		Config: repository.ServiceConfig{
+			Surfaces: []string{"responses"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateService() error: %v", err)
+	}
+	if _, _, err := env.catalogSvc.PublishServiceVersion(context.Background(), "tenant-a", createResult.Service.ID, createResult.InitialVersion.ID, "published"); err != nil {
+		t.Fatalf("PublishServiceVersion() error: %v", err)
+	}
+
+	rec := performJSONRequest(t, env, http.MethodGet, "/admin/v1/catalog?publish_status=published", token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /admin/v1/catalog status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	payload := assertSuccess(t, rec)
+	counts := payload["counts"].(map[string]any)
+	if counts["providers"].(float64) != 1 || counts["services"].(float64) != 1 {
+		t.Fatalf("catalog counts = %#v, want one provider and one service", counts)
+	}
+	providers := payload["providers"].([]any)
+	if providers[0].(map[string]any)["name"] != "test-openai" {
+		t.Fatalf("catalog providers = %#v, want test-openai", providers)
+	}
+	services := payload["services"].([]any)
+	if services[0].(map[string]any)["request_prefix"] != "catalog-api" {
+		t.Fatalf("catalog services = %#v, want catalog-api", services)
+	}
+}
+
 func TestHandlerUtilityFunctions(t *testing.T) {
 	if got, want := scopedTenant(nil), ""; got != want {
 		t.Fatalf("scopedTenant(nil) = %q, want %q", got, want)

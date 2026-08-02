@@ -21,14 +21,22 @@ func NormalizeRoutingProfile(raw string) (string, string) {
 		return "", ""
 	case "latency", "load", "least_load", "least-load":
 		return RoutingProfileLatency, "least_load"
+	case "least_latency", "least-latency", "fast", "fastest":
+		return RoutingProfileLatency, "least_latency"
 	case "cost", "cheap", "cheapest", "cost_based", "cost-based":
 		return RoutingProfileCost, "cost_based"
 	case "throughput", "tpm", "least_tpm", "least-tpm":
 		return RoutingProfileThroughput, "least_tpm"
+	case "power_of_two", "power-of-two", "p2c":
+		return RoutingProfileBalanced, "power_of_two"
 	case "sticky", "session", "session_affinity", "session-affinity":
 		return RoutingProfileSticky, "sticky"
 	case "cache", "cache_affinity", "cache-affinity", "prefix", "prefix_affinity", "prefix-affinity":
 		return RoutingProfileCache, ""
+	case "least_kv_cache", "least-kv-cache", "kv_cache", "kv-cache":
+		return RoutingProfileCache, "least_kv_cache"
+	case "least_gpu_cache", "least-gpu-cache", "gpu_cache", "gpu-cache":
+		return RoutingProfileCache, "least_gpu_cache"
 	case "random":
 		return RoutingProfileRandom, "random"
 	case "balanced", "round_robin", "round-robin":
