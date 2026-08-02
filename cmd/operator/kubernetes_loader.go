@@ -20,6 +20,7 @@ var (
 	routePolicyGVR   = schema.GroupVersionResource{Group: "gateyes.io", Version: "v1alpha1", Resource: "routepolicies"}
 	budgetPolicyGVR  = schema.GroupVersionResource{Group: "gateyes.io", Version: "v1alpha1", Resource: "budgetpolicies"}
 	autoscaleGVR     = schema.GroupVersionResource{Group: "gateyes.io", Version: "v1alpha1", Resource: "inferenceautoscalepolicies"}
+	inferenceSvcGVR  = schema.GroupVersionResource{Group: "gateyes.io", Version: "v1alpha1", Resource: "inferenceservices"}
 )
 
 type kubernetesSnapshotLoader struct {
@@ -107,6 +108,20 @@ func (l *kubernetesSnapshotLoader) Load(ctx context.Context) (platform.ResourceS
 				continue
 			}
 			snapshot.AutoscalePolicies = append(snapshot.AutoscalePolicies, item)
+		}
+	}
+
+	inferenceServices, err := l.list(ctx, inferenceSvcGVR)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("list InferenceService: %w", err))
+	} else {
+		for i := range inferenceServices {
+			item, err := parseInferenceService(inferenceServices[i])
+			if err != nil {
+				errs = append(errs, fmt.Errorf("parse InferenceService %s: %w", inferenceServices[i].GetName(), err))
+				continue
+			}
+			snapshot.InferenceServices = append(snapshot.InferenceServices, item)
 		}
 	}
 
@@ -316,6 +331,39 @@ func parseAutoscalePolicy(obj unstructured.Unstructured) (platform.InferenceAuto
 	}, nil
 }
 
+func parseInferenceService(obj unstructured.Unstructured) (platform.InferenceService, error) {
+	content := obj.Object
+	replicas, err := nestedIntPtr(content, "spec", "replicas")
+	if err != nil {
+		return platform.InferenceService{}, err
+	}
+	expose, err := nestedBoolPtr(content, "spec", "exposeAsModelEndpoint")
+	if err != nil {
+		return platform.InferenceService{}, err
+	}
+	return platform.InferenceService{
+		Metadata: parseObjectMeta(obj),
+		Spec: platform.InferenceServiceSpec{
+			Runtime:  nestedString(content, "spec", "runtime"),
+			Model:    nestedString(content, "spec", "model"),
+			Image:    nestedString(content, "spec", "image"),
+			Replicas: replicas,
+			Serving: platform.InferenceServingSpec{
+				Port:            nestedInt(content, "spec", "serving", "port"),
+				OpenAIPath:      nestedString(content, "spec", "serving", "openAIPath"),
+				MetricsPath:     nestedString(content, "spec", "serving", "metricsPath"),
+				APIKeySecretRef: parseSecretKeyRef(content, "spec", "serving", "apiKeySecretRef"),
+			},
+			Resources:             nestedAnyMap(content, "spec", "resources"),
+			Roles:                 parseInferenceRoles(content),
+			ModelAdapters:         parseModelAdapters(content),
+			AutoscalePolicyRef:    parseAutoscalePolicyRef(content),
+			ExposeAsModelEndpoint: expose,
+			RouteLabels:           nestedStringMap(content, "spec", "routeLabels"),
+		},
+	}, nil
+}
+
 func parseServiceRef(obj map[string]any, fields ...string) *platform.ServiceRef {
 	nested, found, err := unstructured.NestedMap(obj, fields...)
 	if err != nil || !found {
@@ -380,6 +428,58 @@ func parseRouteMatch(obj map[string]any, hasTools *bool, hasImages *bool, hasStr
 	}
 }
 
+func parseInferenceRoles(obj map[string]any) []platform.InferenceRoleSpec {
+	items, found, err := unstructured.NestedSlice(obj, "spec", "roles")
+	if err != nil || !found {
+		return nil
+	}
+	roles := make([]platform.InferenceRoleSpec, 0, len(items))
+	for _, item := range items {
+		raw, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		replicas, _ := nestedIntPtr(raw, "replicas")
+		roles = append(roles, platform.InferenceRoleSpec{
+			Name:      nestedString(raw, "name"),
+			Type:      nestedString(raw, "type"),
+			Replicas:  replicas,
+			Resources: nestedAnyMap(raw, "resources"),
+			Args:      nestedStringSlice(raw, "args"),
+		})
+	}
+	return roles
+}
+
+func parseModelAdapters(obj map[string]any) []platform.ModelAdapterSpec {
+	items, found, err := unstructured.NestedSlice(obj, "spec", "modelAdapters")
+	if err != nil || !found {
+		return nil
+	}
+	adapters := make([]platform.ModelAdapterSpec, 0, len(items))
+	for _, item := range items {
+		raw, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		enabled, _ := nestedBoolPtr(raw, "enabled")
+		adapters = append(adapters, platform.ModelAdapterSpec{
+			Name:    nestedString(raw, "name"),
+			Source:  nestedString(raw, "source"),
+			Enabled: enabled,
+		})
+	}
+	return adapters
+}
+
+func parseAutoscalePolicyRef(obj map[string]any) *platform.TargetRef {
+	ref, found, err := unstructured.NestedMap(obj, "spec", "autoscalePolicyRef")
+	if err != nil || !found {
+		return nil
+	}
+	return &platform.TargetRef{Name: nestedString(ref, "name")}
+}
+
 func nestedString(obj map[string]any, fields ...string) string {
 	value, found, err := unstructured.NestedString(obj, fields...)
 	if err != nil || !found {
@@ -418,6 +518,23 @@ func nestedBoolPtr(obj map[string]any, fields ...string) (*bool, error) {
 		return nil, err
 	}
 	return &value, nil
+}
+
+func nestedIntPtr(obj map[string]any, fields ...string) (*int, error) {
+	_, found, err := unstructured.NestedFieldNoCopy(obj, fields...)
+	if err != nil || !found {
+		return nil, err
+	}
+	value := nestedInt(obj, fields...)
+	return &value, nil
+}
+
+func nestedAnyMap(obj map[string]any, fields ...string) map[string]any {
+	value, found, err := unstructured.NestedMap(obj, fields...)
+	if err != nil || !found {
+		return nil
+	}
+	return value
 }
 
 func nestedInt(obj map[string]any, fields ...string) int {

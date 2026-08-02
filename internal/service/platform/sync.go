@@ -13,6 +13,8 @@ type ResourceSnapshot struct {
 	RoutePolicies     []RoutePolicy
 	BudgetPolicies    []BudgetPolicy
 	AutoscalePolicies []InferenceAutoscalePolicy
+	InferenceServices []InferenceService
+	RuntimeSignals    map[string]RuntimeSignals
 }
 
 type SyncPlan struct {
@@ -20,6 +22,7 @@ type SyncPlan struct {
 	Router            config.RouterConfig
 	Budgets           []BudgetSyncTarget
 	AutoscalePolicies []InferenceAutoscalePolicy
+	Workloads         InferenceWorkloadPlan
 }
 
 type AdminSyncClient interface {
@@ -32,7 +35,16 @@ func BuildSyncPlan(snapshot ResourceSnapshot, defaultNamespace string) (SyncPlan
 	var plan SyncPlan
 	var errs []error
 
-	for _, endpoint := range snapshot.ModelEndpoints {
+	modelEndpoints := append([]ModelEndpoint{}, snapshot.ModelEndpoints...)
+	workloads, err := BuildInferenceWorkloadPlan(snapshot.InferenceServices, snapshot.AutoscalePolicies, snapshot.RuntimeSignals, defaultNamespace)
+	if err != nil {
+		errs = append(errs, err)
+	} else {
+		plan.Workloads = workloads
+		modelEndpoints = append(modelEndpoints, workloads.ExposedModelEndpoints...)
+	}
+
+	for _, endpoint := range modelEndpoints {
 		target, err := endpoint.ToProviderSync(defaultNamespace)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("model endpoint %s: %w", endpoint.Metadata.Name, err))

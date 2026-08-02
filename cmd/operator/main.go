@@ -23,16 +23,17 @@ var watchedKinds = []string{
 }
 
 type operatorConfig struct {
-	AdminURL     string
-	Token        string
-	Namespace    string
-	Kubeconfig   string
-	Kubernetes   bool
-	DryRun       bool
-	Once         bool
-	SyncInterval time.Duration
-	Loader       snapshotLoader
-	SyncClient   platform.AdminSyncClient
+	AdminURL        string
+	Token           string
+	Namespace       string
+	Kubeconfig      string
+	Kubernetes      bool
+	DryRun          bool
+	Once            bool
+	SyncInterval    time.Duration
+	Loader          snapshotLoader
+	SyncClient      platform.AdminSyncClient
+	WorkloadApplier workloadApplier
 }
 
 type snapshotLoader interface {
@@ -87,6 +88,13 @@ func run(ctx context.Context, cfg operatorConfig, out io.Writer) error {
 		}
 		cfg.SyncClient = client
 	}
+	if !cfg.DryRun && cfg.Kubernetes && cfg.WorkloadApplier == nil {
+		applier, err := newKubernetesWorkloadApplier(cfg.Kubeconfig)
+		if err != nil {
+			return err
+		}
+		cfg.WorkloadApplier = applier
+	}
 
 	if err := reconcileOnce(ctx, cfg, out); err != nil {
 		return err
@@ -133,7 +141,7 @@ func reconcileOnce(ctx context.Context, cfg operatorConfig, out io.Writer) error
 		return err
 	}
 	plan, planErr := platform.BuildSyncPlan(snapshot, defaultNamespace(cfg.Namespace))
-	_, writeErr := fmt.Fprintf(out, "gateyes-operator tick mode=%s namespace=%s admin_url=%s providers=%d route_policies=%d budgets=%d autoscale_policies=%d\n",
+	_, writeErr := fmt.Fprintf(out, "gateyes-operator tick mode=%s namespace=%s admin_url=%s providers=%d route_policies=%d budgets=%d autoscale_policies=%d workload_deployments=%d workload_services=%d autoscale_decisions=%d\n",
 		mode,
 		namespace,
 		cfg.AdminURL,
@@ -141,6 +149,9 @@ func reconcileOnce(ctx context.Context, cfg operatorConfig, out io.Writer) error
 		len(snapshot.RoutePolicies),
 		len(plan.Budgets),
 		len(plan.AutoscalePolicies),
+		len(plan.Workloads.Deployments),
+		len(plan.Workloads.Services),
+		len(plan.Workloads.AutoscaleDecisions),
 	)
 	if writeErr != nil {
 		return writeErr
@@ -153,6 +164,14 @@ func reconcileOnce(ctx context.Context, cfg operatorConfig, out io.Writer) error
 	}
 	if cfg.SyncClient == nil {
 		return fmt.Errorf("sync client is required when dry-run=false")
+	}
+	if len(plan.Workloads.Deployments) > 0 || len(plan.Workloads.Services) > 0 {
+		if cfg.WorkloadApplier == nil {
+			return fmt.Errorf("workload applier is required when dry-run=false and inference workloads are planned")
+		}
+		if err := cfg.WorkloadApplier.Apply(ctx, plan.Workloads); err != nil {
+			return err
+		}
 	}
 	return platform.ApplySyncPlan(plan, cfg.SyncClient)
 }

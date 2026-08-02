@@ -160,7 +160,7 @@ platform:
     enabled: false
 ```
 
-当前 chart 的 gateway 数据面仍由 `Deployment` 管理；operator deployment 作为独立控制面运行，使用 `client-go` dynamic client 读取 Gateyes CRD，并通过 Admin sync API 同步 provider、router 和 budget。Kubernetes 依赖只存在于 `/app/gateway-operator`，不得引入 `cmd/gateway` 请求热路径。
+当前 chart 的 gateway 数据面仍由 `Deployment` 管理；operator deployment 作为独立控制面运行，使用 `client-go` dynamic client 读取 Gateyes CRD。它会通过 Admin sync API 同步 provider、router 和 budget，并把 `InferenceService` reconcile 成 Kubernetes `Deployment` / `Service`。Kubernetes 依赖只存在于 `/app/gateway-operator`，不得引入 `cmd/gateway` 请求热路径。
 
 ### 5.3 启用 operator skeleton
 
@@ -181,7 +181,11 @@ helm upgrade --install gateyes ./deploy/helm/gateyes \
   --set platform.operator.enabled=true
 ```
 
-operator 默认以 dry-run 运行，会读取 `ModelEndpoint`、`RoutePolicy`、`BudgetPolicy` 和 `InferenceAutoscalePolicy` 并输出同步计划计数。设置 `platform.operator.dryRun=false` 后，operator 会调用 Gateyes Admin API 应用 provider、router 和 budget 变更。`platform.operator.namespace` 为空时 chart 生成 `ClusterRole/ClusterRoleBinding`，指定 namespace 时生成 `Role/RoleBinding`。
+operator 默认以 dry-run 运行，会读取 `ModelEndpoint`、`RoutePolicy`、`BudgetPolicy`、`InferenceAutoscalePolicy` 和 `InferenceService`，并输出 provider、router、budget、autoscale decision、workload deployment/service 计数。
+
+设置 `platform.operator.dryRun=false` 后，operator 会先把 `InferenceService` 生成或更新为同 namespace 下的 Kubernetes `Deployment` / `Service`，再调用 Gateyes Admin API 应用 provider、router 和 budget 变更。`InferenceService.spec.exposeAsModelEndpoint` 默认为 true，会自动注册指向 `http://<service>.<namespace>.svc:<port>/<openAIPath>` 的 provider；`routeLabels` 会进入 provider labels，供 `RoutePolicy.spec.endpointSelector` 使用。`InferenceAutoscalePolicy` 的 `mode=enforce` 会在 workload plan 阶段调整目标 replicas；当前没有真实运行时指标输入时只执行 min/max 边界约束，有 runtime signals 时按 queue、latency、GPU/cache、TPM/RPM 目标计算 scale up/down。
+
+`platform.operator.namespace` 为空时 chart 生成 `ClusterRole/ClusterRoleBinding`，指定 namespace 时生成 `Role/RoleBinding`。operator RBAC 包含 Gateyes CRD read/status 权限，以及 reconcile workload 所需的 `apps/deployments` 和 core `services` get/list/watch/create/update/patch 权限。
 
 ## 6. Production notes
 

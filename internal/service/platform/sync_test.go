@@ -9,6 +9,7 @@ import (
 
 func TestBuildSyncPlanMergesResources(t *testing.T) {
 	stream := true
+	replicas := 2
 	snapshot := ResourceSnapshot{
 		ModelEndpoints: []ModelEndpoint{{
 			Metadata: ObjectMeta{Name: "qwen"},
@@ -50,17 +51,42 @@ func TestBuildSyncPlanMergesResources(t *testing.T) {
 		AutoscalePolicies: []InferenceAutoscalePolicy{{
 			Metadata: ObjectMeta{Name: "scale-qwen"},
 			Spec: InferenceAutoscalePolicySpec{
-				TargetRef: TargetRef{Kind: "InferenceService", Name: "qwen"},
+				TargetRef:   TargetRef{Kind: "InferenceService", Name: "qwen"},
+				Mode:        "enforce",
+				MaxReplicas: 3,
+				Metrics: AutoscaleMetricTargets{
+					QueueDepth: 10,
+				},
+				Behavior: AutoscaleBehavior{MaxScaleUpStep: 1},
 			},
 		}},
+		InferenceServices: []InferenceService{{
+			Metadata: ObjectMeta{Name: "qwen", Namespace: "llm"},
+			Spec: InferenceServiceSpec{
+				Runtime:  "vllm",
+				Model:    "Qwen/Qwen3",
+				Image:    "registry.local/qwen:v1",
+				Replicas: &replicas,
+				Serving: InferenceServingSpec{
+					Port:        8000,
+					OpenAIPath:  "/v1",
+					MetricsPath: "/metrics",
+				},
+				AutoscalePolicyRef: &TargetRef{Name: "scale-qwen"},
+				RouteLabels:        map[string]string{"accelerator": "h100"},
+			},
+		}},
+		RuntimeSignals: map[string]RuntimeSignals{
+			"llm/qwen": {QueueDepth: 12},
+		},
 	}
 
 	plan, err := BuildSyncPlan(snapshot, "llm")
 	if err != nil {
 		t.Fatalf("BuildSyncPlan: %v", err)
 	}
-	if len(plan.Providers) != 1 || plan.Providers[0].Provider.BaseURL != "http://qwen-svc.llm.svc:8000/v1" {
-		t.Fatalf("providers = %#v", plan.Providers)
+	if len(plan.Providers) != 2 || plan.Providers[0].Provider.BaseURL != "http://qwen-svc.llm.svc:8000/v1" {
+		t.Fatalf("providers = %#v, want explicit and exposed inference service providers", plan.Providers)
 	}
 	if plan.Router.Strategy != "least_gpu_cache" {
 		t.Fatalf("router strategy = %q", plan.Router.Strategy)
@@ -73,6 +99,15 @@ func TestBuildSyncPlanMergesResources(t *testing.T) {
 	}
 	if len(plan.AutoscalePolicies) != 1 {
 		t.Fatalf("autoscale policies = %#v", plan.AutoscalePolicies)
+	}
+	if len(plan.Workloads.Deployments) != 1 || plan.Workloads.Deployments[0].Replicas != 3 {
+		t.Fatalf("workload deployments = %#v, want autoscaled deployment", plan.Workloads.Deployments)
+	}
+	if len(plan.Workloads.Services) != 1 || plan.Workloads.Services[0].Port != 8000 {
+		t.Fatalf("workload services = %#v, want service port", plan.Workloads.Services)
+	}
+	if plan.Providers[1].Provider.BaseURL != "http://qwen.llm.svc:8000/v1" {
+		t.Fatalf("providers = %#v, want exposed inference service provider", plan.Providers)
 	}
 }
 
@@ -92,6 +127,36 @@ func TestApplySyncPlanCallsClient(t *testing.T) {
 	}
 	if client.providers != 1 || client.routers != 1 || client.budgets != 1 {
 		t.Fatalf("client counts = %+v", client)
+	}
+}
+
+func TestBuildSyncPlanAutoscaleWithoutSignalsClampsOnly(t *testing.T) {
+	replicas := 2
+	plan, err := BuildSyncPlan(ResourceSnapshot{
+		InferenceServices: []InferenceService{{
+			Metadata: ObjectMeta{Name: "qwen", Namespace: "llm"},
+			Spec: InferenceServiceSpec{
+				Runtime:  "vllm",
+				Model:    "Qwen/Qwen3",
+				Replicas: &replicas,
+			},
+		}},
+		AutoscalePolicies: []InferenceAutoscalePolicy{{
+			Metadata: ObjectMeta{Name: "scale-qwen"},
+			Spec: InferenceAutoscalePolicySpec{
+				TargetRef:   TargetRef{Kind: "InferenceService", Name: "qwen"},
+				Mode:        "enforce",
+				MinReplicas: 1,
+				MaxReplicas: 5,
+				Metrics:     AutoscaleMetricTargets{QueueDepth: 10},
+			},
+		}},
+	}, "llm")
+	if err != nil {
+		t.Fatalf("BuildSyncPlan: %v", err)
+	}
+	if got := plan.Workloads.Deployments[0].Replicas; got != 2 {
+		t.Fatalf("replicas = %d, want unchanged without runtime signals", got)
 	}
 }
 

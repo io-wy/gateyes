@@ -53,6 +53,8 @@ func TestRunOncePrintsWatchedKinds(t *testing.T) {
 func TestRunAppliesLoadedSnapshot(t *testing.T) {
 	var out bytes.Buffer
 	client := &recordingAdminSyncClient{}
+	applier := &recordingWorkloadApplier{}
+	replicas := 2
 	err := run(context.Background(), operatorConfig{
 		AdminURL:     "http://gateyes:8028",
 		Namespace:    "llm",
@@ -68,17 +70,29 @@ func TestRunAppliesLoadedSnapshot(t *testing.T) {
 					Model:   "Qwen/Qwen3",
 				},
 			}},
+			InferenceServices: []platform.InferenceService{{
+				Metadata: platform.ObjectMeta{Name: "served-qwen", Namespace: "llm"},
+				Spec: platform.InferenceServiceSpec{
+					Runtime:  "vllm",
+					Model:    "Qwen/Qwen3",
+					Replicas: &replicas,
+				},
+			}},
 		}},
-		SyncClient: client,
+		SyncClient:      client,
+		WorkloadApplier: applier,
 	}, &out)
 	if err != nil {
 		t.Fatalf("run with loaded snapshot: %v", err)
 	}
-	if client.providers != 1 {
-		t.Fatalf("synced providers = %d, want 1", client.providers)
+	if applier.deployments != 1 || applier.services != 1 {
+		t.Fatalf("applied workloads = %+v, want one deployment and service", applier)
 	}
-	if !strings.Contains(out.String(), "providers=1") {
-		t.Fatalf("run output = %q, want provider count", out.String())
+	if client.providers != 2 {
+		t.Fatalf("synced providers = %d, want explicit and exposed providers", client.providers)
+	}
+	if !strings.Contains(out.String(), "providers=2") || !strings.Contains(out.String(), "workload_deployments=1") {
+		t.Fatalf("run output = %q, want provider and workload counts", out.String())
 	}
 }
 
@@ -131,5 +145,16 @@ func (c *recordingAdminSyncClient) SyncRouter(config.RouterConfig) error {
 
 func (c *recordingAdminSyncClient) SyncBudget(platform.BudgetSyncTarget) error {
 	c.budgets++
+	return nil
+}
+
+type recordingWorkloadApplier struct {
+	deployments int
+	services    int
+}
+
+func (a *recordingWorkloadApplier) Apply(_ context.Context, plan platform.InferenceWorkloadPlan) error {
+	a.deployments += len(plan.Deployments)
+	a.services += len(plan.Services)
 	return nil
 }

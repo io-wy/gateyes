@@ -18,6 +18,7 @@ func TestKubernetesSnapshotLoaderParsesGateyesCRDs(t *testing.T) {
 			routePolicyGVR:   "RoutePolicyList",
 			budgetPolicyGVR:  "BudgetPolicyList",
 			autoscaleGVR:     "InferenceAutoscalePolicyList",
+			inferenceSvcGVR:  "InferenceServiceList",
 		},
 		newUnstructured("ModelEndpoint", "modelendpoints", "qwen", map[string]any{
 			"type": "vllm",
@@ -56,6 +57,36 @@ func TestKubernetesSnapshotLoaderParsesGateyesCRDs(t *testing.T) {
 			"metrics":     map[string]any{"queueDepth": int64(8), "gpuUtilization": float64(0.82)},
 			"behavior":    map[string]any{"maxScaleUpStep": int64(2)},
 		}),
+		newUnstructured("InferenceService", "inferenceservices", "qwen-service", map[string]any{
+			"runtime":  "vllm",
+			"model":    "Qwen/Qwen3",
+			"image":    "registry.local/qwen:v1",
+			"replicas": int64(2),
+			"serving": map[string]any{
+				"port":        int64(8000),
+				"openAIPath":  "/v1",
+				"metricsPath": "/metrics",
+				"apiKeySecretRef": map[string]any{
+					"name": "qwen-secret",
+					"key":  "api-key",
+				},
+			},
+			"resources": map[string]any{"limits": map[string]any{"nvidia.com/gpu": "1"}},
+			"roles": []any{
+				map[string]any{
+					"name":     "router",
+					"type":     "router",
+					"replicas": int64(1),
+					"args":     []any{"--tensor-parallel-size", "2"},
+				},
+			},
+			"modelAdapters": []any{
+				map[string]any{"name": "tenant-lora", "source": "s3://adapters/tenant-lora", "enabled": true},
+			},
+			"autoscalePolicyRef":    map[string]any{"name": "scale-qwen"},
+			"exposeAsModelEndpoint": true,
+			"routeLabels":           map[string]any{"accelerator": "h100"},
+		}),
 	)
 
 	loader := &kubernetesSnapshotLoader{client: client, namespace: "llm"}
@@ -77,6 +108,19 @@ func TestKubernetesSnapshotLoaderParsesGateyesCRDs(t *testing.T) {
 	}
 	if len(snapshot.AutoscalePolicies) != 1 || snapshot.AutoscalePolicies[0].Spec.Behavior.MaxScaleUpStep != 2 {
 		t.Fatalf("AutoscalePolicies = %#v, want behavior parsed", snapshot.AutoscalePolicies)
+	}
+	if len(snapshot.InferenceServices) != 1 {
+		t.Fatalf("InferenceServices = %#v, want one parsed service", snapshot.InferenceServices)
+	}
+	service := snapshot.InferenceServices[0]
+	if service.Spec.Replicas == nil || *service.Spec.Replicas != 2 || service.Spec.Serving.APIKeySecretRef.Name != "qwen-secret" {
+		t.Fatalf("InferenceService = %#v, want replicas and serving secret parsed", service)
+	}
+	if len(service.Spec.Roles) != 1 || len(service.Spec.Roles[0].Args) != 2 {
+		t.Fatalf("InferenceService roles = %#v, want args parsed", service.Spec.Roles)
+	}
+	if len(service.Spec.ModelAdapters) != 1 || service.Spec.ModelAdapters[0].Enabled == nil || !*service.Spec.ModelAdapters[0].Enabled {
+		t.Fatalf("InferenceService adapters = %#v, want enabled adapter parsed", service.Spec.ModelAdapters)
 	}
 }
 
