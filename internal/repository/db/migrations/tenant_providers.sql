@@ -2,7 +2,6 @@ CREATE TABLE IF NOT EXISTS tenant_providers (
 	id TEXT PRIMARY KEY,
 	tenant_id TEXT NOT NULL,
 	provider_name TEXT NOT NULL,
-	enabled INTEGER NOT NULL DEFAULT 1,
 	created_at TIMESTAMP NOT NULL,
 	updated_at TIMESTAMP NOT NULL
 );

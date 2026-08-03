@@ -20,6 +20,30 @@ import (
 //go:embed migrations/*.sql
 var migrationFS embed.FS
 
+var migrationOrder = []string{
+	"tenants.sql",
+	"users.sql",
+	"projects.sql",
+	"api_keys.sql",
+	"virtual_keys.sql",
+	"provider_registry.sql",
+	"tenant_providers.sql",
+	"services.sql",
+	"service_versions.sql",
+	"service_subscriptions.sql",
+	"responses.sql",
+	"response_details.sql",
+	"usage_records.sql",
+	"audit_logs.sql",
+	"roles.sql",
+	"permissions.sql",
+	"role_permissions.sql",
+	"user_roles.sql",
+	"plugins.sql",
+	"batch_jobs.sql",
+	"batch_items.sql",
+}
+
 type DB struct {
 	Conn   *sql.DB
 	driver string
@@ -99,14 +123,29 @@ func migrationNames() ([]string, error) {
 		return nil, fmt.Errorf("read migrations: %w", err)
 	}
 
-	names := make([]string, 0, len(entries))
+	remaining := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
-		names = append(names, entry.Name())
+		remaining[entry.Name()] = struct{}{}
 	}
-	sort.Strings(names)
+
+	names := make([]string, 0, len(remaining))
+	for _, name := range migrationOrder {
+		if _, ok := remaining[name]; !ok {
+			continue
+		}
+		names = append(names, name)
+		delete(remaining, name)
+	}
+
+	extra := make([]string, 0, len(remaining))
+	for name := range remaining {
+		extra = append(extra, name)
+	}
+	sort.Strings(extra)
+	names = append(names, extra...)
 	return names, nil
 }
 

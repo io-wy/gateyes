@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gateyes/gateway/internal/app/config"
@@ -33,6 +34,29 @@ func TestDriverNameSupportsKnownDrivers(t *testing.T) {
 		}
 		if got != tt.want {
 			t.Fatalf("driverName(%q) = %q, want %q", tt.driver, got, tt.want)
+		}
+	}
+}
+
+func TestMigrationNamesUseTableNamedOrder(t *testing.T) {
+	names, err := migrationNames()
+	if err != nil {
+		t.Fatalf("migrationNames() error: %v", err)
+	}
+	if len(names) == 0 {
+		t.Fatal("migrationNames() returned no migrations")
+	}
+	for _, name := range names {
+		if len(name) >= 4 && name[0] >= '0' && name[0] <= '9' && strings.Contains(name[:4], "_") {
+			t.Fatalf("migration %q still uses a version prefix", name)
+		}
+	}
+	for i, want := range migrationOrder {
+		if i >= len(names) {
+			t.Fatalf("migrationNames() length = %d, want at least %d", len(names), len(migrationOrder))
+		}
+		if got := names[i]; got != want {
+			t.Fatalf("migrationNames()[%d] = %q, want %q", i, got, want)
 		}
 	}
 }

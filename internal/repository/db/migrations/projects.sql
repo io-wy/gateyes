@@ -6,15 +6,11 @@ CREATE TABLE IF NOT EXISTS projects (
 	status TEXT NOT NULL,
 	budget_usd REAL NOT NULL DEFAULT 0,
 	spent_usd REAL NOT NULL DEFAULT 0,
+	reserved_usd REAL NOT NULL DEFAULT 0,
+	budget_policy TEXT NOT NULL DEFAULT 'hard_reject',
+	policy_body TEXT NOT NULL DEFAULT '{}',
 	created_at TIMESTAMP NOT NULL,
 	updated_at TIMESTAMP NOT NULL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_tenant_slug ON projects(tenant_id, slug);
-
-ALTER TABLE api_keys ADD COLUMN project_id TEXT NOT NULL DEFAULT '';
-ALTER TABLE api_keys ADD COLUMN budget_usd REAL NOT NULL DEFAULT 0;
-ALTER TABLE api_keys ADD COLUMN spent_usd REAL NOT NULL DEFAULT 0;
-
-ALTER TABLE usage_records ADD COLUMN project_id TEXT NOT NULL DEFAULT '';
-ALTER TABLE responses ADD COLUMN project_id TEXT NOT NULL DEFAULT '';

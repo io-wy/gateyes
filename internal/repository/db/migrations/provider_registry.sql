@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS provider_registry (
 	supports_images INTEGER NOT NULL DEFAULT 0,
 	supports_structured_output INTEGER NOT NULL DEFAULT 0,
 	supports_long_context INTEGER NOT NULL DEFAULT 0,
+	supports_embeddings INTEGER NOT NULL DEFAULT 0,
+	config_body TEXT NOT NULL DEFAULT '{}',
 	created_at TIMESTAMP NOT NULL,
 	updated_at TIMESTAMP NOT NULL
 );

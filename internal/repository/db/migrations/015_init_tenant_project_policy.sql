@@ -1,2 +1,0 @@
-ALTER TABLE tenants ADD COLUMN policy_body TEXT NOT NULL DEFAULT '{}';
-ALTER TABLE projects ADD COLUMN policy_body TEXT NOT NULL DEFAULT '{}';
