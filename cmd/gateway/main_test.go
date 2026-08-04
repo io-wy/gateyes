@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gateyes/gateway/internal/app/config"
+	gatewayapp "github.com/gateyes/gateway/internal/app/gateway"
 	"github.com/gateyes/gateway/internal/repository"
 )
 
@@ -133,7 +134,7 @@ func (f *fakeIdentityStore) DeleteProviderRegistry(ctx context.Context, name str
 func TestSeedTenantProviders(t *testing.T) {
 	store := &fakeIdentityStore{}
 	ctx := context.Background()
-	if err := seedTenantProviders(ctx, store, "tenant-a", []string{"p1", "p2"}); err != nil {
+	if err := gatewayapp.SeedTenantProviders(ctx, store, "tenant-a", []string{"p1", "p2"}); err != nil {
 		t.Fatalf("seedTenantProviders() error: %v", err)
 	}
 	if len(store.params) != 0 {
@@ -157,7 +158,7 @@ func TestSeedProviderRegistry(t *testing.T) {
 		{Name: "p1", Type: "openai", Endpoint: "responses", Enabled: true},
 		{Name: "p2", Type: "anthropic", Enabled: false},
 	}
-	if err := seedProviderRegistry(ctx, store, providers); err != nil {
+	if err := gatewayapp.SeedProviderRegistry(ctx, store, providers); err != nil {
 		t.Fatalf("seedProviderRegistry() error: %v", err)
 	}
 	p1 := store.providerRegistry["p1"]
@@ -176,16 +177,16 @@ func TestSeedProviderRegistry(t *testing.T) {
 }
 
 func TestBuildGuardrails(t *testing.T) {
-	if buildGuardrails(nil) != nil {
+	if gatewayapp.BuildGuardrails(nil) != nil {
 		t.Fatal("buildGuardrails(nil) should return nil")
 	}
-	if buildGuardrails([]config.GuardrailConfig{}) != nil {
+	if gatewayapp.BuildGuardrails([]config.GuardrailConfig{}) != nil {
 		t.Fatal("buildGuardrails(empty) should return nil")
 	}
-	if buildGuardrails([]config.GuardrailConfig{{Type: "unknown", Name: "x"}}) != nil {
+	if gatewayapp.BuildGuardrails([]config.GuardrailConfig{{Type: "unknown", Name: "x"}}) != nil {
 		t.Fatal("buildGuardrails(unknown type) should return nil")
 	}
-	m := buildGuardrails([]config.GuardrailConfig{
+	m := gatewayapp.BuildGuardrails([]config.GuardrailConfig{
 		{Name: "blocklist", Type: "regex", RequestPatterns: []string{`bad`}},
 	})
 	if m == nil {
@@ -194,7 +195,7 @@ func TestBuildGuardrails(t *testing.T) {
 }
 
 func TestEnabledProviderNamesAndSeedHelpers(t *testing.T) {
-	if got := enabledProviderNames([]config.ProviderConfig{
+	if got := gatewayapp.EnabledProviderNames([]config.ProviderConfig{
 		{Name: "openai-a", Enabled: true},
 		{Name: "openai-b", Enabled: false},
 		{Name: "anthropic-a", Enabled: true},
@@ -203,7 +204,7 @@ func TestEnabledProviderNamesAndSeedHelpers(t *testing.T) {
 	}
 
 	store := &fakeIdentityStore{}
-	err := seedConfiguredAPIKeys(context.Background(), store, "tenant-a", []config.APIKeyConfig{{
+	err := gatewayapp.SeedConfiguredAPIKeys(context.Background(), store, "tenant-a", []config.APIKeyConfig{{
 		Key:    "key-1",
 		Secret: "secret-1",
 		Quota:  100,
@@ -218,7 +219,7 @@ func TestEnabledProviderNamesAndSeedHelpers(t *testing.T) {
 	}
 
 	store.params = nil
-	if err := seedBootstrapAdmin(context.Background(), store, "tenant-a", config.AdminConfig{
+	if err := gatewayapp.SeedBootstrapAdmin(context.Background(), store, "tenant-a", config.AdminConfig{
 		BootstrapKey:    "admin-key",
 		BootstrapSecret: "admin-secret",
 	}); err != nil {
@@ -229,7 +230,7 @@ func TestEnabledProviderNamesAndSeedHelpers(t *testing.T) {
 	}
 
 	store.params = nil
-	if err := seedBootstrapAdmin(context.Background(), store, "tenant-a", config.AdminConfig{}); err != nil {
+	if err := gatewayapp.SeedBootstrapAdmin(context.Background(), store, "tenant-a", config.AdminConfig{}); err != nil {
 		t.Fatalf("seedBootstrapAdmin(empty) error: %v", err)
 	}
 	if len(store.params) != 0 {

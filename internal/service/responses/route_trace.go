@@ -88,6 +88,16 @@ func (s *Service) planCandidates(ctx context.Context, identity *repository.AuthI
 		}
 		instance, ok := s.providerMgr.Get(name)
 		if !ok {
+			if record, exists := s.providerMgr.Registry(name); exists {
+				if reason, detail := registryFilterReason(record, req); reason != "" {
+					trace.FilteredOut = append(trace.FilteredOut, routeTraceFiltered{
+						Provider: name,
+						Reason:   reason,
+						Detail:   detail,
+					})
+					continue
+				}
+			}
 			trace.FilteredOut = append(trace.FilteredOut, routeTraceFiltered{
 				Provider: name,
 				Reason:   "provider_missing",
@@ -112,6 +122,24 @@ func (s *Service) planCandidates(ctx context.Context, identity *repository.AuthI
 			}
 		}
 		routable = append(routable, instance)
+	}
+
+	if matched := providersMatchingRequestedModel(routable, req); len(matched) > 0 && len(matched) < len(routable) {
+		matchedNames := make(map[string]struct{}, len(matched))
+		for _, item := range matched {
+			matchedNames[item.Name()] = struct{}{}
+		}
+		for _, item := range routable {
+			if _, ok := matchedNames[item.Name()]; ok {
+				continue
+			}
+			trace.FilteredOut = append(trace.FilteredOut, routeTraceFiltered{
+				Provider: item.Name(),
+				Reason:   "model_mismatch",
+				Detail:   req.Model,
+			})
+		}
+		routable = matched
 	}
 
 	if modelRequiredButUnavailable(req, rawCandidates, routable) {
@@ -268,6 +296,36 @@ func registryFilterReason(record repository.ProviderRegistryRecord, req *provide
 		return "capability_structured_output", ""
 	}
 	return "", ""
+}
+
+type modelResolver interface {
+	ResolveModel(requested string) string
+}
+
+func providersMatchingRequestedModel(items []provider.Provider, req *provider.ResponseRequest) []provider.Provider {
+	if req == nil || strings.TrimSpace(req.Model) == "" {
+		return nil
+	}
+	result := make([]provider.Provider, 0, len(items))
+	for _, item := range items {
+		if providerMatchesRequestedModel(item, req.Model) {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func providerMatchesRequestedModel(item provider.Provider, requested string) bool {
+	if item == nil || strings.TrimSpace(requested) == "" {
+		return false
+	}
+	if item.Model() == requested {
+		return true
+	}
+	if resolver, ok := item.(modelResolver); ok {
+		return resolver.ResolveModel(requested) == item.Model()
+	}
+	return false
 }
 
 func routeTraceBytes(trace *routeTrace) []byte {

@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"context"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gin-gonic/gin"
 	"net/http"
@@ -168,40 +167,15 @@ func (h *AdminHandler) allProvidersExist(names []string) bool {
 	for _, providerItem := range h.providerMgr.List() {
 		known[providerItem.Name()] = struct{}{}
 	}
+	for _, providerItem := range h.providerMgr.ListRegistry() {
+		known[providerItem.Name] = struct{}{}
+	}
 	for _, name := range names {
 		if _, ok := known[name]; !ok {
 			return false
 		}
 	}
 	return true
-}
-
-func (h *AdminHandler) appendTenantProvider(ctx context.Context, tenantID, name string) error {
-	names, err := h.store.ListTenantProviders(ctx, tenantID)
-	if err != nil {
-		return err
-	}
-	for _, item := range names {
-		if item == name {
-			return nil
-		}
-	}
-	names = append(names, name)
-	return h.store.ReplaceTenantProviders(ctx, tenantID, names)
-}
-
-func (h *AdminHandler) removeTenantProvider(ctx context.Context, tenantID, name string) error {
-	names, err := h.store.ListTenantProviders(ctx, tenantID)
-	if err != nil {
-		return err
-	}
-	filtered := make([]string, 0, len(names))
-	for _, item := range names {
-		if item != name {
-			filtered = append(filtered, item)
-		}
-	}
-	return h.store.ReplaceTenantProviders(ctx, tenantID, filtered)
 }
 
 func tenantToResponse(tenant repository.TenantRecord) gin.H {

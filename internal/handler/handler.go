@@ -139,6 +139,7 @@ func (h *Handler) Chat(c *gin.Context) {
 	responseReq := provider.ConvertChatRequest(&req)
 	cacheTrace := &responseSvc.CacheTrace{}
 	reqCtx := responseSvc.WithGatewayHintsFromHeaders(c.Request.Context(), c.GetHeader)
+	reqCtx = responseSvc.WithAdmissionChecked(reqCtx)
 	reqCtx = responseSvc.WithRawRequestBody(reqCtx, rawBody)
 	reqCtx = responseSvc.WithCacheTrace(reqCtx, cacheTrace)
 	if req.Stream {
@@ -189,6 +190,7 @@ func (h *Handler) AnthropicMessages(c *gin.Context) {
 	responseReq := provider.ConvertAnthropicRequest(&req)
 	cacheTrace := &responseSvc.CacheTrace{}
 	reqCtx := responseSvc.WithGatewayHintsFromHeaders(c.Request.Context(), c.GetHeader)
+	reqCtx = responseSvc.WithAdmissionChecked(reqCtx)
 	reqCtx = responseSvc.WithRawRequestBody(reqCtx, rawBody)
 	reqCtx = responseSvc.WithCacheTrace(reqCtx, cacheTrace)
 	if req.Stream {

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -8,10 +9,11 @@ import (
 
 	"github.com/gateyes/gateway/internal/handler/middleware"
 	"github.com/gateyes/gateway/internal/repository"
+	"github.com/gateyes/gateway/internal/service/adminconsole"
 )
 
 type CreateVirtualKeyRequest struct {
-	UserID           string   `json:"user_id" binding:"required"`
+	UserID           string   `json:"user_id"`
 	APIKeyID         string   `json:"api_key_id" binding:"required"`
 	ProjectID        string   `json:"project_id"`
 	Name             string   `json:"name"`
@@ -35,8 +37,8 @@ type UpdateVirtualKeyRequest struct {
 }
 
 func (h *AdminHandler) ListVirtualKeys(c *gin.Context) {
-	tenantID := h.adminTenantID(c)
-	items, err := h.store.ListVirtualKeys(c.Request.Context(), tenantID, repository.VirtualKeyFilter{
+	identity, _ := middleware.Identity(c)
+	items, err := h.consoleSvc.ListVirtualKeys(c.Request.Context(), identity, repository.VirtualKeyFilter{
 		UserID:    c.Query("user_id"),
 		ProjectID: c.Query("project_id"),
 		APIKeyID:  c.Query("api_key_id"),
@@ -54,8 +56,8 @@ func (h *AdminHandler) ListVirtualKeys(c *gin.Context) {
 }
 
 func (h *AdminHandler) GetVirtualKey(c *gin.Context) {
-	tenantID := h.adminTenantID(c)
-	record, err := h.store.GetVirtualKey(c.Request.Context(), tenantID, c.Param("id"))
+	identity, _ := middleware.Identity(c)
+	record, err := h.consoleSvc.GetVirtualKey(c.Request.Context(), identity, c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
 			writeError(c, http.StatusNotFound, CodeVirtualKeyNotFound, "virtual key not found")
@@ -75,30 +77,11 @@ func (h *AdminHandler) CreateVirtualKey(c *gin.Context) {
 		return
 	}
 
-	tenantID, ok := h.scopeTenantID(c, identity)
-	if !ok {
-		return
-	}
-
-	vk, err := repository.GenerateToken("vk-", 8)
-	if err != nil {
-		writeInternalError(c, err)
-		return
-	}
-	vkSecret, err := repository.GenerateToken("vs-", 16)
-	if err != nil {
-		writeInternalError(c, err)
-		return
-	}
-
-	record, err := h.store.CreateVirtualKey(c.Request.Context(), repository.CreateVirtualKeyParams{
-		TenantID:         tenantID,
+	result, err := h.consoleSvc.CreateVirtualKey(c.Request.Context(), identity, adminconsole.CreateVirtualKeyInput{
 		UserID:           req.UserID,
 		APIKeyID:         req.APIKeyID,
 		ProjectID:        req.ProjectID,
 		Name:             req.Name,
-		Key:              vk,
-		SecretHash:       repository.HashSecret(vkSecret),
 		BudgetUSD:        req.BudgetUSD,
 		BudgetPolicy:     req.BudgetPolicy,
 		RateLimitQPS:     req.RateLimitQPS,
@@ -107,19 +90,31 @@ func (h *AdminHandler) CreateVirtualKey(c *gin.Context) {
 		CallbackURL:      req.CallbackURL,
 	})
 	if err != nil {
+		if errors.Is(err, adminconsole.ErrMissingUserID) {
+			writeError(c, http.StatusBadRequest, CodeMissingRequiredField, err.Error())
+			return
+		}
+		if errors.Is(err, repository.ErrNotFound) {
+			writeError(c, http.StatusNotFound, CodeAPIKeyNotFound, "api key not found")
+			return
+		}
+		if errors.Is(err, adminconsole.ErrExceededParent) {
+			writeError(c, http.StatusBadRequest, CodeInvalidParameter, err.Error())
+			return
+		}
 		writeError(c, http.StatusInternalServerError, CodeDatabaseError, err.Error())
 		return
 	}
 
-	response := virtualKeyToResponse(*record)
-	response["secret"] = vkSecret
-	response["token"] = record.Key + ":" + vkSecret
-	h.recordAudit(c, "virtual_key.create", "virtual_key", record.ID, req)
+	response := virtualKeyToResponse(*result.Record)
+	response["secret"] = result.Secret
+	response["token"] = result.Token
+	h.recordAudit(c, "virtual_key.create", "virtual_key", result.Record.ID, req)
 	writeJSON(c, http.StatusCreated, CodeOK, "", response)
 }
 
 func (h *AdminHandler) UpdateVirtualKey(c *gin.Context) {
-	tenantID := h.adminTenantID(c)
+	identity, _ := middleware.Identity(c)
 
 	var req UpdateVirtualKeyRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -127,7 +122,7 @@ func (h *AdminHandler) UpdateVirtualKey(c *gin.Context) {
 		return
 	}
 
-	record, err := h.store.UpdateVirtualKey(c.Request.Context(), tenantID, c.Param("id"), repository.UpdateVirtualKeyParams{
+	record, err := h.consoleSvc.UpdateVirtualKey(c.Request.Context(), identity, c.Param("id"), repository.UpdateVirtualKeyParams{
 		Name:             req.Name,
 		Status:           req.Status,
 		BudgetUSD:        req.BudgetUSD,
@@ -142,16 +137,25 @@ func (h *AdminHandler) UpdateVirtualKey(c *gin.Context) {
 			writeError(c, http.StatusNotFound, CodeVirtualKeyNotFound, "virtual key not found")
 			return
 		}
+		if errors.Is(err, adminconsole.ErrExceededParent) {
+			writeError(c, http.StatusBadRequest, CodeInvalidParameter, err.Error())
+			return
+		}
 		writeError(c, http.StatusInternalServerError, CodeDatabaseError, err.Error())
 		return
 	}
 	h.recordAudit(c, "virtual_key.update", "virtual_key", record.ID, req)
+	h.invalidateAPIKeyCache(record.Key)
 	writeOK(c, virtualKeyToResponse(*record))
 }
 
 func (h *AdminHandler) DeleteVirtualKey(c *gin.Context) {
-	tenantID := h.adminTenantID(c)
-	if err := h.store.DeleteVirtualKey(c.Request.Context(), tenantID, c.Param("id")); err != nil {
+	identity, _ := middleware.Identity(c)
+	var key string
+	if record, err := h.consoleSvc.GetVirtualKey(c.Request.Context(), identity, c.Param("id")); err == nil {
+		key = record.Key
+	}
+	if err := h.consoleSvc.DeleteVirtualKey(c.Request.Context(), identity, c.Param("id")); err != nil {
 		if err == repository.ErrNotFound {
 			writeError(c, http.StatusNotFound, CodeVirtualKeyNotFound, "virtual key not found")
 			return
@@ -159,6 +163,7 @@ func (h *AdminHandler) DeleteVirtualKey(c *gin.Context) {
 		writeError(c, http.StatusInternalServerError, CodeDatabaseError, err.Error())
 		return
 	}
+	h.invalidateAPIKeyCache(key)
 	h.recordAudit(c, "virtual_key.delete", "virtual_key", c.Param("id"), nil)
 	writeOKMsg(c, "virtual key deleted", gin.H{"deleted": true})
 }

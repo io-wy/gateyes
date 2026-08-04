@@ -35,6 +35,17 @@ func TestUpdateService(t *testing.T) {
 	}
 }
 
+func TestCreateServiceRejectsMissingDefaultProvider(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	env := newHandlerTestEnv(t, handlerTestEnvConfig{})
+	adminToken := seedAdminToken(t, env, repository.RoleTenantAdmin, "admin-svc-missing-provider", "secret").APIKey + ":" + "secret"
+
+	rec := performJSONRequest(t, env, http.MethodPost, "/admin/services", adminToken, `{"name":"BadSvc","request_prefix":"badsvc","default_provider":"missing-provider","default_model":"provider-model","enabled":true}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST service with missing provider status = %d, want %d: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
 func TestDeleteService(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	env := newHandlerTestEnv(t, handlerTestEnvConfig{})

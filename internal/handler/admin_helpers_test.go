@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"context"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -98,26 +100,6 @@ func TestProviderConfigFromCreateRequest(t *testing.T) {
 	}
 }
 
-func TestMergeProviderUpdate(t *testing.T) {
-	current := repository.ProviderRegistryRecord{Name: "p1", Type: "openai", Model: "m1", Enabled: true, RuntimeConfig: &repository.ProviderRuntimeConfig{Timeout: 5}}
-	enabled := false
-	model := "m2"
-	weight := 7
-	req := UpdateProviderRequest{
-		Enabled:       &enabled,
-		Model:         &model,
-		RoutingWeight: &weight,
-		Labels:        map[string]string{"runtime": "vllm"},
-	}
-	updated := mergeProviderUpdate(current, req)
-	if updated.Model != "m2" || updated.Enabled != false || updated.RoutingWeight != 7 {
-		t.Fatalf("mergeProviderUpdate mismatch: model=%s enabled=%v weight=%d", updated.Model, updated.Enabled, updated.RoutingWeight)
-	}
-	if updated.RuntimeConfig.Labels["runtime"] != "vllm" {
-		t.Fatalf("mergeProviderUpdate labels = %#v, want runtime label", updated.RuntimeConfig.Labels)
-	}
-}
-
 func TestApplyProviderCapabilityOverrides(t *testing.T) {
 	record := repository.ProviderRegistryRecord{SupportsChat: false, SupportsStream: false}
 	chat := true
@@ -151,7 +133,7 @@ func TestResolveTargetTenant(t *testing.T) {
 	env := newHandlerTestEnv(t, handlerTestEnvConfig{})
 	superToken := seedAdminToken(t, env, repository.RoleSuperAdmin, "super-resolve", "secret").APIKey + ":" + "secret"
 
-	// super admin must provide tenant_id when creating user
+	// super admin must provide tenant_id when creating user.
 	rec := performJSONRequest(t, env, http.MethodPost, "/admin/users", superToken, `{"name":"missing-tenant"}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("super admin missing tenant_id status = %d, want %d: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
@@ -161,6 +143,24 @@ func TestResolveTargetTenant(t *testing.T) {
 	rec = performJSONRequest(t, env, http.MethodPost, "/admin/users", superToken, `{"tenant_id":"tenant-a","name":"has-tenant","email":"h@example.com"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("super admin with tenant_id status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+func TestSuperAdminCreateProviderUsesDefaultTenant(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	env := newHandlerTestEnv(t, handlerTestEnvConfig{})
+	superToken := seedAdminToken(t, env, repository.RoleSuperAdmin, "super-provider-default", "secret").APIKey + ":" + "secret"
+
+	rec := performJSONRequest(t, env, http.MethodPost, "/admin/providers", superToken, `{"name":"super-default-provider","type":"openai","base_url":"http://127.0.0.1:1","model":"super-default-model","enabled":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST provider status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	providers, err := env.store.ListTenantProviders(context.Background(), "tenant-a")
+	if err != nil {
+		t.Fatalf("ListTenantProviders() error: %v", err)
+	}
+	if !slices.Contains(providers, "super-default-provider") {
+		t.Fatalf("tenant providers = %v, want super-default-provider", providers)
 	}
 }
 

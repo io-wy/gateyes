@@ -1,4 +1,4 @@
-package main
+package gateway
 
 import (
 	"context"
@@ -10,8 +10,7 @@ import (
 	"github.com/gateyes/gateway/internal/service/provider"
 )
 
-
-func seedConfiguredAPIKeys(ctx context.Context, store repository.IdentityStore, tenantID string, configured []config.APIKeyConfig) error {
+func SeedConfiguredAPIKeys(ctx context.Context, store repository.IdentityStore, tenantID string, configured []config.APIKeyConfig) error {
 	for _, item := range configured {
 		if err := store.EnsureBootstrapKey(ctx, repository.BootstrapAPIKeyParams{
 			TenantID:   tenantID,
@@ -29,7 +28,7 @@ func seedConfiguredAPIKeys(ctx context.Context, store repository.IdentityStore, 
 	return nil
 }
 
-func seedBootstrapAdmin(ctx context.Context, store repository.IdentityStore, tenantID string, cfg config.AdminConfig) error {
+func SeedBootstrapAdmin(ctx context.Context, store repository.IdentityStore, tenantID string, cfg config.AdminConfig) error {
 	if cfg.BootstrapKey == "" || cfg.BootstrapSecret == "" {
 		return nil
 	}
@@ -46,7 +45,7 @@ func seedBootstrapAdmin(ctx context.Context, store repository.IdentityStore, ten
 	})
 }
 
-func enabledProviderNames(providers []config.ProviderConfig) []string {
+func EnabledProviderNames(providers []config.ProviderConfig) []string {
 	names := make([]string, 0, len(providers))
 	for _, provider := range providers {
 		if provider.Enabled {
@@ -56,7 +55,7 @@ func enabledProviderNames(providers []config.ProviderConfig) []string {
 	return names
 }
 
-func seedTenantProviders(ctx context.Context, store repository.TenantStore, tenantID string, names []string) error {
+func SeedTenantProviders(ctx context.Context, store repository.TenantStore, tenantID string, names []string) error {
 	existing, err := store.ListTenantProviders(ctx, tenantID)
 	if err != nil {
 		return err
@@ -76,7 +75,7 @@ func seedTenantProviders(ctx context.Context, store repository.TenantStore, tena
 	return store.ReplaceTenantProviders(ctx, tenantID, merged)
 }
 
-func buildGuardrails(cfgs []config.GuardrailConfig) *guardrail.Manager {
+func BuildGuardrails(cfgs []config.GuardrailConfig) *guardrail.Manager {
 	if len(cfgs) == 0 {
 		return nil
 	}
@@ -102,7 +101,7 @@ func buildGuardrails(cfgs []config.GuardrailConfig) *guardrail.Manager {
 	return guardrail.New(chain)
 }
 
-func seedProviderRegistry(ctx context.Context, store repository.ProviderRegistryStore, providers []config.ProviderConfig) error {
+func SeedProviderRegistry(ctx context.Context, store repository.ProviderRegistryStore, providers []config.ProviderConfig) error {
 	for _, item := range providers {
 		record := provider.DefaultRegistryRecordFromConfig(item)
 		existing, err := store.GetProviderRegistry(ctx, item.Name)

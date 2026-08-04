@@ -221,6 +221,7 @@ type AuthIdentity struct {
 	APIKey                 string
 	SecretHash             string
 	APIStatus              string
+	APIKeyExpiresAt        *time.Time
 	APIKeyModels           []string
 	APIKeyProviders        []string
 	APIKeyServices         []string
@@ -324,30 +325,30 @@ type UpdateTenantParams struct {
 }
 
 type APIKeyRecord struct {
-	ID                     string
-	TenantID               string
-	TenantSlug             string
-	UserID                 string
-	UserName               string
-	UserEmail              string
-	ProjectID              string
-	ProjectSlug            string
-	Key                    string
-	Status                 string
-	BudgetUSD              float64
-	SpentUSD               float64
-	BudgetPolicy           string
-	RateLimitQPS           int
-	AllowedModels          []string
-	AllowedProviders       []string
-	AllowedServices        []string
-	LastUsedAt             *time.Time
-	RevokedAt              *time.Time
-	ExpiresAt              *time.Time
-	RotatedAt              *time.Time
-	RotationReminderSent   bool
-	CreatedAt              time.Time
-	UpdatedAt              time.Time
+	ID                   string
+	TenantID             string
+	TenantSlug           string
+	UserID               string
+	UserName             string
+	UserEmail            string
+	ProjectID            string
+	ProjectSlug          string
+	Key                  string
+	Status               string
+	BudgetUSD            float64
+	SpentUSD             float64
+	BudgetPolicy         string
+	RateLimitQPS         int
+	AllowedModels        []string
+	AllowedProviders     []string
+	AllowedServices      []string
+	LastUsedAt           *time.Time
+	RevokedAt            *time.Time
+	ExpiresAt            *time.Time
+	RotatedAt            *time.Time
+	RotationReminderSent bool
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 }
 
 type APIKeyFilter struct {
@@ -371,17 +372,17 @@ type CreateAPIKeyParams struct {
 }
 
 type UpdateAPIKeyParams struct {
-	ProjectID        *string
-	Status           *string
-	BudgetUSD        *float64
-	BudgetPolicy     *string
-	RateLimitQPS     *int
-	AllowedModels    *[]string
-	AllowedProviders *[]string
-	AllowedServices  *[]string
-	RevokedAt        *time.Time
-	ExpiresAt        *time.Time
-	RotatedAt        *time.Time
+	ProjectID            *string
+	Status               *string
+	BudgetUSD            *float64
+	BudgetPolicy         *string
+	RateLimitQPS         *int
+	AllowedModels        *[]string
+	AllowedProviders     *[]string
+	AllowedServices      *[]string
+	RevokedAt            *time.Time
+	ExpiresAt            *time.Time
+	RotatedAt            *time.Time
 	RotationReminderSent *bool
 }
 
@@ -601,22 +602,22 @@ type ServiceFilter struct {
 }
 
 type PluginRecord struct {
-	ID           string
-	TenantID     string
-	Name         string
-	Type         string
-	Description  string
-	Author       string
-	Phases       []string
-	FilePath     string
-	Address      string
-	TimeoutMs    int
-	MemoryPages  int
-	Enabled      bool
-	Source       string
-	Config       map[string]any
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID          string
+	TenantID    string
+	Name        string
+	Type        string
+	Description string
+	Author      string
+	Phases      []string
+	FilePath    string
+	Address     string
+	TimeoutMs   int
+	MemoryPages int
+	Enabled     bool
+	Source      string
+	Config      map[string]any
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 type CreatePluginParams struct {
@@ -932,15 +933,15 @@ type UserRoleRecord struct {
 }
 
 type CreateRoleParams struct {
-	TenantID    string
-	Name        string
-	Description string
+	TenantID      string
+	Name          string
+	Description   string
 	PermissionIDs []string
 }
 
 type UpdateRoleParams struct {
-	Name        *string
-	Description *string
+	Name          *string
+	Description   *string
 	PermissionIDs *[]string
 }
 

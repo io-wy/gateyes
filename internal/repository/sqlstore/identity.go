@@ -15,7 +15,7 @@ import (
 func (s *Store) Authenticate(ctx context.Context, key string) (*repository.AuthIdentity, error) {
 	row := s.db.Conn.QueryRowContext(ctx, s.db.Rebind(`
 SELECT ak.id, ak.key, ak.secret_hash, ak.status, ak.project_id, ak.budget_usd, ak.spent_usd, ak.budget_policy,
-	ak.allowed_models, ak.allowed_providers, ak.allowed_services, ak.rate_limit_qps,
+	ak.expires_at, ak.allowed_models, ak.allowed_providers, ak.allowed_services, ak.rate_limit_qps,
 	u.id, u.name, u.email, u.status, u.quota, u.used, u.qps, u.role,
 	t.id, t.slug, t.status, t.budget_usd, t.spent_usd, t.budget_policy,
 	COALESCE(p.slug, ''), COALESCE(p.name, ''), COALESCE(p.status, ''), COALESCE(p.budget_usd, 0), COALESCE(p.spent_usd, 0), COALESCE(p.budget_policy, 'hard_reject')
@@ -30,6 +30,7 @@ LIMIT 1`), key, key)
 	var apiKeyModelsRaw string
 	var apiKeyProvidersRaw string
 	var apiKeyServicesRaw string
+	var apiKeyExpiresAt sql.NullTime
 	if err := row.Scan(
 		&identity.APIKeyID,
 		&identity.APIKey,
@@ -39,6 +40,7 @@ LIMIT 1`), key, key)
 		&identity.APIKeyBudgetUSD,
 		&identity.APIKeySpentUSD,
 		&identity.APIKeyBudgetPolicy,
+		&apiKeyExpiresAt,
 		&apiKeyModelsRaw,
 		&apiKeyProvidersRaw,
 		&apiKeyServicesRaw,
@@ -74,6 +76,10 @@ LIMIT 1`), key, key)
 	identity.APIKeyModels = decodeStringSlice(apiKeyModelsRaw)
 	identity.APIKeyProviders = decodeStringSlice(apiKeyProvidersRaw)
 	identity.APIKeyServices = decodeStringSlice(apiKeyServicesRaw)
+	if apiKeyExpiresAt.Valid {
+		value := apiKeyExpiresAt.Time
+		identity.APIKeyExpiresAt = &value
+	}
 
 	return identity, nil
 }

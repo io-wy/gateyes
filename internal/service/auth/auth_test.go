@@ -502,6 +502,14 @@ func TestAuthenticateCoversErrorStatusAndSuccess(t *testing.T) {
 		t.Fatalf("Authenticate(inactive) error = %v, want %v", err, ErrInactiveAPIKey)
 	}
 
+	expired := baseIdentity()
+	expiresAt := time.Now().UTC().Add(-time.Minute)
+	expired.APIKeyExpiresAt = &expiresAt
+	service = NewAuth(&fakeIdentityStore{identity: expired})
+	if _, err := service.Authenticate(context.Background(), "key-1", "secret-1"); !errors.Is(err, ErrExpiredAPIKey) {
+		t.Fatalf("Authenticate(expired) error = %v, want %v", err, ErrExpiredAPIKey)
+	}
+
 	service = NewAuth(&fakeIdentityStore{identity: baseIdentity()})
 	if _, err := service.Authenticate(context.Background(), "key-1", "wrong"); !errors.Is(err, ErrInvalidAPIKey) {
 		t.Fatalf("Authenticate(wrong secret) error = %v, want %v", err, ErrInvalidAPIKey)
@@ -513,6 +521,27 @@ func TestAuthenticateCoversErrorStatusAndSuccess(t *testing.T) {
 	}
 	if got.UserID != "user-1" {
 		t.Fatalf("Authenticate(success).UserID = %q, want %q", got.UserID, "user-1")
+	}
+}
+
+func TestInvalidateKeyClearsCachedIdentity(t *testing.T) {
+	identity := baseIdentity()
+	store := &fakeIdentityStore{identity: identity}
+	service := NewAuth(store)
+
+	if _, err := service.Authenticate(context.Background(), "key-1", "secret-1"); err != nil {
+		t.Fatalf("Authenticate(initial) error: %v", err)
+	}
+	revoked := baseIdentity()
+	revoked.APIStatus = repository.StatusRevoked
+	store.identity = revoked
+	if _, err := service.Authenticate(context.Background(), "key-1", "secret-1"); err != nil {
+		t.Fatalf("Authenticate(cached) error: %v", err)
+	}
+
+	service.InvalidateKey("key-1")
+	if _, err := service.Authenticate(context.Background(), "key-1", "secret-1"); !errors.Is(err, ErrInactiveAPIKey) {
+		t.Fatalf("Authenticate(after invalidate) error = %v, want %v", err, ErrInactiveAPIKey)
 	}
 }
 

@@ -140,7 +140,14 @@ func TestRevokeAPIKey(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST key status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	keyID := decodeBodyMap(t, rec)["id"].(string)
+	keyPayload := decodeBodyMap(t, rec)
+	keyID := keyPayload["id"].(string)
+	token := keyPayload["token"].(string)
+
+	rec = performJSONRequest(t, env, http.MethodGet, "/v1/models", token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET models before revoke status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
 
 	rec = performJSONRequest(t, env, http.MethodPost, "/admin/keys/"+keyID+"/revoke", adminToken, "")
 	if rec.Code != http.StatusOK {
@@ -149,6 +156,11 @@ func TestRevokeAPIKey(t *testing.T) {
 	data := decodeBodyMap(t, rec)
 	if data["status"] != repository.StatusRevoked {
 		t.Fatalf("expected revoked status, got %v", data["status"])
+	}
+
+	rec = performJSONRequest(t, env, http.MethodGet, "/v1/models", token, "")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("GET models after revoke status = %d, want %d: %s", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
 }
 

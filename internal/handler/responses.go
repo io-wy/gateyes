@@ -61,6 +61,7 @@ func (h *Handler) handleResponsesCreate(c *gin.Context) {
 
 	cacheTrace := &responseSvc.CacheTrace{}
 	reqCtx := responseSvc.WithGatewayHintsFromHeaders(c.Request.Context(), c.GetHeader)
+	reqCtx = responseSvc.WithAdmissionChecked(reqCtx)
 	reqCtx = responseSvc.WithRawRequestBody(reqCtx, rawBody)
 	reqCtx = responseSvc.WithCacheTrace(reqCtx, cacheTrace)
 

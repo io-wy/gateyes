@@ -53,6 +53,10 @@ func (m *AuthMiddleware) Auth() gin.HandlerFunc {
 				status = http.StatusForbidden
 				message = "inactive API key"
 				errorClass = "inactive_api_key"
+			} else if err == auth.ErrExpiredAPIKey {
+				status = http.StatusForbidden
+				message = "expired API key"
+				errorClass = "expired_api_key"
 			}
 			recordMiddlewareError(m.metrics, c, result, errorClass)
 			c.JSON(status, gin.H{"error": gin.H{"message": message, "type": "invalid_request_error"}})
@@ -126,6 +130,10 @@ func (m *AuthMiddleware) AdminAuth() gin.HandlerFunc {
 			if err == auth.ErrInactiveAPIKey {
 				code = 40002
 				msg = "inactive API key"
+				status = http.StatusForbidden
+			} else if err == auth.ErrExpiredAPIKey {
+				code = 40003
+				msg = "expired API key"
 				status = http.StatusForbidden
 			}
 			recordMiddlewareError(m.metrics, c, metricsResultAuthError, "invalid_api_key")

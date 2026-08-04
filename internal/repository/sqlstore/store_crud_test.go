@@ -236,7 +236,7 @@ func TestTenantAndUsageQueryPaths(t *testing.T) {
 		t.Fatalf("defaultRole(\"\") = %q, want %q", got, want)
 	}
 
-	now := time.Now().UTC()
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
 	rows := []struct {
 		id        string
 		createdAt string
@@ -537,7 +537,7 @@ func TestAPIKeyLifecycleUsageBreakdownAndResponseTrace(t *testing.T) {
 	}
 
 	revoked := repository.StatusRevoked
-	now := time.Now().UTC()
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
 	revokedKey, err := store.UpdateAPIKey(ctx, tenant.ID, rotatedKey.ID, repository.UpdateAPIKeyParams{
 		Status:    &revoked,
 		RevokedAt: &now,

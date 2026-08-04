@@ -13,6 +13,7 @@ import (
 var (
 	ErrInvalidAPIKey   = errors.New("invalid API key")
 	ErrInactiveAPIKey  = errors.New("inactive API key")
+	ErrExpiredAPIKey   = errors.New("expired API key")
 	ErrModelNotAllowed = errors.New("model not allowed")
 	ErrQuotaExceeded   = errors.New("quota exceeded")
 	ErrBudgetExceeded  = errors.New("budget exceeded")
@@ -72,6 +73,13 @@ func (a *Auth) invalidateCache(key string) {
 	delete(a.cache, key)
 }
 
+func (a *Auth) InvalidateKey(key string) {
+	if a == nil || strings.TrimSpace(key) == "" {
+		return
+	}
+	a.invalidateCache(key)
+}
+
 func (a *Auth) Authenticate(ctx context.Context, key, secret string) (*repository.AuthIdentity, error) {
 	identity, err := a.authenticateAPIKey(ctx, key, secret)
 	if err == nil {
@@ -95,6 +103,9 @@ func (a *Auth) Authenticate(ctx context.Context, key, secret string) (*repositor
 func verifyIdentity(identity *repository.AuthIdentity, secret string) error {
 	if !isIdentityActive(identity) {
 		return ErrInactiveAPIKey
+	}
+	if identity.APIKeyExpiresAt != nil && time.Now().UTC().After(identity.APIKeyExpiresAt.UTC()) {
+		return ErrExpiredAPIKey
 	}
 	if !repository.VerifySecret(secret, identity.SecretHash) {
 		return ErrInvalidAPIKey

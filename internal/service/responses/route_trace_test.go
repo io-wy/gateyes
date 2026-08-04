@@ -214,6 +214,43 @@ func TestPlanCandidatesFiltersByPreferredProvider(t *testing.T) {
 	}
 }
 
+func TestPlanCandidatesReportsDisabledRegistryProvider(t *testing.T) {
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		upstreamURL: "http://127.0.0.1:1",
+		providers:   []string{"p-disabled"},
+		providerConfigs: []config.ProviderConfig{
+			{Name: "p-disabled", Type: "openai", BaseURL: "http://127.0.0.1:1", Endpoint: "chat", APIKey: "k", Model: "m1", Timeout: 5, Enabled: false, MaxTokens: 256},
+		},
+	})
+
+	candidates, trace := env.service.planCandidates(context.Background(), env.identity, "s1", &provider.ResponseRequest{Model: "m1", Surface: "chat"})
+	if candidates != nil {
+		t.Fatalf("planCandidates() = %v, want nil", providerNames(candidates))
+	}
+	if trace == nil || len(trace.FilteredOut) != 1 || trace.FilteredOut[0].Reason != "provider_disabled" {
+		t.Fatalf("planCandidates() trace.FilteredOut = %+v, want provider_disabled", trace.FilteredOut)
+	}
+}
+
+func TestPlanCandidatesPrefersRequestedModelMatch(t *testing.T) {
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		upstreamURL: "http://127.0.0.1:1",
+		providers:   []string{"p-a", "p-b"},
+		providerConfigs: []config.ProviderConfig{
+			{Name: "p-a", Type: "openai", BaseURL: "http://127.0.0.1:1", Endpoint: "chat", APIKey: "k", Model: "m1", Timeout: 5, Enabled: true, MaxTokens: 256},
+			{Name: "p-b", Type: "openai", BaseURL: "http://127.0.0.1:1", Endpoint: "chat", APIKey: "k", Model: "m2", Timeout: 5, Enabled: true, MaxTokens: 256},
+		},
+	})
+
+	candidates, trace := env.service.planCandidates(context.Background(), env.identity, "s1", &provider.ResponseRequest{Model: "m1", Surface: "chat"})
+	if len(candidates) != 1 || candidates[0].Name() != "p-a" {
+		t.Fatalf("planCandidates() = %v, want [p-a]", providerNames(candidates))
+	}
+	if len(trace.FilteredOut) != 1 || trace.FilteredOut[0].Provider != "p-b" || trace.FilteredOut[0].Reason != "model_mismatch" {
+		t.Fatalf("planCandidates() trace.FilteredOut = %+v, want p-b model_mismatch", trace.FilteredOut)
+	}
+}
+
 func TestPlanCandidatesReturnsNilWhenNoCandidates(t *testing.T) {
 	env := newResponsesTestEnv(t, responsesTestEnvConfig{
 		upstreamURL: "http://127.0.0.1:1",

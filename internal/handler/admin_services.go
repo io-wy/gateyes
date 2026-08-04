@@ -2,11 +2,13 @@ package handler
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/gateyes/gateway/internal/handler/middleware"
 	"github.com/gateyes/gateway/internal/repository"
+	"github.com/gateyes/gateway/internal/service/catalog"
 )
 
 type CreateServiceRequest struct {
@@ -29,12 +31,15 @@ func (h *AdminHandler) CreateService(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, CodeInvalidRequestBody, err.Error())
 		return
 	}
-	tenantID, ok := h.resolveTargetTenant(c, identity, req.TenantID)
-	if !ok {
+	tenantID := identity.TenantID
+	if identity.Role == repository.RoleSuperAdmin && strings.TrimSpace(req.TenantID) != "" {
+		tenantID = req.TenantID
+	}
+	if !h.ensureServiceDefaultProvider(c, tenantID, req.DefaultProvider) {
 		return
 	}
 
-	result, err := h.catalogSvc.CreateService(c.Request.Context(), repository.CreateServiceParams{
+	result, err := h.catalogSvc.CreateServiceWithOptions(c.Request.Context(), repository.CreateServiceParams{
 		TenantID:        tenantID,
 		ProjectID:       req.ProjectID,
 		Name:            req.Name,
@@ -44,19 +49,10 @@ func (h *AdminHandler) CreateService(c *gin.Context) {
 		DefaultModel:    req.DefaultModel,
 		Enabled:         req.Enabled,
 		Config:          req.Config,
-	})
+	}, catalog.CreateServiceOptions{AutoPublish: req.AutoPublish})
 	if err != nil {
 		writeInternalError(c, err)
 		return
-	}
-	if req.AutoPublish && result.InitialVersion != nil {
-		updated, version, err := h.catalogSvc.PublishServiceVersion(c.Request.Context(), tenantID, result.Service.ID, result.InitialVersion.ID, "published")
-		if err != nil {
-			writeInternalError(c, err)
-			return
-		}
-		result.Service = updated
-		result.InitialVersion = version
 	}
 
 	writeOK(c, gin.H{
@@ -67,13 +63,13 @@ func (h *AdminHandler) CreateService(c *gin.Context) {
 }
 
 func (h *AdminHandler) ListServices(c *gin.Context) {
-	tenantID := h.adminTenantID(c)
+	identity, _ := middleware.Identity(c)
 	var enabled *bool
 	if raw := c.Query("enabled"); raw != "" {
 		value := raw == "true"
 		enabled = &value
 	}
-	services, err := h.store.ListServices(c.Request.Context(), tenantID, repository.ServiceFilter{
+	services, err := h.consoleSvc.ListServices(c.Request.Context(), identity, repository.ServiceFilter{
 		ProjectID:     c.Query("project_id"),
 		PublishStatus: c.Query("publish_status"),
 		Enabled:       enabled,
@@ -90,8 +86,8 @@ func (h *AdminHandler) ListServices(c *gin.Context) {
 }
 
 func (h *AdminHandler) GetService(c *gin.Context) {
-	tenantID := h.adminTenantID(c)
-	record, err := h.store.GetService(c.Request.Context(), tenantID, c.Param("id"))
+	identity, _ := middleware.Identity(c)
+	result, err := h.consoleSvc.GetService(c.Request.Context(), identity, c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
 			writeError(c, http.StatusNotFound, CodeServiceNotFound, "service not found")
@@ -100,14 +96,9 @@ func (h *AdminHandler) GetService(c *gin.Context) {
 		writeInternalError(c, err)
 		return
 	}
-	versions, err := h.store.ListServiceVersions(c.Request.Context(), record.TenantID, record.ID)
-	if err != nil {
-		writeInternalError(c, err)
-		return
-	}
 	writeOK(c, gin.H{
-		"service":  serviceToResponse(*record),
-		"versions": serviceVersionsToResponse(versions),
+		"service":  serviceToResponse(*result.Service),
+		"versions": serviceVersionsToResponse(result.Versions),
 	})
 }
 
@@ -129,7 +120,10 @@ func (h *AdminHandler) UpdateService(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, CodeInvalidRequestBody, err.Error())
 		return
 	}
-	record, err := h.store.UpdateService(c.Request.Context(), tenantID, c.Param("id"), repository.UpdateServiceParams{
+	if req.DefaultProvider != nil && !h.ensureServiceDefaultProvider(c, tenantID, *req.DefaultProvider) {
+		return
+	}
+	record, err := h.catalogSvc.UpdateService(c.Request.Context(), tenantID, c.Param("id"), repository.UpdateServiceParams{
 		ProjectID:       req.ProjectID,
 		Name:            req.Name,
 		RequestPrefix:   req.RequestPrefix,
@@ -151,9 +145,34 @@ func (h *AdminHandler) UpdateService(c *gin.Context) {
 	writeOK(c, serviceToResponse(*record))
 }
 
+func (h *AdminHandler) ensureServiceDefaultProvider(c *gin.Context, tenantID, name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return true
+	}
+	providers, err := h.store.ListTenantProviders(c.Request.Context(), tenantID)
+	if err != nil {
+		writeInternalError(c, err)
+		return false
+	}
+	for _, item := range providers {
+		if item == name {
+			if _, ok := h.providerMgr.Registry(name); ok {
+				return true
+			}
+			if _, ok := h.providerMgr.Get(name); ok {
+				return true
+			}
+			break
+		}
+	}
+	writeError(c, http.StatusBadRequest, CodeBadRequest, "default_provider is not available for tenant")
+	return false
+}
+
 func (h *AdminHandler) DeleteService(c *gin.Context) {
 	tenantID := h.adminTenantID(c)
-	if err := h.store.DeleteService(c.Request.Context(), tenantID, c.Param("id")); err != nil {
+	if err := h.catalogSvc.DeleteService(c.Request.Context(), tenantID, c.Param("id")); err != nil {
 		if err == repository.ErrNotFound {
 			writeError(c, http.StatusNotFound, CodeServiceNotFound, "service not found")
 			return
@@ -167,17 +186,12 @@ func (h *AdminHandler) DeleteService(c *gin.Context) {
 
 func (h *AdminHandler) ListServiceVersions(c *gin.Context) {
 	tenantID := h.adminTenantID(c)
-	record, err := h.store.GetService(c.Request.Context(), tenantID, c.Param("id"))
+	versions, err := h.catalogSvc.ListServiceVersions(c.Request.Context(), tenantID, c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
 			writeError(c, http.StatusNotFound, CodeServiceNotFound, "service not found")
 			return
 		}
-		writeInternalError(c, err)
-		return
-	}
-	versions, err := h.store.ListServiceVersions(c.Request.Context(), record.TenantID, record.ID)
-	if err != nil {
 		writeInternalError(c, err)
 		return
 	}
@@ -289,17 +303,7 @@ func (h *AdminHandler) CreateServiceSubscription(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, CodeInvalidRequestBody, err.Error())
 		return
 	}
-	record, err := h.store.GetService(c.Request.Context(), tenantID, c.Param("id"))
-	if err != nil {
-		if err == repository.ErrNotFound {
-			writeError(c, http.StatusNotFound, CodeServiceNotFound, "service not found")
-			return
-		}
-		writeInternalError(c, err)
-		return
-	}
-	subscription, err := h.store.CreateServiceSubscription(c.Request.Context(), record.TenantID, repository.CreateServiceSubscriptionParams{
-		ServiceID:             record.ID,
+	subscription, err := h.catalogSvc.CreateSubscription(c.Request.Context(), tenantID, c.Param("id"), repository.CreateServiceSubscriptionParams{
 		ProjectID:             req.ProjectID,
 		ConsumerName:          req.ConsumerName,
 		ConsumerEmail:         req.ConsumerEmail,
@@ -309,6 +313,10 @@ func (h *AdminHandler) CreateServiceSubscription(c *gin.Context) {
 		AllowedSurfaces:       req.AllowedSurfaces,
 	})
 	if err != nil {
+		if err == repository.ErrNotFound {
+			writeError(c, http.StatusNotFound, CodeServiceNotFound, "service not found")
+			return
+		}
 		writeInternalError(c, err)
 		return
 	}
@@ -318,20 +326,14 @@ func (h *AdminHandler) CreateServiceSubscription(c *gin.Context) {
 
 func (h *AdminHandler) ListServiceSubscriptions(c *gin.Context) {
 	tenantID := h.adminTenantID(c)
-	record, err := h.store.GetService(c.Request.Context(), tenantID, c.Param("id"))
+	items, err := h.catalogSvc.ListSubscriptions(c.Request.Context(), tenantID, c.Param("id"), repository.ServiceSubscriptionFilter{
+		Status: c.Query("status"),
+	})
 	if err != nil {
 		if err == repository.ErrNotFound {
 			writeError(c, http.StatusNotFound, CodeServiceNotFound, "service not found")
 			return
 		}
-		writeInternalError(c, err)
-		return
-	}
-	items, err := h.store.ListServiceSubscriptions(c.Request.Context(), record.TenantID, repository.ServiceSubscriptionFilter{
-		ServiceID: record.ID,
-		Status:    c.Query("status"),
-	})
-	if err != nil {
 		writeInternalError(c, err)
 		return
 	}
@@ -344,7 +346,7 @@ func (h *AdminHandler) ListServiceSubscriptions(c *gin.Context) {
 
 func (h *AdminHandler) GetServiceSubscription(c *gin.Context) {
 	tenantID := h.adminTenantID(c)
-	record, err := h.store.GetServiceSubscription(c.Request.Context(), tenantID, c.Param("id"))
+	record, err := h.catalogSvc.GetSubscription(c.Request.Context(), tenantID, c.Param("id"))
 	if err != nil {
 		if err == repository.ErrNotFound {
 			writeError(c, http.StatusNotFound, CodeServiceNotFound, "subscription not found")

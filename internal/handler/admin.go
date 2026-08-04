@@ -9,6 +9,8 @@ import (
 	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/gateyes/gateway/internal/handler/middleware"
 	"github.com/gateyes/gateway/internal/repository"
+	"github.com/gateyes/gateway/internal/service/adminconsole"
+	authSvc "github.com/gateyes/gateway/internal/service/auth"
 	"github.com/gateyes/gateway/internal/service/catalog"
 	"github.com/gateyes/gateway/internal/service/provider"
 	"github.com/gateyes/gateway/internal/service/router"
@@ -18,6 +20,8 @@ type AdminHandler struct {
 	store              repository.Store
 	providerMgr        *provider.Manager
 	providerRuntimeSvc *provider.RuntimeRegistryService
+	authSvc            *authSvc.Auth
+	consoleSvc         *adminconsole.Service
 	catalogSvc         *catalog.Service
 	routerSvc          *router.Router
 	reloader           *config.Reloader
@@ -28,10 +32,12 @@ type AdminHandler struct {
 }
 
 func NewAdminHandler(store repository.Store, providerMgr *provider.Manager, catalogSvc *catalog.Service, reloader *config.Reloader) *AdminHandler {
+	providerRuntimeSvc := provider.NewRuntimeRegistryService(store, providerMgr)
 	return &AdminHandler{
 		store:              store,
 		providerMgr:        providerMgr,
-		providerRuntimeSvc: provider.NewRuntimeRegistryService(store, providerMgr),
+		providerRuntimeSvc: providerRuntimeSvc,
+		consoleSvc:         adminconsole.New(store, catalogSvc, providerRuntimeSvc),
 		catalogSvc:         catalogSvc,
 		reloader:           reloader,
 		pluginDir:          "./plugins",
@@ -49,6 +55,10 @@ func (h *AdminHandler) SetMetrics(metrics *Metrics) {
 
 func (h *AdminHandler) SetRouter(routerSvc *router.Router) {
 	h.routerSvc = routerSvc
+}
+
+func (h *AdminHandler) SetAuthService(authService *authSvc.Auth) {
+	h.authSvc = authService
 }
 
 func (h *AdminHandler) SetPluginDirectory(dir string) {
@@ -73,14 +83,18 @@ func (h *AdminHandler) ReloadConfig(c *gin.Context) {
 func (h *AdminHandler) adminTenantID(c *gin.Context) string {
 	identity, _ := middleware.Identity(c)
 	if identity.Role == repository.RoleSuperAdmin {
-		return c.Query("tenant_id")
+		if tenantID := c.Query("tenant_id"); tenantID != "" {
+			return tenantID
+		}
 	}
 	return identity.TenantID
 }
 
 func (h *AdminHandler) scopeTenantID(c *gin.Context, identity *repository.AuthIdentity) (string, bool) {
 	if identity.Role == repository.RoleSuperAdmin {
-		return c.Query("tenant_id"), true
+		if tenantID := c.Query("tenant_id"); tenantID != "" {
+			return tenantID, true
+		}
 	}
 	return identity.TenantID, true
 }
@@ -96,11 +110,24 @@ func (h *AdminHandler) resolveTargetTenant(c *gin.Context, identity *repository.
 	return identity.TenantID, true
 }
 
+func (h *AdminHandler) invalidateAPIKeyCache(keys ...string) {
+	if h.authSvc == nil {
+		return
+	}
+	for _, key := range keys {
+		h.authSvc.InvalidateKey(key)
+	}
+}
+
 func scopedTenant(identity *repository.AuthIdentity) string {
 	if identity == nil {
 		return ""
 	}
 	return identity.TenantID
+}
+
+func isTenantUser(identity *repository.AuthIdentity) bool {
+	return identity != nil && identity.Role == repository.RoleTenantUser
 }
 
 func (h *AdminHandler) requireAdminIdentity(c *gin.Context) (*repository.AuthIdentity, string, bool) {
