@@ -65,8 +65,21 @@ var rolePermissions = map[string][]Permission{
 		PermUsageRead, PermResponseRead, PermBudgetRead, PermAuditRead, PermConfigWrite,
 	},
 	repository.RoleTenantUser: {
-		PermUsageRead,
+		PermAPIKeyRead, PermAPIKeyWrite,
+		PermServiceRead,
+		PermVirtualKeyRead, PermVirtualKeyWrite,
+		PermUsageRead, PermResponseRead,
 	},
+}
+
+// PermissionsForRole returns the legacy fallback permissions for a role.
+func PermissionsForRole(role string) []string {
+	perms := rolePermissions[role]
+	result := make([]string, 0, len(perms))
+	for _, perm := range perms {
+		result = append(result, string(perm))
+	}
+	return result
 }
 
 // RequirePermission returns a gin middleware that checks whether the

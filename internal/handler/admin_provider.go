@@ -21,27 +21,38 @@ func (h *AdminHandler) CheckProviders(c *gin.Context) {
 		return
 	}
 	tenantID := h.adminTenantID(c)
-	writeOK(c, h.providerResponses(c, tenantID))
+	providers, err := h.providerRuntimeSvc.List(c.Request.Context(), tenantID)
+	if err != nil {
+		writeInternalError(c, err)
+		return
+	}
+	writeOK(c, providerViewsToResponses(providers))
 }
 
 func (h *AdminHandler) GetProviders(c *gin.Context) {
 	tenantID := h.adminTenantID(c)
 
-	writeOK(c, h.providerResponses(c, tenantID))
+	providers, err := h.providerRuntimeSvc.List(c.Request.Context(), tenantID)
+	if err != nil {
+		writeInternalError(c, err)
+		return
+	}
+	writeOK(c, providerViewsToResponses(providers))
 }
 
 func (h *AdminHandler) GetProvider(c *gin.Context) {
 	tenantID := h.adminTenantID(c)
 
-	providers := h.providerResponses(c, tenantID)
-	for _, item := range providers {
-		if item["name"] == c.Param("name") {
-			writeOK(c, item)
+	providerView, err := h.providerRuntimeSvc.Get(c.Request.Context(), tenantID, c.Param("name"))
+	if err != nil {
+		if err == repository.ErrNotFound {
+			writeError(c, http.StatusNotFound, CodeProviderNotFound, "provider not found")
 			return
 		}
+		writeInternalError(c, err)
+		return
 	}
-
-	writeError(c, http.StatusNotFound, CodeProviderNotFound, "provider not found")
+	writeOK(c, providerViewToResponse(*providerView))
 }
 
 func (h *AdminHandler) GetProviderStats(c *gin.Context) {
@@ -96,49 +107,17 @@ func (h *AdminHandler) CreateProvider(c *gin.Context) {
 		SupportsLongContext:      req.SupportsLongContext,
 		SupportsEmbeddings:       req.SupportsEmbeddings,
 	})
-	created, err := h.providerRuntimeSvc.Upsert(c.Request.Context(), record)
+	tenantID, _ := h.scopeTenantID(c, identity)
+	created, err := h.providerRuntimeSvc.CreateForTenant(c.Request.Context(), tenantID, record)
 	if err != nil {
 		writeError(c, http.StatusBadRequest, CodeBadRequest, err.Error())
 		return
-	}
-	if tenantID, ok := h.scopeTenantID(c, identity); ok && tenantID != "" {
-		if err := h.appendTenantProvider(c.Request.Context(), tenantID, created.Name); err != nil {
-			writeInternalError(c, err)
-			return
-		}
 	}
 	h.recordAudit(c, "provider.create", "provider", created.Name, providerRegistryToResponse(*created))
 	writeOK(c, providerRegistryToResponse(*created))
 }
 
-type UpdateProviderRequest struct {
-	Enabled                  *bool             `json:"enabled"`
-	Drain                    *bool             `json:"drain"`
-	HealthStatus             *string           `json:"health_status"`
-	RoutingWeight            *int              `json:"routing_weight"`
-	Type                     *string           `json:"type"`
-	Vendor                   *string           `json:"vendor"`
-	BaseURL                  *string           `json:"base_url"`
-	Endpoint                 *string           `json:"endpoint"`
-	APIKey                   *string           `json:"api_key"`
-	Model                    *string           `json:"model"`
-	PriceInput               *float64          `json:"price_input"`
-	PriceOutput              *float64          `json:"price_output"`
-	MaxTokens                *int              `json:"max_tokens"`
-	Timeout                  *int              `json:"timeout"`
-	Headers                  map[string]string `json:"headers"`
-	ExtraBody                map[string]any    `json:"extra_body"`
-	Labels                   map[string]string `json:"labels"`
-	SupportsChat             *bool             `json:"supports_chat"`
-	SupportsResponses        *bool             `json:"supports_responses"`
-	SupportsMessages         *bool             `json:"supports_messages"`
-	SupportsStream           *bool             `json:"supports_stream"`
-	SupportsTools            *bool             `json:"supports_tools"`
-	SupportsImages           *bool             `json:"supports_images"`
-	SupportsStructuredOutput *bool             `json:"supports_structured_output"`
-	SupportsLongContext      *bool             `json:"supports_long_context"`
-	SupportsEmbeddings       *bool             `json:"supports_embeddings"`
-}
+type UpdateProviderRequest = provider.RegistryPatch
 
 func (h *AdminHandler) UpdateProvider(c *gin.Context) {
 	var req UpdateProviderRequest
@@ -146,23 +125,12 @@ func (h *AdminHandler) UpdateProvider(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, CodeInvalidRequestBody, err.Error())
 		return
 	}
-	if req.HealthStatus != nil && !validProviderHealthStatus(*req.HealthStatus) {
-		writeError(c, http.StatusBadRequest, CodeInvalidParameter, "invalid health_status")
-		return
-	}
-
-	current, err := h.store.GetProviderRegistry(c.Request.Context(), c.Param("name"))
+	record, err := h.providerRuntimeSvc.Update(c.Request.Context(), c.Param("name"), req)
 	if err != nil {
 		if err == repository.ErrNotFound {
 			writeError(c, http.StatusNotFound, CodeProviderNotFound, "provider not found")
 			return
 		}
-		writeInternalError(c, err)
-		return
-	}
-	updated := mergeProviderUpdate(*current, req)
-	record, err := h.providerRuntimeSvc.Upsert(c.Request.Context(), updated)
-	if err != nil {
 		writeError(c, http.StatusBadRequest, CodeBadRequest, err.Error())
 		return
 	}
@@ -173,7 +141,8 @@ func (h *AdminHandler) UpdateProvider(c *gin.Context) {
 func (h *AdminHandler) DeleteProvider(c *gin.Context) {
 	identity, _ := middleware.Identity(c)
 	name := c.Param("name")
-	if err := h.providerRuntimeSvc.Delete(c.Request.Context(), name); err != nil {
+	tenantID, _ := h.scopeTenantID(c, identity)
+	if err := h.providerRuntimeSvc.DeleteForTenant(c.Request.Context(), tenantID, name); err != nil {
 		if err == repository.ErrNotFound {
 			writeError(c, http.StatusNotFound, CodeProviderNotFound, "provider not found")
 			return
@@ -181,15 +150,12 @@ func (h *AdminHandler) DeleteProvider(c *gin.Context) {
 		writeInternalError(c, err)
 		return
 	}
-	if tenantID, ok := h.scopeTenantID(c, identity); ok && tenantID != "" {
-		_ = h.removeTenantProvider(c.Request.Context(), tenantID, name)
-	}
 	h.recordAudit(c, "provider.delete", "provider", name, gin.H{"name": name})
 	writeOK(c, gin.H{"name": name, "deleted": true})
 }
 
 type CreateAPIKeyRequest struct {
-	UserID           string     `json:"user_id" binding:"required"`
+	UserID           string     `json:"user_id"`
 	ProjectID        string     `json:"project_id"`
 	BudgetUSD        float64    `json:"budget_usd"`
 	RateLimitQPS     int        `json:"rate_limit_qps"`
@@ -199,63 +165,44 @@ type CreateAPIKeyRequest struct {
 	ExpiresAt        *time.Time `json:"expires_at"`
 }
 
-func (h *AdminHandler) providerResponses(c *gin.Context, tenantID string) []gin.H {
-	usageByProvider, err := h.store.GetProviderUsageSummary(c.Request.Context(), tenantID)
-	if err != nil {
-		return nil
-	}
-
-	var providers []provider.Provider
-	if tenantID == "" {
-		providers = h.providerMgr.List()
-	} else {
-		providerNames, err := h.store.ListTenantProviders(c.Request.Context(), tenantID)
-		if err != nil {
-			return nil
-		}
-		providers = h.providerMgr.ListByNames(providerNames)
-	}
-
-	statsByName := make(map[string]*provider.ProviderStats)
-	for _, item := range h.providerMgr.Stats.List() {
-		statsByName[item.Name] = item
-	}
-
-	result := make([]gin.H, 0, len(providers))
-	for _, providerItem := range providers {
-		globalStats := statsByName[providerItem.Name()]
-		usageStats := usageByProvider[providerItem.Name()]
-		item := gin.H{
-			"name":             providerItem.Name(),
-			"type":             providerItem.Type(),
-			"model":            providerItem.Model(),
-			"base_url":         providerItem.BaseURL(),
-			"status":           providerStatus(globalStats),
-			"current_load":     providerLoad(globalStats),
-			"total_requests":   usageStats.TotalRequests,
-			"success_requests": usageStats.SuccessRequests,
-			"failed_requests":  usageStats.FailedRequests,
-			"total_tokens":     usageStats.TotalTokens,
-			"total_cost_usd":   usageStats.TotalCostUSD,
-			"avg_latency_ms":   usageStats.AvgLatencyMs,
-			"error_rate":       errorRate(usageStats.TotalRequests, usageStats.FailedRequests),
-		}
-		if record, ok := h.providerMgr.Registry(providerItem.Name()); ok {
-			for key, value := range providerRegistryToResponse(record) {
-				item[key] = value
-			}
-		}
-		result = append(result, item)
-	}
-
-	return result
-}
-
 func providerStatus(stats *provider.ProviderStats) string {
 	if stats == nil {
 		return "unknown"
 	}
 	return stats.Status
+}
+
+func providerViewsToResponses(views []provider.ProviderView) []gin.H {
+	result := make([]gin.H, 0, len(views))
+	for _, view := range views {
+		result = append(result, providerViewToResponse(view))
+	}
+	return result
+}
+
+func providerViewToResponse(view provider.ProviderView) gin.H {
+	usageStats := view.Usage
+	item := gin.H{
+		"name":             view.Provider.Name(),
+		"type":             view.Provider.Type(),
+		"model":            view.Provider.Model(),
+		"base_url":         view.Provider.BaseURL(),
+		"status":           providerStatus(view.Stats),
+		"current_load":     providerLoad(view.Stats),
+		"total_requests":   usageStats.TotalRequests,
+		"success_requests": usageStats.SuccessRequests,
+		"failed_requests":  usageStats.FailedRequests,
+		"total_tokens":     usageStats.TotalTokens,
+		"total_cost_usd":   usageStats.TotalCostUSD,
+		"avg_latency_ms":   usageStats.AvgLatencyMs,
+		"error_rate":       errorRate(usageStats.TotalRequests, usageStats.FailedRequests),
+	}
+	if view.Registry != nil {
+		for key, value := range providerRegistryToResponse(*view.Registry) {
+			item[key] = value
+		}
+	}
+	return item
 }
 
 type CreateProjectRequest struct {
@@ -271,15 +218,6 @@ func providerLoad(stats *provider.ProviderStats) int64 {
 		return 0
 	}
 	return stats.CurrentLoad
-}
-
-func validProviderHealthStatus(value string) bool {
-	switch value {
-	case provider.ProviderHealthHealthy, provider.ProviderHealthDegraded, provider.ProviderHealthUnhealthy:
-		return true
-	default:
-		return false
-	}
 }
 
 func providerRegistryToResponse(record repository.ProviderRegistryRecord) gin.H {
@@ -354,77 +292,6 @@ func providerConfigFromCreateRequest(req CreateProviderRequest) config.ProviderC
 		ExtraBody:   req.ExtraBody,
 		Labels:      req.Labels,
 	}
-}
-
-func mergeProviderUpdate(current repository.ProviderRegistryRecord, req UpdateProviderRequest) repository.ProviderRegistryRecord {
-	next := current
-	if req.Type != nil {
-		next.Type = *req.Type
-	}
-	if req.Vendor != nil {
-		next.Vendor = *req.Vendor
-	}
-	if req.BaseURL != nil {
-		next.BaseURL = *req.BaseURL
-	}
-	if req.Endpoint != nil {
-		next.Endpoint = *req.Endpoint
-	}
-	if req.Model != nil {
-		next.Model = *req.Model
-	}
-	if req.Enabled != nil {
-		next.Enabled = *req.Enabled
-	}
-	if req.Drain != nil {
-		next.Drain = *req.Drain
-	}
-	if req.HealthStatus != nil {
-		next.HealthStatus = *req.HealthStatus
-	}
-	if req.RoutingWeight != nil {
-		next.RoutingWeight = *req.RoutingWeight
-	}
-	if next.RuntimeConfig == nil {
-		next.RuntimeConfig = &repository.ProviderRuntimeConfig{Enabled: next.Enabled}
-	}
-	if req.APIKey != nil {
-		next.RuntimeConfig.APIKey = *req.APIKey
-	}
-	if req.PriceInput != nil {
-		next.RuntimeConfig.PriceInput = *req.PriceInput
-	}
-	if req.PriceOutput != nil {
-		next.RuntimeConfig.PriceOutput = *req.PriceOutput
-	}
-	if req.MaxTokens != nil {
-		next.RuntimeConfig.MaxTokens = *req.MaxTokens
-	}
-	if req.Timeout != nil {
-		next.RuntimeConfig.Timeout = *req.Timeout
-	}
-	if req.Headers != nil {
-		next.RuntimeConfig.Headers = req.Headers
-	}
-	if req.ExtraBody != nil {
-		next.RuntimeConfig.ExtraBody = req.ExtraBody
-	}
-	if req.Labels != nil {
-		next.RuntimeConfig.Labels = req.Labels
-	}
-	next.RuntimeConfig.Enabled = next.Enabled
-	applyProviderCapabilityOverrides(&next, providerCapabilityOverrides{
-		SupportsChat:             req.SupportsChat,
-		SupportsResponses:        req.SupportsResponses,
-		SupportsMessages:         req.SupportsMessages,
-		SupportsStream:           req.SupportsStream,
-		SupportsTools:            req.SupportsTools,
-		SupportsImages:           req.SupportsImages,
-		SupportsStructuredOutput: req.SupportsStructuredOutput,
-		SupportsLongContext:      req.SupportsLongContext,
-		SupportsEmbeddings:       req.SupportsEmbeddings,
-	})
-	return next
 }
 
 func applyProviderCapabilityOverrides(record *repository.ProviderRegistryRecord, overrides providerCapabilityOverrides) {

@@ -1,13 +1,14 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/gateyes/gateway/internal/handler/middleware"
 	"github.com/gateyes/gateway/internal/repository"
-	"github.com/gateyes/gateway/internal/service/provider"
+	"github.com/gateyes/gateway/internal/service/adminconsole"
 	"github.com/gin-gonic/gin"
 )
 
@@ -21,32 +22,26 @@ type DashboardSummary struct {
 }
 
 func (h *AdminHandler) Dashboard(c *gin.Context) {
-	tenantID := h.adminTenantID(c)
-
-	usageStats, err := h.store.GetUsageSummary(c.Request.Context(), tenantID)
+	identity, _ := middleware.Identity(c)
+	summary, err := h.consoleSvc.Dashboard(c.Request.Context(), identity)
 	if err != nil {
+		if writeAdminConsoleError(c, err) {
+			return
+		}
 		writeInternalError(c, err)
 		return
 	}
 
-	providers := h.providerResponses(c, tenantID)
-	activeProviders := 0
-	for _, p := range providers {
-		if status, ok := p["status"].(string); ok && status == provider.ProviderHealthHealthy {
-			activeProviders++
-		}
-	}
-
 	var successRate float64
-	if usageStats.TotalRequests > 0 {
-		successRate = float64(usageStats.SuccessRequests) / float64(usageStats.TotalRequests)
+	if summary.UsageStats.TotalRequests > 0 {
+		successRate = float64(summary.UsageStats.SuccessRequests) / float64(summary.UsageStats.TotalRequests)
 	}
 
 	writeOK(c, DashboardSummary{
-		TotalRequests:   usageStats.TotalRequests,
+		TotalRequests:   summary.UsageStats.TotalRequests,
 		SuccessRate:     successRate,
-		AvgLatencyMs:    usageStats.AvgLatencyMs,
-		ActiveProviders: activeProviders,
+		AvgLatencyMs:    summary.UsageStats.AvgLatencyMs,
+		ActiveProviders: summary.ActiveProviders,
 		HealthyBudgets:  0,
 		TotalBudgets:    0,
 	})
@@ -72,8 +67,11 @@ func (h *AdminHandler) GetUsageSummary(c *gin.Context) {
 	if !ok {
 		return
 	}
-	summary, err := h.store.GetUsageSummaryFiltered(c.Request.Context(), filter)
+	summary, filter, err := h.consoleSvc.UsageSummary(c.Request.Context(), identity, filter)
 	if err != nil {
+		if writeAdminConsoleError(c, err) {
+			return
+		}
 		writeInternalError(c, err)
 		return
 	}
@@ -90,8 +88,11 @@ func (h *AdminHandler) GetUsageBreakdown(c *gin.Context) {
 		return
 	}
 	dimension := c.DefaultQuery("dimension", "provider")
-	rows, err := h.store.GetUsageBreakdown(c.Request.Context(), filter, dimension)
+	rows, filter, err := h.consoleSvc.UsageBreakdown(c.Request.Context(), identity, filter, dimension)
 	if err != nil {
+		if writeAdminConsoleError(c, err) {
+			return
+		}
 		writeError(c, http.StatusBadRequest, CodeBadRequest, err.Error())
 		return
 	}
@@ -115,8 +116,11 @@ func (h *AdminHandler) GetUsageTrend(c *gin.Context) {
 			limit = parsed
 		}
 	}
-	rows, err := h.store.GetUsageTimeBuckets(c.Request.Context(), filter, period, limit)
+	rows, filter, err := h.consoleSvc.UsageTrend(c.Request.Context(), identity, filter, period, limit)
 	if err != nil {
+		if writeAdminConsoleError(c, err) {
+			return
+		}
 		writeInternalError(c, err)
 		return
 	}
@@ -173,6 +177,14 @@ func (h *AdminHandler) usageFilter(c *gin.Context, identity *repository.AuthIden
 		filter.StartTime = time.Now().UTC().AddDate(0, 0, -days)
 	}
 	return filter, true
+}
+
+func writeAdminConsoleError(c *gin.Context, err error) bool {
+	if errors.Is(err, adminconsole.ErrInvalidTenantID) {
+		writeError(c, http.StatusBadRequest, CodeMissingRequiredField, err.Error())
+		return true
+	}
+	return false
 }
 
 func usageFilterToResponse(filter repository.UsageFilter) gin.H {

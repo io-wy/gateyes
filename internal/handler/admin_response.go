@@ -2,17 +2,19 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/gateyes/gateway/internal/handler/middleware"
 	"github.com/gateyes/gateway/internal/repository"
 )
 
 func (h *AdminHandler) ListResponses(c *gin.Context) {
-	tenantID := h.adminTenantID(c)
+	identity, _ := middleware.Identity(c)
 	filter := repository.ResponseFilter{
 		ProviderName: c.Query("provider_name"),
 		Model:        c.Query("model"),
@@ -49,12 +51,7 @@ func (h *AdminHandler) ListResponses(c *gin.Context) {
 		}
 		filter.EndTime = parsed
 	}
-	total, err := h.store.CountResponses(c.Request.Context(), tenantID, filter)
-	if err != nil {
-		writeInternalError(c, err)
-		return
-	}
-	items, err := h.store.ListResponses(c.Request.Context(), tenantID, filter)
+	items, total, err := h.consoleSvc.ListResponses(c.Request.Context(), identity, filter)
 	if err != nil {
 		writeInternalError(c, err)
 		return
@@ -67,10 +64,10 @@ func (h *AdminHandler) ListResponses(c *gin.Context) {
 }
 
 func (h *AdminHandler) GetResponseTrace(c *gin.Context) {
-	tenantID := h.adminTenantID(c)
-	record, err := h.store.GetResponse(c.Request.Context(), tenantID, c.Param("id"))
+	identity, _ := middleware.Identity(c)
+	record, err := h.consoleSvc.GetResponse(c.Request.Context(), identity, c.Param("id"))
 	if err != nil {
-		if err == repository.ErrNotFound {
+		if errors.Is(err, repository.ErrNotFound) {
 			writeError(c, http.StatusNotFound, CodeResponseNotFound, "response not found")
 			return
 		}
@@ -96,10 +93,10 @@ func (h *AdminHandler) GetResponseTrace(c *gin.Context) {
 }
 
 func (h *AdminHandler) GetResponseDetail(c *gin.Context) {
-	tenantID := h.adminTenantID(c)
-	record, err := h.store.GetResponse(c.Request.Context(), tenantID, c.Param("id"))
+	identity, _ := middleware.Identity(c)
+	record, err := h.consoleSvc.GetResponse(c.Request.Context(), identity, c.Param("id"))
 	if err != nil {
-		if err == repository.ErrNotFound {
+		if errors.Is(err, repository.ErrNotFound) {
 			writeError(c, http.StatusNotFound, CodeResponseNotFound, "response not found")
 			return
 		}
@@ -139,17 +136,17 @@ func (h *AdminHandler) GetResponseDetail(c *gin.Context) {
 }
 
 type responseDetailResponse struct {
-	ID           string `json:"id"`
-	TenantID     string `json:"tenant_id"`
-	ProjectID    string `json:"project_id"`
-	UserID       string `json:"user_id"`
-	APIKeyID     string `json:"api_key_id"`
-	ProviderName string `json:"provider_name"`
-	Model        string `json:"model"`
-	Status       string `json:"status"`
-	RequestBody  any    `json:"request_body"`
-	ResponseBody any    `json:"response_body"`
-	RouteTrace   any    `json:"route_trace"`
+	ID           string    `json:"id"`
+	TenantID     string    `json:"tenant_id"`
+	ProjectID    string    `json:"project_id"`
+	UserID       string    `json:"user_id"`
+	APIKeyID     string    `json:"api_key_id"`
+	ProviderName string    `json:"provider_name"`
+	Model        string    `json:"model"`
+	Status       string    `json:"status"`
+	RequestBody  any       `json:"request_body"`
+	ResponseBody any       `json:"response_body"`
+	RouteTrace   any       `json:"route_trace"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }

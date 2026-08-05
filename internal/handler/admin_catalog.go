@@ -3,29 +3,26 @@ package handler
 import (
 	"github.com/gin-gonic/gin"
 
-	"github.com/gateyes/gateway/internal/repository"
+	"github.com/gateyes/gateway/internal/handler/middleware"
 )
 
 func (h *AdminHandler) GetCatalog(c *gin.Context) {
-	tenantID := h.adminTenantID(c)
+	identity, _ := middleware.Identity(c)
 
-	providers := h.providerResponses(c, tenantID)
-	services, err := h.store.ListServices(c.Request.Context(), tenantID, repository.ServiceFilter{
-		ProjectID:     c.Query("project_id"),
-		PublishStatus: c.Query("publish_status"),
-	})
+	view, err := h.consoleSvc.Catalog(c.Request.Context(), identity, c.Query("project_id"), c.Query("publish_status"))
 	if err != nil {
 		writeInternalError(c, err)
 		return
 	}
 
-	serviceItems := make([]gin.H, 0, len(services))
-	for _, service := range services {
+	providers := providerViewsToResponses(view.Providers)
+	serviceItems := make([]gin.H, 0, len(view.Services))
+	for _, service := range view.Services {
 		serviceItems = append(serviceItems, serviceToResponse(service))
 	}
 
 	writeOK(c, gin.H{
-		"tenant_id": tenantID,
+		"tenant_id": view.TenantID,
 		"counts": gin.H{
 			"providers": len(providers),
 			"services":  len(serviceItems),

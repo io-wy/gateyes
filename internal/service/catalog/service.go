@@ -47,6 +47,15 @@ type CreateServiceResult struct {
 	InitialVersion *repository.ServiceVersionRecord
 }
 
+type CreateServiceOptions struct {
+	AutoPublish bool
+}
+
+type ServiceWithVersions struct {
+	Service  *repository.ServiceRecord
+	Versions []repository.ServiceVersionRecord
+}
+
 type PromptInvokeRequest struct {
 	Variables       map[string]any `json:"variables"`
 	Stream          bool           `json:"stream,omitempty"`
@@ -95,6 +104,46 @@ func (s *Service) CreateService(ctx context.Context, params repository.CreateSer
 	return &CreateServiceResult{Service: record, InitialVersion: version}, nil
 }
 
+func (s *Service) CreateServiceWithOptions(ctx context.Context, params repository.CreateServiceParams, opts CreateServiceOptions) (*CreateServiceResult, error) {
+	result, err := s.CreateService(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	if opts.AutoPublish && result.InitialVersion != nil {
+		updated, version, err := s.PublishServiceVersion(ctx, params.TenantID, result.Service.ID, result.InitialVersion.ID, "published")
+		if err != nil {
+			return nil, err
+		}
+		result.Service = updated
+		result.InitialVersion = version
+	}
+	return result, nil
+}
+
+func (s *Service) ListServices(ctx context.Context, tenantID string, filter repository.ServiceFilter) ([]repository.ServiceRecord, error) {
+	return s.store.ListServices(ctx, tenantID, filter)
+}
+
+func (s *Service) GetServiceWithVersions(ctx context.Context, tenantID, serviceID string) (*ServiceWithVersions, error) {
+	record, err := s.store.GetService(ctx, tenantID, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	versions, err := s.store.ListServiceVersions(ctx, record.TenantID, record.ID)
+	if err != nil {
+		return nil, err
+	}
+	return &ServiceWithVersions{Service: record, Versions: versions}, nil
+}
+
+func (s *Service) UpdateService(ctx context.Context, tenantID, serviceID string, params repository.UpdateServiceParams) (*repository.ServiceRecord, error) {
+	return s.store.UpdateService(ctx, tenantID, serviceID, params)
+}
+
+func (s *Service) DeleteService(ctx context.Context, tenantID, serviceID string) error {
+	return s.store.DeleteService(ctx, tenantID, serviceID)
+}
+
 func (s *Service) CreateServiceVersion(ctx context.Context, tenantID, serviceID string) (*repository.ServiceVersionRecord, error) {
 	record, err := s.store.GetService(ctx, tenantID, serviceID)
 	if err != nil {
@@ -104,6 +153,14 @@ func (s *Service) CreateServiceVersion(ctx context.Context, tenantID, serviceID 
 		ServiceID: record.ID,
 		Snapshot:  snapshotFromService(*record),
 	})
+}
+
+func (s *Service) ListServiceVersions(ctx context.Context, tenantID, serviceID string) ([]repository.ServiceVersionRecord, error) {
+	record, err := s.store.GetService(ctx, tenantID, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	return s.store.ListServiceVersions(ctx, record.TenantID, record.ID)
 }
 
 func (s *Service) PublishServiceVersion(ctx context.Context, tenantID, serviceID, versionID, mode string) (*repository.ServiceRecord, *repository.ServiceVersionRecord, error) {
@@ -121,6 +178,28 @@ func (s *Service) RollbackServiceVersion(ctx context.Context, tenantID, serviceI
 	return s.store.RollbackServiceVersion(ctx, tenantID, serviceID, repository.RollbackServiceVersionParams{
 		VersionID: versionID,
 	})
+}
+
+func (s *Service) CreateSubscription(ctx context.Context, tenantID, serviceID string, params repository.CreateServiceSubscriptionParams) (*repository.ServiceSubscriptionRecord, error) {
+	record, err := s.store.GetService(ctx, tenantID, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	params.ServiceID = record.ID
+	return s.store.CreateServiceSubscription(ctx, record.TenantID, params)
+}
+
+func (s *Service) ListSubscriptions(ctx context.Context, tenantID, serviceID string, filter repository.ServiceSubscriptionFilter) ([]repository.ServiceSubscriptionRecord, error) {
+	record, err := s.store.GetService(ctx, tenantID, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	filter.ServiceID = record.ID
+	return s.store.ListServiceSubscriptions(ctx, record.TenantID, filter)
+}
+
+func (s *Service) GetSubscription(ctx context.Context, tenantID, subscriptionID string) (*repository.ServiceSubscriptionRecord, error) {
+	return s.store.GetServiceSubscription(ctx, tenantID, subscriptionID)
 }
 
 func (s *Service) ReviewSubscription(ctx context.Context, tenantID, subscriptionID, decision, reviewNote string) (*ReviewSubscriptionResult, error) {
