@@ -15,7 +15,7 @@ database:
   connMaxLifetimeSeconds: 300
 
 redis:
-  addr: "localhost:6379"
+  addr: "${REDIS_ADDR}"
   password: ""
   db: 0
 
@@ -197,8 +197,11 @@ apiKeys:
     models: []
 
 admin:
+  # Admin API auth:
+  #   Authorization: Bearer <bootstrapKey>:<bootstrapSecret>
+  # Protects /admin and /admin/v1 routes; public OIDC bootstrap endpoints stay under /admin/auth.
   defaultTenant: default
-  bootstrapKey: admin-key-001
+  bootstrapKey: ${GATEYES_ADMIN_BOOTSTRAP_KEY}
   bootstrapSecret: ${GATEYES_ADMIN_BOOTSTRAP_SECRET}
 
 rbac:

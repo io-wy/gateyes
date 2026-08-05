@@ -10,6 +10,8 @@ services:
       - .env
     environment:
       - GATEYES_CONFIG_PATH=/app/configs/config.yaml
+      - GATEYES_DATABASE_DSN=host=postgres port=5432 user=gateyes password=gateyes_pw dbname=gateyes sslmode=disable
+      - REDIS_ADDR=redis:6379
     command: ["-config", "/app/configs/config.yaml"]
     ports:
       - "8028:8028"
@@ -20,6 +22,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      kafka:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8028/ready >/dev/null 2>&1"]
       interval: 15s
@@ -59,6 +63,29 @@ services:
       retries: 5
     restart: unless-stopped
 
+  kafka:
+    image: apache/kafka:3.9.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 8
+    ports:
+      - "29092:29092"
+    volumes:
+      - kafka-data:/tmp/kraft-combined-logs
+    restart: unless-stopped
+
   prometheus:
     image: prom/prometheus:v2.55.1
     command:
@@ -68,7 +95,7 @@ services:
       - "9090:9090"
     volumes:
       - ./deploy/docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./docs/prometheus-alerts.yml:/etc/prometheus/prometheus-alerts.yml:ro
+      - ./docs/docs-project/assets/prometheus-alerts.yml:/etc/prometheus/prometheus-alerts.yml:ro
       - prometheus-data:/prometheus
     restart: unless-stopped
 
@@ -90,5 +117,6 @@ services:
 volumes:
   postgres-data:
   redis-data:
+  kafka-data:
   prometheus-data:
   grafana-data:
