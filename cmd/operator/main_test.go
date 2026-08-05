@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +55,7 @@ func TestRunAppliesLoadedSnapshot(t *testing.T) {
 	var out bytes.Buffer
 	client := &recordingAdminSyncClient{}
 	applier := &recordingWorkloadApplier{}
+	statusWriter := &recordingStatusWriter{}
 	replicas := 2
 	err := run(context.Background(), operatorConfig{
 		AdminURL:     "http://gateyes:8028",
@@ -81,6 +83,7 @@ func TestRunAppliesLoadedSnapshot(t *testing.T) {
 		}},
 		SyncClient:      client,
 		WorkloadApplier: applier,
+		StatusWriter:    statusWriter,
 	}, &out)
 	if err != nil {
 		t.Fatalf("run with loaded snapshot: %v", err)
@@ -94,6 +97,9 @@ func TestRunAppliesLoadedSnapshot(t *testing.T) {
 	if !strings.Contains(out.String(), "providers=2") || !strings.Contains(out.String(), "workload_deployments=1") {
 		t.Fatalf("run output = %q, want provider and workload counts", out.String())
 	}
+	if statusWriter.updates != 1 {
+		t.Fatalf("status updates = %d, want 1", statusWriter.updates)
+	}
 }
 
 func TestRunRequiresAdminURL(t *testing.T) {
@@ -102,6 +108,49 @@ func TestRunRequiresAdminURL(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "admin-url is required") {
 		t.Fatalf("run error = %v, want admin-url required", err)
 	}
+}
+
+func TestRunReconcilesOnEventSource(t *testing.T) {
+	var out bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	loader := &countingSnapshotLoader{cancelAfter: 2, cancel: cancel}
+	events := make(chan struct{}, 1)
+	events <- struct{}{}
+	err := run(ctx, operatorConfig{
+		AdminURL:     "http://gateyes:8028",
+		DryRun:       true,
+		SyncInterval: time.Hour,
+		Loader:       loader,
+		EventSource:  staticEventSource{events: events},
+	}, &out)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("run error = %v, want context.Canceled", err)
+	}
+	if loader.loads != 2 {
+		t.Fatalf("loads = %d, want initial reconcile plus event reconcile", loader.loads)
+	}
+}
+
+type countingSnapshotLoader struct {
+	loads       int
+	cancelAfter int
+	cancel      context.CancelFunc
+}
+
+func (l *countingSnapshotLoader) Load(context.Context) (platform.ResourceSnapshot, error) {
+	l.loads++
+	if l.cancelAfter > 0 && l.loads >= l.cancelAfter {
+		l.cancel()
+	}
+	return platform.ResourceSnapshot{}, nil
+}
+
+type staticEventSource struct {
+	events <-chan struct{}
+}
+
+func (s staticEventSource) Start(context.Context) (<-chan struct{}, error) {
+	return s.events, nil
 }
 
 func TestTokenFromEnvUsesExplicitOrBootstrapCredentials(t *testing.T) {
@@ -156,5 +205,14 @@ type recordingWorkloadApplier struct {
 func (a *recordingWorkloadApplier) Apply(_ context.Context, plan platform.InferenceWorkloadPlan) error {
 	a.deployments += len(plan.Deployments)
 	a.services += len(plan.Services)
+	return nil
+}
+
+type recordingStatusWriter struct {
+	updates int
+}
+
+func (w *recordingStatusWriter) Update(context.Context, platform.ResourceSnapshot, platform.SyncPlan, error) error {
+	w.updates++
 	return nil
 }

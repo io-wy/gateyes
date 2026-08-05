@@ -146,9 +146,10 @@ func (l *kubernetesSnapshotLoader) list(ctx context.Context, gvr schema.GroupVer
 
 func parseObjectMeta(obj unstructured.Unstructured) platform.ObjectMeta {
 	return platform.ObjectMeta{
-		Name:      obj.GetName(),
-		Namespace: obj.GetNamespace(),
-		Labels:    obj.GetLabels(),
+		Name:       obj.GetName(),
+		Namespace:  obj.GetNamespace(),
+		Generation: obj.GetGeneration(),
+		Labels:     obj.GetLabels(),
 	}
 }
 

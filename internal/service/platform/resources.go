@@ -16,9 +16,10 @@ var (
 )
 
 type ObjectMeta struct {
-	Name      string
-	Namespace string
-	Labels    map[string]string
+	Name       string
+	Namespace  string
+	Generation int64
+	Labels     map[string]string
 }
 
 type SecretKeyRef struct {
@@ -306,6 +307,9 @@ type RuntimeSignals struct {
 }
 
 type AutoscaleDecision struct {
+	TargetNamespace string
+	TargetKind      string
+	TargetName      string
 	Mode            string
 	CurrentReplicas int
 	DesiredReplicas int
@@ -340,6 +344,9 @@ func (p InferenceAutoscalePolicy) Evaluate(currentReplicas int, signals RuntimeS
 
 	mode := defaultString(p.Spec.Mode, "recommend")
 	return AutoscaleDecision{
+		TargetNamespace: strings.TrimSpace(p.Metadata.Namespace),
+		TargetKind:      strings.TrimSpace(p.Spec.TargetRef.Kind),
+		TargetName:      strings.TrimSpace(p.Spec.TargetRef.Name),
 		Mode:            mode,
 		CurrentReplicas: currentReplicas,
 		DesiredReplicas: desired,

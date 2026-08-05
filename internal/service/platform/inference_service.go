@@ -83,12 +83,12 @@ func BuildInferenceWorkloadPlan(services []InferenceService, policies []Inferenc
 	policyByName := map[string]InferenceAutoscalePolicy{}
 	for _, policy := range policies {
 		if policy.Metadata.Name != "" {
-			policyByName[policy.Metadata.Name] = policy
+			policyByName[resourceKey(defaultString(policy.Metadata.Namespace, defaultNamespace), policy.Metadata.Name)] = policy
 		}
 	}
 
 	for _, service := range services {
-		servicePlan, err := service.ToWorkloadPlan(defaultNamespace, selectAutoscalePolicy(service, policies, policyByName), lookupRuntimeSignals(service, defaultNamespace, signals))
+		servicePlan, err := service.ToWorkloadPlan(defaultNamespace, selectAutoscalePolicy(service, policies, policyByName, defaultNamespace), lookupRuntimeSignals(service, defaultNamespace, signals))
 		if err != nil {
 			errs = append(errs, fmt.Errorf("inference service %s: %w", service.Metadata.Name, err))
 			continue
@@ -195,13 +195,17 @@ func (s InferenceService) toModelEndpoint(namespace string, port int) ModelEndpo
 	}
 }
 
-func selectAutoscalePolicy(service InferenceService, policies []InferenceAutoscalePolicy, policyByName map[string]InferenceAutoscalePolicy) *InferenceAutoscalePolicy {
+func selectAutoscalePolicy(service InferenceService, policies []InferenceAutoscalePolicy, policyByName map[string]InferenceAutoscalePolicy, defaultNamespace string) *InferenceAutoscalePolicy {
+	namespace := defaultString(service.Metadata.Namespace, defaultNamespace)
 	if service.Spec.AutoscalePolicyRef != nil && strings.TrimSpace(service.Spec.AutoscalePolicyRef.Name) != "" {
-		if policy, ok := policyByName[strings.TrimSpace(service.Spec.AutoscalePolicyRef.Name)]; ok {
+		if policy, ok := policyByName[resourceKey(namespace, strings.TrimSpace(service.Spec.AutoscalePolicyRef.Name))]; ok {
 			return &policy
 		}
 	}
 	for _, policy := range policies {
+		if defaultString(policy.Metadata.Namespace, defaultNamespace) != namespace {
+			continue
+		}
 		if strings.EqualFold(policy.Spec.TargetRef.Kind, "InferenceService") && strings.TrimSpace(policy.Spec.TargetRef.Name) == service.Metadata.Name {
 			return &policy
 		}
@@ -246,12 +250,19 @@ func enforceReplicas(replicas int, policy *InferenceAutoscalePolicy, signals *Ru
 		desired = clamp(replicas, max(0, policy.Spec.MinReplicas), maxReplicas)
 	}
 	return desired, AutoscaleDecision{
+		TargetNamespace: strings.TrimSpace(policy.Metadata.Namespace),
+		TargetKind:      strings.TrimSpace(policy.Spec.TargetRef.Kind),
+		TargetName:      strings.TrimSpace(policy.Spec.TargetRef.Name),
 		Mode:            mode,
 		CurrentReplicas: replicas,
 		DesiredReplicas: desired,
 		Reason:          "within_bounds",
 		Enforce:         mode == "enforce" && desired != replicas,
 	}, true
+}
+
+func resourceKey(namespace string, name string) string {
+	return namespace + "/" + name
 }
 
 func inferenceServiceLabels(name string, runtime string, routeLabels map[string]string) map[string]string {

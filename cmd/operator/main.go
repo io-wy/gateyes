@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -34,6 +35,9 @@ type operatorConfig struct {
 	Loader          snapshotLoader
 	SyncClient      platform.AdminSyncClient
 	WorkloadApplier workloadApplier
+	StatusWriter    statusWriter
+	SignalProvider  runtimeSignalProvider
+	EventSource     eventSource
 }
 
 type snapshotLoader interface {
@@ -95,6 +99,21 @@ func run(ctx context.Context, cfg operatorConfig, out io.Writer) error {
 		}
 		cfg.WorkloadApplier = applier
 	}
+	if !cfg.DryRun && cfg.Kubernetes && cfg.StatusWriter == nil {
+		writer, err := newKubernetesStatusWriter(cfg.Kubeconfig)
+		if err != nil {
+			return err
+		}
+		cfg.StatusWriter = writer
+	}
+	if cfg.Kubernetes && cfg.SignalProvider == nil {
+		cfg.SignalProvider = newHTTPRuntimeSignalProvider()
+	}
+	if cfg.Kubernetes && !cfg.Once && cfg.EventSource == nil {
+		if loader, ok := cfg.Loader.(*kubernetesSnapshotLoader); ok {
+			cfg.EventSource = newKubernetesEventSource(loader.client, cfg.Namespace, cfg.SyncInterval)
+		}
+	}
 
 	if err := reconcileOnce(ctx, cfg, out); err != nil {
 		return err
@@ -105,10 +124,22 @@ func run(ctx context.Context, cfg operatorConfig, out io.Writer) error {
 
 	ticker := time.NewTicker(cfg.SyncInterval)
 	defer ticker.Stop()
+	var events <-chan struct{}
+	if cfg.EventSource != nil {
+		var err error
+		events, err = cfg.EventSource.Start(ctx)
+		if err != nil {
+			return err
+		}
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-events:
+			if err := reconcileOnce(ctx, cfg, out); err != nil {
+				return err
+			}
 		case <-ticker.C:
 			if err := reconcileOnce(ctx, cfg, out); err != nil {
 				return err
@@ -140,8 +171,16 @@ func reconcileOnce(ctx context.Context, cfg operatorConfig, out io.Writer) error
 	if err != nil {
 		return err
 	}
+	var signalErr error
+	if cfg.SignalProvider != nil && len(snapshot.InferenceServices) > 0 {
+		signals, err := cfg.SignalProvider.Collect(ctx, snapshot.InferenceServices, defaultNamespace(cfg.Namespace))
+		if err != nil {
+			signalErr = err
+		}
+		snapshot.RuntimeSignals = signals
+	}
 	plan, planErr := platform.BuildSyncPlan(snapshot, defaultNamespace(cfg.Namespace))
-	_, writeErr := fmt.Fprintf(out, "gateyes-operator tick mode=%s namespace=%s admin_url=%s providers=%d route_policies=%d budgets=%d autoscale_policies=%d workload_deployments=%d workload_services=%d autoscale_decisions=%d\n",
+	_, writeErr := fmt.Fprintf(out, "gateyes-operator tick mode=%s namespace=%s admin_url=%s providers=%d route_policies=%d budgets=%d autoscale_policies=%d workload_deployments=%d workload_services=%d autoscale_decisions=%d runtime_signals=%d\n",
 		mode,
 		namespace,
 		cfg.AdminURL,
@@ -152,11 +191,20 @@ func reconcileOnce(ctx context.Context, cfg operatorConfig, out io.Writer) error
 		len(plan.Workloads.Deployments),
 		len(plan.Workloads.Services),
 		len(plan.Workloads.AutoscaleDecisions),
+		len(snapshot.RuntimeSignals),
 	)
 	if writeErr != nil {
 		return writeErr
 	}
+	if signalErr != nil {
+		if _, err := fmt.Fprintf(out, "gateyes-operator runtime_signals warning error=%q\n", signalErr.Error()); err != nil {
+			return err
+		}
+	}
 	if planErr != nil {
+		if !cfg.DryRun && cfg.StatusWriter != nil {
+			return errors.Join(planErr, cfg.StatusWriter.Update(ctx, snapshot, plan, planErr))
+		}
 		return planErr
 	}
 	if cfg.DryRun {
@@ -165,15 +213,22 @@ func reconcileOnce(ctx context.Context, cfg operatorConfig, out io.Writer) error
 	if cfg.SyncClient == nil {
 		return fmt.Errorf("sync client is required when dry-run=false")
 	}
+	var applyErr error
 	if len(plan.Workloads.Deployments) > 0 || len(plan.Workloads.Services) > 0 {
 		if cfg.WorkloadApplier == nil {
 			return fmt.Errorf("workload applier is required when dry-run=false and inference workloads are planned")
 		}
 		if err := cfg.WorkloadApplier.Apply(ctx, plan.Workloads); err != nil {
-			return err
+			applyErr = errors.Join(applyErr, err)
 		}
 	}
-	return platform.ApplySyncPlan(plan, cfg.SyncClient)
+	if err := platform.ApplySyncPlan(plan, cfg.SyncClient); err != nil {
+		applyErr = errors.Join(applyErr, err)
+	}
+	if cfg.StatusWriter != nil {
+		applyErr = errors.Join(applyErr, cfg.StatusWriter.Update(ctx, snapshot, plan, applyErr))
+	}
+	return applyErr
 }
 
 func defaultNamespace(namespace string) string {
