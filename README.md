@@ -235,6 +235,8 @@ go test ./internal/service/provider ./internal/service/responses ./internal/hand
 | [feature-inventory.md](./docs/docs-project/feature-inventory.md) | 当前已实现能力清单 |
 | [architecture.md](./docs/docs-project/architecture.md) | 架构和职责边界 |
 | [runtime-mechanisms.md](./docs/docs-project/runtime-mechanisms.md) | 鉴权、路由、限额、缓存、预算机制 |
+| [api-reference.md](./docs/docs-project/api-reference.md) | HTTP API 请求体和响应体参考 |
+| [database-ddl.md](./docs/docs-project/database-ddl.md) | 数据库最终表结构 DDL |
 | [cache.md](./docs/docs-project/cache.md) | L1 cache、singleflight、prompt rewrite 和可观测性 |
 | [kafka-batch-inference.md](./docs/docs-project/kafka-batch-inference.md) | Kafka eventbus 和 batch 推理任务 |
 | [provider-configuration.md](./docs/docs-project/provider-configuration.md) | provider 配置 |
@@ -242,7 +244,6 @@ go test ./internal/service/provider ./internal/service/responses ./internal/hand
 | [deployment.md](./docs/docs-project/deployment.md) | Docker Compose、Helm、生产说明和 operator 模式 |
 | [monitoring.md](./docs/docs-project/monitoring.md) | 指标和告警 |
 | [operations/runbook.md](./docs/docs-project/operations/runbook.md) | 运维 runbook |
-| [acceptance-validation-plan.md](./docs/docs-project/runbook/acceptance-validation-plan.md) | 逐功能印证 / 提测计划 |
 
 ## 部署
 

@@ -1,45 +1,45 @@
-# Testing Gateyes
+# Gateyes 测试指南
 
-## Default Regression
+## 默认回归测试
 
-Run the full local suite:
+运行完整本地套件：
 
 ```bash
 go test ./...
 ```
 
-This covers config loading, database adapters, repositories, provider adapters, routing, response orchestration, HTTP handlers, middleware, plugins, cache, limiter, metrics, and tracing.
+覆盖范围包括：配置加载、数据库适配器、仓库层、provider 适配器、路由、响应编排、HTTP handler、中间件、插件、缓存、限流、指标与链路追踪。
 
-## Focused Suites
+## 定向测试套件
 
-Gateway/provider compatibility:
+Gateway / provider 兼容性：
 
 ```bash
 go test ./internal/service/provider ./internal/service/responses ./internal/transport/http/handler
 ```
 
-Config loading and `.env` behavior:
+配置加载与 `.env` 行为：
 
 ```bash
 go test ./internal/app/config
 ```
 
-Architecture dependency check:
+架构依赖检查：
 
 ```bash
 make lint-arch
 ```
 
-Plugin protobuf generation check:
+Plugin protobuf 生成检查：
 
 ```bash
 make proto
 go test ./pkg/plugin/v1
 ```
 
-## Live Provider Tests
+## 真实 Provider 测试
 
-Live tests are opt-in. They require reachable providers and secrets supplied through `.env` or process environment variables.
+真实环境测试为 opt-in。需要可访问的 provider 以及通过 `.env` 或进程环境变量注入的密钥。
 
 ```bash
 GATEYES_LIVE=1 \
@@ -47,7 +47,7 @@ GATEYES_LIVE_CONFIG=configs/config.yaml \
 go test ./internal/transport/http/handler -run TestLiveProviderCompatibility -count=1 -v
 ```
 
-Limit to selected providers:
+限定到指定 provider：
 
 ```bash
 GATEYES_LIVE=1 \
@@ -56,11 +56,11 @@ GATEYES_LIVE_PROVIDERS=codexapis \
 go test ./internal/transport/http/handler -run TestLiveProviderCompatibility -count=1 -v
 ```
 
-The live matrix checks model listing, Responses API text and stream flows, long history handling, and provider-specific chat/messages tool-call behavior when supported.
+真实矩阵会检查模型列表、Responses API 的文本与流式流程、长历史处理，以及 provider 支持的 chat/messages tool-call 行为。
 
-## Direct gRPC vLLM Probe
+## 直接 gRPC vLLM 探测
 
-For a real vLLM gRPC provider:
+针对真实 vLLM gRPC provider：
 
 ```bash
 GATEYES_LIVE=1 \
@@ -68,28 +68,28 @@ GATEYES_LIVE_CONFIG=configs/config_grpc.yaml \
 go test ./internal/service/provider -run TestLiveGRPCVLLMProvider -count=1 -v
 ```
 
-Expected environment variables for that config are:
+该配置期望以下环境变量：
 
 - `VLLM_GRPC_TARGET`
 - `VLLM_GRPC_API_KEY`
 - `VLLM_GRPC_MODEL`
 
-## Manual Smoke Check
+## 手动冒烟检查
 
-Start the gateway:
+启动网关：
 
 ```bash
 go run ./cmd/gateway -config configs/config.yaml
 ```
 
-List models:
+列出模型：
 
 ```bash
 curl -H "Authorization: Bearer demo-key-001:demo-secret-001" \
   http://127.0.0.1:8083/v1/models
 ```
 
-Call Responses API:
+调用 Responses API：
 
 ```bash
 curl -X POST http://127.0.0.1:8083/v1/responses \
@@ -98,9 +98,9 @@ curl -X POST http://127.0.0.1:8083/v1/responses \
   -d '{"model":"mock-model","input":"hello"}'
 ```
 
-## CI Expectations
+## CI 预期
 
-Before committing structural or runtime changes, run:
+在提交结构性或运行时变更前，运行：
 
 ```bash
 make lint-arch
@@ -108,16 +108,16 @@ go test ./...
 go vet ./...
 ```
 
-For protocol changes, also run:
+若涉及协议变更，额外运行：
 
 ```bash
 make proto
 git diff -- pkg/plugin/v1 proto/plugin/v1
 ```
 
-## Monitoring Assets
+## 监控资产
 
-Prometheus and Grafana assets live under `docs/docs-project/assets/`:
+Prometheus 与 Grafana 资产位于 `docs/docs-project/assets/`：
 
 - `prometheus-alerts.yml`
 - `prometheus-alerts.example.yml`

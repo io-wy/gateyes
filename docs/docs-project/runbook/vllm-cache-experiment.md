@@ -45,17 +45,17 @@ go run ./cmd/gateway --config configs/config.yaml
 
 gateway 的 `/metrics` 会暴露以下关键序列：
 
-| 指标 | 含义 | 来源 |
-|---|---|---|
-| `gateway_llm_tokens_total{token_type="cached"}` | 上游返回的 cached prompt tokens 累计 | provider API response |
-| `gateway_llm_prompt_cache_ratio_bucket` | 每次请求 `cached_tokens / prompt_tokens` 的分布 | provider API response |
-| `gateway_cache_lookups_total{result="hit"}` | gateway L1 cache 命中次数 | gateway cache layer |
-| `gateway_cache_lookups_total{result="miss"}` | gateway L1 cache 未命中次数 | gateway cache layer |
-| `gateway_provider_gpu_cache_usage_ratio{provider="vllm-qwen3-0.6B-8001"}` | vLLM GPU KV cache 占用率 | vLLM `/metrics` |
-| `gateway_provider_cpu_cache_usage_ratio{provider="..."}` | vLLM CPU KV cache 占用率 | vLLM `/metrics` |
-| `gateway_provider_prefix_cache_hit_rate_ratio{provider="..."}` | vLLM prefix cache 命中率 | vLLM `/metrics` |
-| `gateway_provider_prefix_cache_queries{provider="..."}` | vLLM prefix cache 查询累计 | vLLM `/metrics` |
-| `gateway_provider_prefix_cache_hits{provider="..."}` | vLLM prefix cache 命中累计 | vLLM `/metrics` |
+| 指标                                                                        | 含义                                             | 来源                  |
+| --------------------------------------------------------------------------- | ------------------------------------------------ | --------------------- |
+| `gateway_llm_tokens_total{token_type="cached"}`                           | 上游返回的 cached prompt tokens 累计             | provider API response |
+| `gateway_llm_prompt_cache_ratio_bucket`                                   | 每次请求`cached_tokens / prompt_tokens` 的分布 | provider API response |
+| `gateway_cache_lookups_total{result="hit"}`                               | gateway L1 cache 命中次数                        | gateway cache layer   |
+| `gateway_cache_lookups_total{result="miss"}`                              | gateway L1 cache 未命中次数                      | gateway cache layer   |
+| `gateway_provider_gpu_cache_usage_ratio{provider="vllm-qwen3-0.6B-8001"}` | vLLM GPU KV cache 占用率                         | vLLM`/metrics`      |
+| `gateway_provider_cpu_cache_usage_ratio{provider="..."}`                  | vLLM CPU KV cache 占用率                         | vLLM`/metrics`      |
+| `gateway_provider_prefix_cache_hit_rate_ratio{provider="..."}`            | vLLM prefix cache 命中率                         | vLLM`/metrics`      |
+| `gateway_provider_prefix_cache_queries{provider="..."}`                   | vLLM prefix cache 查询累计                       | vLLM`/metrics`      |
+| `gateway_provider_prefix_cache_hits{provider="..."}`                      | vLLM prefix cache 命中累计                       | vLLM`/metrics`      |
 
 测试：
 
@@ -89,6 +89,7 @@ wait
 ```
 
 说明：
+
 - 相同的 system prompt 会被 vLLM prefix cache 命中
 - 相同的 `(model, messages)` 会被 gateyes L1 cache 命中（如果 `cache.enabled: true`）
 

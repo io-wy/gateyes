@@ -18,11 +18,13 @@
 ```
 
 **关键特性**：
+
 - **允许突发**：桶满时可以一次性消耗 burst 个 token
 - **平滑限流**：长期速率稳定在 rate，短期允许毛刺
 - **内存友好**：只需要记录 tokens 和 last_fill 两个值
 
 **Gateyes 实现**：
+
 ```go
 type TokenBucket struct {
     rate     int        // 每秒补充速率
@@ -34,6 +36,7 @@ type TokenBucket struct {
 ```
 
 **为什么选令牌桶？**
+
 - LLM 请求的 token 消耗不均匀：有的请求 100 tokens，有的 8000 tokens
 - 令牌桶天然适合"不均匀消费场景"
 - 突发流量（如批量推理）需要被容忍
@@ -49,11 +52,13 @@ type TokenBucket struct {
 ```
 
 **关键特性**：
+
 - **绝对平滑**：输出速率严格等于 rate，不允许任何突发
 - **需要队列**：请求可能排队等待
 - **不适合 LLM**：LLM 请求不能排队等处理，用户要的是实时响应
 
 **为什么 Gateyes 不用漏桶？**
+
 - LLM 网关不能让用户请求排队等 10 秒
 - 漏桶的排队机制会引入不可控的延迟
 
@@ -69,28 +74,31 @@ type TokenBucket struct {
 ```
 
 **关键特性**：
+
 - **精确计数**：在任意时刻都能准确知道窗口内的请求数
 - **内存开销大**：需要保存窗口内所有请求的时间戳
 - **实现复杂**：需要定期清理过期时间戳
 
 **变体**：
+
 - **固定窗口**：把一分钟分成 10 个 6 秒窗口，每个窗口单独计数（存在边界突发问题）
 - **滑动日志**：保存每个请求的时间戳，查询时过滤（内存消耗大）
 
 **为什么 Gateyes 不用滑动窗口？**
+
 - 多维度（5 个维度 * 2 个指标 = 10 个窗口），内存压力大
 - Redis 中保存时间戳列表比 Hash 更耗空间
 - 令牌桶的"近似平滑"对网关场景已经足够
 
 ### 1.4 三种算法对比总结
 
-| 维度 | 令牌桶 | 漏桶 | 滑动窗口 |
-|------|--------|------|----------|
-| 允许突发 | ✅ | ❌ | ❌ |
-| 内存开销 | 低（2个值） | 中（队列） | 高（时间戳列表）|
-| 精确度 | 近似 | 精确 | 精确 |
-| 适合场景 | API 网关、网络流量 | 固定速率处理 | 精确计数场景 |
-| 实现复杂度 | 低 | 中 | 高 |
+| 维度       | 令牌桶             | 漏桶         | 滑动窗口         |
+| ---------- | ------------------ | ------------ | ---------------- |
+| 允许突发   | ✅                 | ❌           | ❌               |
+| 内存开销   | 低（2个值）        | 中（队列）   | 高（时间戳列表） |
+| 精确度     | 近似               | 精确         | 精确             |
+| 适合场景   | API 网关、网络流量 | 固定速率处理 | 精确计数场景     |
+| 实现复杂度 | 低                 | 中           | 高               |
 
 ---
 
@@ -111,12 +119,12 @@ Instance B: 允许 50 req/s
 
 ### 2.2 分布式计数器的选择
 
-| 方案 | 优点 | 缺点 |
-|------|------|------|
-| 数据库（行锁） | 强一致 | 性能差，死锁风险 |
-| Redis INCR | 简单，原子 | 无法处理 token bucket 的"补充+扣减"复合逻辑 |
-| Redis Lua | 原子，灵活 | 需要写 Lua，Cluster 下有坑 |
-| 中心服务（如 Sentinel） | 功能丰富 | 增加依赖，单点风险 |
+| 方案                    | 优点       | 缺点                                        |
+| ----------------------- | ---------- | ------------------------------------------- |
+| 数据库（行锁）          | 强一致     | 性能差，死锁风险                            |
+| Redis INCR              | 简单，原子 | 无法处理 token bucket 的"补充+扣减"复合逻辑 |
+| Redis Lua               | 原子，灵活 | 需要写 Lua，Cluster 下有坑                  |
+| 中心服务（如 Sentinel） | 功能丰富   | 增加依赖，单点风险                          |
 
 **Gateyes 选择 Redis Lua**：原子性 + 灵活性 + 无额外依赖。
 
@@ -145,6 +153,7 @@ Instance B: now = 10050ms, last_fill = 9000ms → elapsed = 1050ms
 总延迟约 12ms。如果限流检查在关键路径上，这 12ms 会叠加到每个请求。
 
 **Gateyes 的优化**：
+
 - 异步队列：限流检查在独立 goroutine 中，不阻塞主请求处理
 - 但代价是增加了请求的整体延迟（等待队列 + 检查结果）
 
@@ -155,6 +164,7 @@ Instance B: now = 10050ms, last_fill = 9000ms → elapsed = 1050ms
 ### 3.1 Redis 为什么是单线程
 
 Redis 的核心设计：
+
 - 所有命令在一个线程中顺序执行
 - 没有锁、没有上下文切换
 - 纯内存操作，每个命令执行时间极短（微秒级）
@@ -199,15 +209,18 @@ tokens := rdb.HGet(ctx, key, "t").Val()        // 此时 tokens = 100
 ### 3.3 Lua 脚本的限制
 
 **不能执行阻塞命令**：
+
 - `BLPOP`、`BRPOP`、`BLMOVE` 等会阻塞 Redis 的脚本中不允许使用
 - 因为脚本执行期间 Redis 不处理其他命令，阻塞命令会导致 Redis 僵死
 
 **执行时间限制**：
+
 - Lua 脚本默认最长执行 5 秒（`lua-time-limit` 配置）
 - 超过后 Redis 开始回复 `BUSY` 错误给其他客户端
 - 但不会终止脚本执行（避免数据不一致）
 
 **Gateyes 的 Lua 脚本执行时间**：
+
 - 两次 Hash 读 + 一次 Hash 写 + 一次 EXPIRE
 - 典型执行时间 < 1ms
 - 远低于 5 秒限制
@@ -251,6 +264,7 @@ redis.call('HGET', key2, 't')
 ```
 
 **如果 key1 和 key2 不在同一槽**：
+
 ```
 (error) CROSSSLOT Keys in request don't hash to the same slot
 ```
@@ -270,6 +284,7 @@ user:{1001}:profile  → CRC16("1001") % 16384
 ### 4.4 Gateyes 的 Hash Tag 设计
 
 修改前（有问题）：
+
 ```
 gateyes:rl:ten:tenant-a:t   → slot(CRC16("gateyes:rl:ten:tenant-a:t"))
 gateyes:rl:ten:tenant-a:r   → slot(CRC16("gateyes:rl:ten:tenant-a:r"))
@@ -278,6 +293,7 @@ gateyes:rl:ten:tenant-a:r   → slot(CRC16("gateyes:rl:ten:tenant-a:r"))
 两个 key 的 CRC16 结果不同，可能落在不同槽。
 
 修改后（正确）：
+
 ```
 gateyes:rl:{tenant-a}:ten:tenant-a:t  → slot(CRC16("tenant-a"))
 gateyes:rl:{tenant-a}:ten:tenant-a:r  → slot(CRC16("tenant-a"))
@@ -288,6 +304,7 @@ gateyes:rl:{tenant-a}:ten:tenant-a:r  → slot(CRC16("tenant-a"))
 ### 4.5 如果不用 Hash Tag 的替代方案
 
 **方案 A：多个独立 Lua 调用**
+
 ```go
 // 分两次调用，每次一个 key
 redisTryConsume(tpmKey, ...)
@@ -297,6 +314,7 @@ redisTryConsume(rpmKey, ...)
 **缺点**：失去原子性，两次调用之间可能有其他实例修改状态。
 
 **方案 B：本地缓存 + 异步同步**
+
 ```go
 // 本地维护计数器，定期把状态写回 Redis
 ```
@@ -323,11 +341,13 @@ Gateyes 选择了方案 C。
 ```
 
 **Gateyes 实际只有 L1 + L2**：
+
 - L1: 内存 LRU（进程内，重启丢失）
 - L2: Redis（分布式，多实例共享）
 - L3: 上游 Provider（真正的数据源）
 
 **为什么没有 L3 缓存（如本地磁盘）？**
+
 - LLM 响应通常不大（几 KB 到几十 KB）
 - 磁盘 I/O 比网络还慢
 - 内存足够放热点数据
@@ -359,10 +379,12 @@ func (f *FallbackCache) Set(ctx, key, entry) {
 ```
 
 **为什么写时先写 Redis 再写内存？**
+
 - 如果先写内存，Redis 写失败 → 内存有新数据，Redis 没有 → 其他实例读不到
 - 先写 Redis，即使内存写失败，其他实例也能从 Redis 读到
 
 **为什么读时 Redis miss 还要读内存？**
+
 - Redis 可能暂时不可用（网络抖动）
 - 内存里可能有之前 Redis 正常时写入的数据
 - 这是"fail-soft"：不保证最新，但保证有数据可用
@@ -377,11 +399,13 @@ Instance B 读取缓存 K → 可能读到 V1（从 Redis），也可能读到�
 ```
 
 **为什么不强一致？**
+
 - LLM 响应本身就是"可接受过时"的
 - 强一致需要分布式锁或 2PC，性能损耗大
 - 缓存 TTL 短（默认不长），不一致窗口有限
 
 **如果出现不一致怎么办？**
+
 - 等 TTL 过期后自动恢复
 - 或者提供 admin 接口手动清除缓存（Gateyes 目前没有）
 
@@ -401,10 +425,12 @@ func buildCacheKey(req *provider.ResponseRequest) string {
 ```
 
 **问题**：
+
 - 没有版本号：如果响应格式变了，旧缓存可能返回不兼容的 JSON
 - 没有租户隔离：不同租户的相同请求会命中同一个缓存（可能泄漏数据）
 
 **改进方案**：
+
 ```go
 func buildCacheKey(tenantID string, schemaVersion int, req *provider.ResponseRequest) string {
     body, _ := json.Marshal(req)
@@ -427,6 +453,7 @@ type Entry struct {
 ```
 
 **为什么存 CreatedAt 而不是 TTL？**
+
 - 写入时不知道对方的 TTL 配置
 - 读取时根据 CreatedAt 和当前时间判断是否过期
 - 更灵活：不同业务可以有不同的 TTL 策略
@@ -437,19 +464,19 @@ type Entry struct {
 
 ### 3.1 流式 vs 非流式的缓存差异
 
-| 维度 | 非流式 | 流式 |
-|------|--------|------|
-| 缓存内容 | 完整响应 JSON | 完整响应 JSON |
-| 命中时 | 直接返回 JSON | 从 JSON 重建 SSE 事件流 |
-| 缓存 key | 相同 | 相同 |
-| 存储大小 | 相同 | 相同 |
+| 维度     | 非流式        | 流式                    |
+| -------- | ------------- | ----------------------- |
+| 缓存内容 | 完整响应 JSON | 完整响应 JSON           |
+| 命中时   | 直接返回 JSON | 从 JSON 重建 SSE 事件流 |
+| 缓存 key | 相同          | 相同                    |
+| 存储大小 | 相同          | 相同                    |
 
 ### 3.2 重建 SSE 流的代码逻辑
 
 ```go
 func replayCachedStream(ctx, entry cache.Entry, out chan<- ResponseEvent) {
     resp := entry.Response
-    
+  
     // 1. 发送 ResponseStarted 事件
     out <- ResponseEvent{
         Type: EventResponseStarted,
@@ -459,7 +486,7 @@ func replayCachedStream(ctx, entry cache.Entry, out chan<- ResponseEvent) {
             Status: "in_progress",
         },
     }
-    
+  
     // 2. 把响应内容拆成 SSE delta 事件
     for _, output := range resp.Output {
         switch output.Type {
@@ -479,7 +506,7 @@ func replayCachedStream(ctx, entry cache.Entry, out chan<- ResponseEvent) {
             }
         }
     }
-    
+  
     // 3. 发送 ResponseCompleted 事件
     out <- ResponseEvent{
         Type:         EventResponseCompleted,
@@ -492,6 +519,7 @@ func replayCachedStream(ctx, entry cache.Entry, out chan<- ResponseEvent) {
 **面试会问**：为什么不直接缓存 SSE 字节流？
 
 **答**：
+
 1. SSE 字节流包含 `id:`, `event:`, `data:` 等协议帧，不同客户端可能解析方式不同
 2. 字节流中的 `created` 时间戳、`id` 等字段如果复用会暴露"这是缓存"的事实
 3. 存 JSON 更紧凑，没有协议开销
@@ -522,6 +550,7 @@ func replayCachedStream(ctx, entry cache.Entry, out chan<- ResponseEvent) {
 **现象**：大量请求查询一个**一定不存在**的 key，每次都穿透到上游。
 
 **典型场景**：
+
 - 攻击者发送随机 model 名（如 `gpt-99999`）
 - 每次都 miss，每次都打到 provider
 
@@ -565,6 +594,7 @@ func (c *Cache) Get(ctx, key) (Entry, bool) {
 **现象**：一个**热点 key** 过期，大量请求同时打到上游。
 
 **典型场景**：
+
 - "写一篇关于 AI 的摘要" 这个 prompt 被大量用户使用
 - 缓存 TTL 到了，1000 个并发请求同时 miss
 - 1000 个请求同时打到 OpenAI API
@@ -585,17 +615,17 @@ func (c *Cache) Get(ctx, key) (Entry, bool) {
     if entry, ok := c.backend.Get(ctx, key); ok {
         return entry, true
     }
-    
+  
     // 2. 获取 key 的互斥锁
     lock := c.getLock(key)
     lock.Lock()
     defer lock.Unlock()
-    
+  
     // 3. 双重检查（其他 goroutine 可能已经写入）
     if entry, ok := c.backend.Get(ctx, key); ok {
         return entry, true
     }
-    
+  
     // 4. 只有一个人去查上游
     resp, err := upstream.Call(key)
     if err != nil {
@@ -619,18 +649,18 @@ func (c *Cache) Get(ctx, key) (Entry, bool) {
     if !ok {
         return Entry{}, false
     }
-    
+  
     // 逻辑过期但物理未过期：返回旧值，异步刷新
     if time.Now().After(entry.LogicalAt) && time.Now().Before(entry.ExpireAt) {
         go c.refresh(key) // 异步刷新
         return entry, true // 返回旧值
     }
-    
+  
     // 物理过期：走正常逻辑
     if time.Now().After(entry.ExpireAt) {
         return Entry{}, false
     }
-    
+  
     return entry, true
 }
 ```
@@ -640,6 +670,7 @@ func (c *Cache) Get(ctx, key) (Entry, bool) {
 **现象**：大量 key **同时过期**，大量请求同时打到上游。
 
 **典型场景**：
+
 - 所有缓存设置相同的 TTL（如 3600 秒）
 - 某一时刻大量 key 同时过期
 - 瞬间流量打到上游，导致上游宕机
@@ -678,6 +709,7 @@ Redis 处理流程：
 ```
 
 **关键**：Redis 的命令执行时间极短（微秒级），瓶颈不在 CPU，而在网络 I/O。单线程避免了：
+
 - 线程上下文切换开销
 - 锁竞争
 - 数据同步的复杂度
@@ -697,6 +729,7 @@ DEL 一个包含 100 万个元素的 Hash → 执行时间 100ms
 ```
 
 **Gateyes 的限流 Lua 脚本**：
+
 - 两次 HGET + 一次 HSET + 一次 EXPIRE
 - 执行时间 < 1ms
 - 对 Redis 性能影响极小
@@ -712,6 +745,7 @@ Redis 6.0 引入了**多线程 I/O**（命令执行仍是单线程）：
 ```
 
 **对 Gateyes 的影响**：
+
 - 使用 Redis 6.0+ 时，高并发场景下网络 I/O 不再是瓶颈
 - 但 Lua 脚本执行仍是单线程，大脚本或大量并发 Lua 仍可能阻塞
 
@@ -727,6 +761,7 @@ Redis 6.0 引入了**多线程 I/O**（命令执行仍是单线程）：
 ```
 
 **特点**：
+
 - 只是减少了网络往返次数（RTT）
 - 命令之间**没有原子性保证**
 - 其他客户端的命令可能穿插在 pipeline 的命令之间
@@ -743,12 +778,14 @@ EXEC
 ```
 
 **特点**：
+
 - 命令放入队列，EXEC 时一次性执行
 - 执行期间不处理其他命令（类似 Lua）
 - **但**：如果某个命令语法错误，整个事务不会执行
 - **Watch 乐观锁**：可以监控 key，如果被修改则事务回滚
 
 **不适合限流场景**：
+
 - 事务中的命令是预先确定的，不能根据读取结果做条件判断
 - 限流需要"读取当前 token → 判断 → 写回"的条件逻辑
 
@@ -759,6 +796,7 @@ EVAL "...script..." 1 key1 arg1 arg2
 ```
 
 **特点**：
+
 - 脚本作为整体执行，原子性
 - 可以在脚本内做条件判断、循环
 - 脚本执行期间不处理其他命令
@@ -767,13 +805,13 @@ EVAL "...script..." 1 key1 arg1 arg2
 
 ### 2.4 对比总结
 
-| 特性 | Pipeline | 事务 | Lua |
-|------|----------|------|-----|
-| 减少 RTT | ✅ | ✅ | ✅ |
-| 原子性 | ❌ | ✅ | ✅ |
-| 条件判断 | ❌ | ❌ | ✅ |
-| 执行期间阻塞 | ❌ | ✅ | ✅ |
-| 适合限流 | ❌ | ❌ | ✅ |
+| 特性         | Pipeline | 事务 | Lua |
+| ------------ | -------- | ---- | --- |
+| 减少 RTT     | ✅       | ✅   | ✅  |
+| 原子性       | ❌       | ✅   | ✅  |
+| 条件判断     | ❌       | ❌   | ✅  |
+| 执行期间阻塞 | ❌       | ✅   | ✅  |
+| 适合限流     | ❌       | ❌   | ✅  |
 
 ---
 
@@ -804,6 +842,7 @@ go-redis 的 ClusterClient 会自动处理 MOVED 和 ASK 重定向，对应用�
 **正常情况**：go-redis 自动处理重定向，无需修改。
 
 **极端情况**：
+
 - 槽迁移期间，Lua 脚本中的 key 可能暂时不可用
 - 但这种情况极少见，且 Gateyes 的 fail-open 设计会放行
 
@@ -818,6 +857,7 @@ BGSAVE → fork 子进程 → 子进程写 RDB 文件 → 主进程继续服务
 ```
 
 **对缓存的影响**：
+
 - RDB 是某个时间点的快照，重启后恢复到该时间点
 - 缓存数据丢失：RDB 期间新写入的缓存数据在下次 RDB 前可能丢失
 - 但缓存数据本身就可以重建，丢失不致命
@@ -829,6 +869,7 @@ BGSAVE → fork 子进程 → 子进程写 RDB 文件 → 主进程继续服务
 ```
 
 **对缓存的影响**：
+
 - AOF 更持久，但文件更大，恢复更慢
 - 缓存数据量大时，AOF 文件会膨胀
 
@@ -837,6 +878,7 @@ BGSAVE → fork 子进程 → 子进程写 RDB 文件 → 主进程继续服务
 Redis 4.0+ 支持：RDB 做全量快照，AOF 记录增量。
 
 **Gateyes 建议**：
+
 - 缓存数据用 **RDB + 较短 TTL**，不需要 AOF
 - 限流数据用 **AOF 或混合模式**，因为限流状态重启后需要恢复
 - 但 Gateyes 的限流状态是临时的（120s TTL），丢失也不致命
@@ -858,6 +900,7 @@ redis:
 ```
 
 **poolSize 怎么定？**
+
 - 公式：`并发 QPS * 平均命令执行时间 / 1000`
 - 例如：1000 QPS，命令平均 10ms → 需要 10 个连接
 - 留 3-5 倍余量：poolSize = 50
@@ -870,20 +913,21 @@ maxmemory-policy allkeys-lru
 ```
 
 **为什么用 allkeys-lru？**
+
 - 缓存数据全部可以重建，LRU 淘汰最合理
 - 不需要 allkeys-lfu（缓存访问频率差异不大）
 
 ### 5.3 监控指标
 
-| 指标 | 告警阈值 | 含义 |
-|------|---------|------|
-| used_memory | > 80% maxmemory | 内存不足，开始淘汰 |
-| connected_clients | > poolSize * 2 | 连接泄漏 |
-| blocked_clients | > 0 | 有阻塞命令（Lua 执行太久）|
-| instantaneous_ops_per_sec | > 100000 | 负载过高 |
-| keyspace_hits / keyspace_misses | hit rate < 50% | 缓存失效 |
-| expired_keys | 突增 | 大量 key 同时过期（雪崩风险）|
-| evicted_keys | > 0 | 内存淘汰开始 |
+| 指标                            | 告警阈值        | 含义                          |
+| ------------------------------- | --------------- | ----------------------------- |
+| used_memory                     | > 80% maxmemory | 内存不足，开始淘汰            |
+| connected_clients               | > poolSize * 2  | 连接泄漏                      |
+| blocked_clients                 | > 0             | 有阻塞命令（Lua 执行太久）    |
+| instantaneous_ops_per_sec       | > 100000        | 负载过高                      |
+| keyspace_hits / keyspace_misses | hit rate < 50%  | 缓存失效                      |
+| expired_keys                    | 突增            | 大量 key 同时过期（雪崩风险） |
+| evicted_keys                    | > 0             | 内存淘汰开始                  |
 
 ### 5.4 高可用架构
 
@@ -902,6 +946,7 @@ maxmemory-policy allkeys-lru
 ```
 
 **Gateyes 的配置**：
+
 - 只用一个 Redis 实例（主从用于高可用，不是读写分离）
 - 因为限流和缓存都是写多读多，读写分离收益不大
 - Sentinel 自动故障转移，主宕机时从变主
@@ -910,11 +955,11 @@ maxmemory-policy allkeys-lru
 
 # 总结
 
-| 主题 | 核心要点 |
-|------|---------|
-| **限流算法** | 令牌桶最适合网关：允许突发、内存友好、实现简单 |
-| **分布式限流** | Redis Lua 保证原子性，Cluster 下必须加 hash tag |
-| **缓存设计** | Redis + 内存双层，fail-soft，最终一致 |
-| **流式缓存** | 存 JSON 重建 SSE，不存字节流 |
-| **Redis 单线程** | 命令执行原子，Lua 执行期间阻塞，脚本必须短小 |
-| **生产调优** | 连接池、内存策略、监控指标、高可用架构 |
+| 主题                   | 核心要点                                        |
+| ---------------------- | ----------------------------------------------- |
+| **限流算法**     | 令牌桶最适合网关：允许突发、内存友好、实现简单  |
+| **分布式限流**   | Redis Lua 保证原子性，Cluster 下必须加 hash tag |
+| **缓存设计**     | Redis + 内存双层，fail-soft，最终一致           |
+| **流式缓存**     | 存 JSON 重建 SSE，不存字节流                    |
+| **Redis 单线程** | 命令执行原子，Lua 执行期间阻塞，脚本必须短小    |
+| **生产调优**     | 连接池、内存策略、监控指标、高可用架构          |
