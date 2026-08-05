@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
+	"github.com/gateyes/gateway/internal/pkg/eventbus"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/provider"
 )
@@ -125,14 +127,56 @@ func TestHandleBatchItemEventCancelsClaimedItemWhenJobCancelled(t *testing.T) {
 	}
 }
 
+func TestRecoverStaleRunningRequeuesBatchItems(t *testing.T) {
+	store := &fakeStore{
+		recoverableItems: []repository.RecoverableBatchItemRecord{
+			{
+				ItemID:      "item-1",
+				JobID:       "job-1",
+				TenantID:    "tenant-1",
+				ProjectID:   "project-1",
+				UserID:      "user-1",
+				APIKeyID:    "api-key-1",
+				Endpoint:    "/v1/responses",
+				RequestBody: []byte(`{"model":"mock-model","input":"hi"}`),
+			},
+		},
+	}
+	bus := eventbus.New(eventbus.Options{Buffer: 4, Workers: 1})
+	got := make(chan ItemEvent, 1)
+	bus.RegisterEventHandler(eventbus.EventTypeBatchItem, func(ctx context.Context, payload []byte) error {
+		var event ItemEvent
+		if err := json.Unmarshal(payload, &event); err != nil {
+			return err
+		}
+		got <- event
+		return nil
+	})
+	bus.Start(context.Background())
+	defer bus.Close()
+
+	svc := &Service{store: store, eventBus: bus}
+	svc.recoverStaleRunning(context.Background(), time.Minute, 100)
+
+	select {
+	case event := <-got:
+		if event.ItemID != "item-1" || event.Identity.APIKeyID != "api-key-1" {
+			t.Fatalf("requeued event = %+v, want item and identity preserved", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("recoverStaleRunning did not publish event")
+	}
+}
+
 type fakeStore struct {
-	createJobCalls  int
-	createItemCalls int
-	markCalls       int
-	cancelItemCalls int
-	claimResult     bool
-	lastCreateJob   repository.CreateBatchJobParams
-	jobStatus       string
+	createJobCalls   int
+	createItemCalls  int
+	markCalls        int
+	cancelItemCalls  int
+	claimResult      bool
+	lastCreateJob    repository.CreateBatchJobParams
+	jobStatus        string
+	recoverableItems []repository.RecoverableBatchItemRecord
 }
 
 func (f *fakeStore) CreateBatchJob(ctx context.Context, params repository.CreateBatchJobParams) (*repository.BatchJobRecord, error) {
@@ -186,4 +230,8 @@ func (f *fakeStore) CancelBatchItem(ctx context.Context, tenantID, itemID string
 
 func (f *fakeStore) CancelBatchJob(ctx context.Context, tenantID, id string) (*repository.BatchJobRecord, error) {
 	return &repository.BatchJobRecord{ID: id, TenantID: tenantID, Status: repository.BatchStatusCancelled}, nil
+}
+
+func (f *fakeStore) ListRecoverableBatchItems(ctx context.Context, cutoff time.Time, limit int) ([]repository.RecoverableBatchItemRecord, error) {
+	return f.recoverableItems, nil
 }

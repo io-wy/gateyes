@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/gateyes/gateway/internal/pkg/eventbus"
 	"github.com/gateyes/gateway/internal/repository"
@@ -23,6 +25,10 @@ type Store interface {
 	FailBatchItem(ctx context.Context, tenantID, itemID string, update repository.BatchItemUpdate) error
 	CancelBatchItem(ctx context.Context, tenantID, itemID string) error
 	CancelBatchJob(ctx context.Context, tenantID, id string) (*repository.BatchJobRecord, error)
+}
+
+type recoveryStore interface {
+	ListRecoverableBatchItems(ctx context.Context, cutoff time.Time, limit int) ([]repository.RecoverableBatchItemRecord, error)
 }
 
 type Service struct {
@@ -161,6 +167,57 @@ func (s *Service) Cancel(ctx context.Context, tenantID, id string) (*repository.
 	return s.store.CancelBatchJob(ctx, tenantID, id)
 }
 
+func (s *Service) StartRecovery(ctx context.Context, interval, staleAfter time.Duration, limit int) {
+	if s == nil || s.eventBus == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	if staleAfter <= 0 {
+		staleAfter = 2 * time.Minute
+	}
+	if limit <= 0 {
+		limit = 1000
+	}
+	s.recoverStaleRunning(ctx, staleAfter, limit)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.recoverStaleRunning(ctx, staleAfter, limit)
+		}
+	}
+}
+
+func (s *Service) recoverStaleRunning(ctx context.Context, staleAfter time.Duration, limit int) {
+	store, ok := s.store.(recoveryStore)
+	if !ok {
+		return
+	}
+	cutoff := time.Now().UTC().Add(-staleAfter)
+	items, err := store.ListRecoverableBatchItems(ctx, cutoff, limit)
+	if err != nil {
+		slog.Warn("batch recovery scan failed", "error", err)
+		return
+	}
+	for _, item := range items {
+		identity := repository.AuthIdentity{
+			TenantID:  item.TenantID,
+			ProjectID: item.ProjectID,
+			UserID:    item.UserID,
+			APIKeyID:  item.APIKeyID,
+		}
+		s.publishItem(ctx, identity, item.JobID, item.ItemID, item.TenantID, item.Endpoint, item.RequestBody)
+	}
+	if len(items) > 0 {
+		slog.Info("requeued stale running batch items", "count", len(items), "stale_after", staleAfter.String())
+	}
+}
+
 func (s *Service) publishItem(ctx context.Context, identity repository.AuthIdentity, jobID, itemID, tenantID, endpoint string, body []byte) {
 	eventBody, _ := json.Marshal(ItemEvent{
 		JobID:       jobID,
@@ -172,7 +229,7 @@ func (s *Service) publishItem(ctx context.Context, identity repository.AuthIdent
 	})
 	if s.eventBus != nil {
 		if s.eventBus.PublishEvent(ctx, eventbus.Event{
-			Key:     jobID,
+			Key:     itemID,
 			Type:    eventbus.EventTypeBatchItem,
 			Payload: eventBody,
 		}) {

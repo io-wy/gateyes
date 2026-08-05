@@ -230,6 +230,27 @@ func TestPublishEventInMemoryFallback(t *testing.T) {
 	}
 }
 
+func TestKafkaBackendCreatesReaderPerWorker(t *testing.T) {
+	bus := New(Options{
+		Buffer:  4,
+		Workers: 3,
+		Kafka: KafkaOptions{
+			Enabled:       true,
+			Brokers:       []string{"127.0.0.1:9092"},
+			Topic:         "gateyes.events",
+			ConsumerGroup: "gateyes-test",
+		},
+	})
+	defer bus.Close()
+
+	if bus.kafkaWriter == nil {
+		t.Fatal("kafkaWriter is nil")
+	}
+	if got := len(bus.kafkaReaders); got != 3 {
+		t.Fatalf("len(kafkaReaders) = %d, want 3", got)
+	}
+}
+
 func TestHandleKafkaMessageCommitDecisions(t *testing.T) {
 	bus := New(Options{Buffer: 4, Workers: 1})
 

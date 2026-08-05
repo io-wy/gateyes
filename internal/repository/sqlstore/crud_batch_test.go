@@ -71,6 +71,11 @@ func TestCreateAndCompleteBatchItems(t *testing.T) {
 	if job.Status != repository.BatchStatusRunning || job.InProgressAt == 0 {
 		t.Fatalf("job after claim = %+v, want running with in_progress_at", job)
 	}
+	if claimed, err := store.MarkBatchItemRunning(ctx, tenant.ID, item1.ID); err != nil {
+		t.Fatalf("MarkBatchItemRunning(running retry) error: %v", err)
+	} else if !claimed {
+		t.Fatal("MarkBatchItemRunning(running retry) claimed = false, want true")
+	}
 	if err := store.CompleteBatchItem(ctx, tenant.ID, item1.ID, repository.BatchItemUpdate{
 		ResponseBody:     []byte(`{"id":"resp-1"}`),
 		ResponseID:       "resp-1",

@@ -167,6 +167,67 @@ ORDER BY item_index ASC`), tenantID, jobID)
 	return result, nil
 }
 
+func (s *Store) ListRecoverableBatchItems(ctx context.Context, cutoff time.Time, limit int) ([]repository.RecoverableBatchItemRecord, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	rows, err := s.db.Conn.QueryContext(ctx, s.db.Rebind(`
+SELECT
+	batch_items.id,
+	batch_items.job_id,
+	batch_items.tenant_id,
+	batch_jobs.project_id,
+	batch_jobs.user_id,
+	batch_jobs.api_key_id,
+	batch_jobs.endpoint,
+	batch_items.request_body,
+	batch_items.updated_at
+FROM batch_items
+JOIN batch_jobs
+	ON batch_jobs.tenant_id = batch_items.tenant_id
+	AND batch_jobs.id = batch_items.job_id
+WHERE batch_items.status = ?
+	AND batch_items.updated_at < ?
+	AND batch_jobs.status NOT IN (?, ?, ?, ?)
+ORDER BY batch_items.updated_at ASC
+LIMIT ?`),
+		repository.BatchItemStatusRunning,
+		cutoff,
+		repository.BatchStatusCompleted,
+		repository.BatchStatusFailed,
+		repository.BatchStatusCancelling,
+		repository.BatchStatusCancelled,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list recoverable batch items: %w", err)
+	}
+	defer rows.Close()
+
+	var result []repository.RecoverableBatchItemRecord
+	for rows.Next() {
+		var item repository.RecoverableBatchItemRecord
+		if err := rows.Scan(
+			&item.ItemID,
+			&item.JobID,
+			&item.TenantID,
+			&item.ProjectID,
+			&item.UserID,
+			&item.APIKeyID,
+			&item.Endpoint,
+			&item.RequestBody,
+			&item.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan recoverable batch item: %w", err)
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate recoverable batch items: %w", err)
+	}
+	return result, nil
+}
+
 func (s *Store) MarkBatchItemRunning(ctx context.Context, tenantID, itemID string) (bool, error) {
 	tx, err := s.db.Conn.BeginTx(ctx, nil)
 	if err != nil {
@@ -179,7 +240,7 @@ func (s *Store) MarkBatchItemRunning(ctx context.Context, tenantID, itemID strin
 	res, err := tx.ExecContext(ctx, s.db.Rebind(`
 UPDATE batch_items
 SET status = ?, updated_at = ?
-WHERE tenant_id = ? AND id = ? AND status = ?
+WHERE tenant_id = ? AND id = ? AND status IN (?, ?)
 	AND EXISTS (
 		SELECT 1 FROM batch_jobs
 		WHERE batch_jobs.tenant_id = batch_items.tenant_id
@@ -191,6 +252,7 @@ WHERE tenant_id = ? AND id = ? AND status = ?
 		tenantID,
 		itemID,
 		repository.BatchItemStatusPending,
+		repository.BatchItemStatusRunning,
 		repository.BatchStatusCompleted,
 		repository.BatchStatusFailed,
 		repository.BatchStatusCancelling,

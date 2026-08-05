@@ -61,6 +61,18 @@ type BatchItemRecord struct {
 	UpdatedAt    time.Time
 }
 
+type RecoverableBatchItemRecord struct {
+	ItemID      string
+	JobID       string
+	TenantID    string
+	ProjectID   string
+	UserID      string
+	APIKeyID    string
+	Endpoint    string
+	RequestBody []byte
+	UpdatedAt   time.Time
+}
+
 type CreateBatchJobParams struct {
 	TenantID         string
 	ProjectID        string

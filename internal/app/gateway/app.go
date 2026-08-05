@@ -283,6 +283,9 @@ func Run(ctx context.Context, configPath string) error {
 	runtime.Go("provider-stats-exporter", func(ctx context.Context) {
 		metrics.StartProviderStatsExporter(ctx, providerMgr.Stats, 5*time.Second)
 	})
+	runtime.Go("batch-recovery", func(ctx context.Context) {
+		batchService.StartRecovery(ctx, 30*time.Second, 2*time.Minute, 1000)
+	})
 	runtime.Go("circuit-breaker-sync", func(ctx context.Context) {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()

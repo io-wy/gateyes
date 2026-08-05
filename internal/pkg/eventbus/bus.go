@@ -95,9 +95,9 @@ type Bus struct {
 	handlersMu sync.RWMutex
 
 	// kafka backend (optional)
-	kafkaWriter *kafka.Writer
-	kafkaReader *kafka.Reader
-	kafkaTopic  string
+	kafkaWriter  *kafka.Writer
+	kafkaReaders []*kafka.Reader
+	kafkaTopic   string
 }
 
 // KafkaOptions configures the optional Kafka durable event backend.
@@ -154,7 +154,7 @@ func New(opts Options) *Bus {
 
 	kafkaOpts := opts.Kafka
 	var kafkaWriter *kafka.Writer
-	var kafkaReader *kafka.Reader
+	var kafkaReaders []*kafka.Reader
 	if kafkaOpts.Enabled && len(kafkaOpts.Brokers) > 0 && kafkaOpts.Topic != "" {
 		if kafkaOpts.ConsumerGroup == "" {
 			kafkaOpts.ConsumerGroup = "gateyes"
@@ -185,24 +185,26 @@ func New(opts Options) *Bus {
 			BatchTimeout: kafkaOpts.BatchTimeout,
 			MaxAttempts:  kafkaOpts.MaxAttempts,
 		}
-		kafkaReader = kafka.NewReader(kafka.ReaderConfig{
-			Brokers:  kafkaOpts.Brokers,
-			GroupID:  kafkaOpts.ConsumerGroup,
-			Topic:    kafkaOpts.Topic,
-			MinBytes: kafkaOpts.ReadMinBytes,
-			MaxBytes: kafkaOpts.ReadMaxBytes,
-		})
+		for i := 0; i < opts.Workers; i++ {
+			kafkaReaders = append(kafkaReaders, kafka.NewReader(kafka.ReaderConfig{
+				Brokers:  kafkaOpts.Brokers,
+				GroupID:  kafkaOpts.ConsumerGroup,
+				Topic:    kafkaOpts.Topic,
+				MinBytes: kafkaOpts.ReadMinBytes,
+				MaxBytes: kafkaOpts.ReadMaxBytes,
+			}))
+		}
 	}
 
 	return &Bus{
-		ch:          make(chan Handler, opts.Buffer),
-		workers:     opts.Workers,
-		timeout:     opts.HandlerTimeout,
-		metrics:     opts.Metrics,
-		handlers:    make(map[string]EventHandler),
-		kafkaWriter: kafkaWriter,
-		kafkaReader: kafkaReader,
-		kafkaTopic:  kafkaOpts.Topic,
+		ch:           make(chan Handler, opts.Buffer),
+		workers:      opts.Workers,
+		timeout:      opts.HandlerTimeout,
+		metrics:      opts.Metrics,
+		handlers:     make(map[string]EventHandler),
+		kafkaWriter:  kafkaWriter,
+		kafkaReaders: kafkaReaders,
+		kafkaTopic:   kafkaOpts.Topic,
 	}
 }
 
@@ -241,9 +243,9 @@ func (b *Bus) Start(ctx context.Context) {
 			b.wg.Add(1)
 			go b.workerLoop(runCtx)
 		}
-		if b.kafkaReader != nil {
+		for _, reader := range b.kafkaReaders {
 			b.wg.Add(1)
-			go b.kafkaReaderLoop(runCtx)
+			go b.kafkaReaderLoop(runCtx, reader)
 		}
 	})
 }
@@ -419,10 +421,10 @@ func (b *Bus) dispatchEventInMemory(e Event) bool {
 	return true
 }
 
-func (b *Bus) kafkaReaderLoop(ctx context.Context) {
+func (b *Bus) kafkaReaderLoop(ctx context.Context, reader *kafka.Reader) {
 	defer b.wg.Done()
 	for {
-		msg, err := b.kafkaReader.FetchMessage(ctx)
+		msg, err := reader.FetchMessage(ctx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "use of closed network connection") {
 				return
@@ -432,7 +434,7 @@ func (b *Bus) kafkaReaderLoop(ctx context.Context) {
 			continue
 		}
 		if b.handleKafkaMessage(ctx, msg) {
-			if err := b.kafkaReader.CommitMessages(ctx, msg); err != nil {
+			if err := reader.CommitMessages(ctx, msg); err != nil {
 				slog.Error("eventbus kafka commit failed",
 					"topic", msg.Topic,
 					"partition", msg.Partition,
@@ -509,8 +511,8 @@ func (b *Bus) Close() error {
 	var err error
 	b.stopOnce.Do(func() {
 		b.closed.Store(true)
-		if b.kafkaReader != nil && b.cancel != nil {
-			// Cancel the Kafka reader first so it stops blocking on fetch.
+		if len(b.kafkaReaders) > 0 && b.cancel != nil {
+			// Cancel Kafka readers first so they stop blocking on fetch.
 			b.cancel()
 		}
 		close(b.ch)
@@ -527,8 +529,8 @@ func (b *Bus) Close() error {
 		if b.cancel != nil {
 			b.cancel()
 		}
-		if b.kafkaReader != nil {
-			_ = b.kafkaReader.Close()
+		for _, reader := range b.kafkaReaders {
+			_ = reader.Close()
 		}
 		if b.kafkaWriter != nil {
 			_ = b.kafkaWriter.Close()
