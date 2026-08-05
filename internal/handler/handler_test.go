@@ -330,6 +330,7 @@ type handlerTestEnv struct {
 	store            *sqlstore.Store
 	providerMgr      *provider.Manager
 	catalogSvc       *catalog.Service
+	adminHandler     *AdminHandler
 	metricsNamespace string
 }
 
@@ -480,6 +481,7 @@ func newHandlerTestEnv(t *testing.T, cfg handlerTestEnvConfig) *handlerTestEnv {
 		store:            store,
 		providerMgr:      providerMgr,
 		catalogSvc:       catalogSvc,
+		adminHandler:     adminHandler,
 		metricsNamespace: cfgObj.Metrics.Namespace,
 	}
 }

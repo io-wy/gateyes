@@ -7,21 +7,23 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/gateyes/gateway/internal/repository"
 )
 
 const maxWasmFileSize = 10 * 1024 * 1024 // 10 MB
 
 var validPluginPhases = map[string]struct{}{
-	"pre_route":    {},
-	"post_route":   {},
-	"pre_upstream": {},
+	"pre_route":     {},
+	"post_route":    {},
+	"pre_upstream":  {},
 	"post_upstream": {},
-	"audit":        {},
+	"audit":         {},
 }
 
 type CreatePluginRequest struct {
@@ -70,6 +72,7 @@ func (h *AdminHandler) ListPlugins(c *gin.Context) {
 		writeInternalError(c, err)
 		return
 	}
+	plugins = h.mergeConfiguredPlugins(plugins, tenantID, filter)
 	result := make([]gin.H, 0, len(plugins))
 	for _, item := range plugins {
 		result = append(result, pluginToResponse(item))
@@ -267,24 +270,152 @@ func (h *AdminHandler) UploadPlugin(c *gin.Context) {
 }
 
 func pluginToResponse(record repository.PluginRecord) gin.H {
-	return gin.H{
-		"id":           record.ID,
-		"tenant_id":    record.TenantID,
-		"name":         record.Name,
-		"type":         record.Type,
-		"description":  record.Description,
-		"author":       record.Author,
-		"phases":       record.Phases,
-		"file_path":    record.FilePath,
-		"address":      record.Address,
-		"timeout_ms":   record.TimeoutMs,
-		"memory_pages": record.MemoryPages,
-		"enabled":      record.Enabled,
-		"source":       record.Source,
-		"config":       record.Config,
-		"created_at":   record.CreatedAt,
-		"updated_at":   record.UpdatedAt,
+	runtimeStatus, _ := record.Config["runtime_status"].(string)
+	if runtimeStatus == "" {
+		if record.Enabled {
+			runtimeStatus = "enabled"
+		} else {
+			runtimeStatus = "disabled"
+		}
 	}
+	return gin.H{
+		"id":             record.ID,
+		"tenant_id":      record.TenantID,
+		"name":           record.Name,
+		"type":           record.Type,
+		"description":    record.Description,
+		"author":         record.Author,
+		"phases":         record.Phases,
+		"file_path":      record.FilePath,
+		"address":        record.Address,
+		"timeout_ms":     record.TimeoutMs,
+		"memory_pages":   record.MemoryPages,
+		"enabled":        record.Enabled,
+		"source":         record.Source,
+		"config":         record.Config,
+		"managed":        record.Source == "config",
+		"runtime_status": runtimeStatus,
+		"created_at":     record.CreatedAt,
+		"updated_at":     record.UpdatedAt,
+	}
+}
+
+func (h *AdminHandler) mergeConfiguredPlugins(dbPlugins []repository.PluginRecord, tenantID string, filter repository.PluginFilter) []repository.PluginRecord {
+	if len(h.configuredPlugins) == 0 {
+		return dbPlugins
+	}
+	seen := make(map[string]struct{}, len(dbPlugins)+len(h.configuredPlugins))
+	for _, item := range dbPlugins {
+		seen[item.ID] = struct{}{}
+	}
+	result := make([]repository.PluginRecord, 0, len(dbPlugins)+len(h.configuredPlugins))
+	result = append(result, dbPlugins...)
+	for _, item := range h.configuredPlugins {
+		item.TenantID = tenantID
+		if !pluginMatchesFilter(item, filter) {
+			continue
+		}
+		if _, ok := seen[item.ID]; ok {
+			continue
+		}
+		seen[item.ID] = struct{}{}
+		result = append(result, item)
+	}
+	return result
+}
+
+func pluginMatchesFilter(record repository.PluginRecord, filter repository.PluginFilter) bool {
+	if filter.Type != "" && record.Type != strings.ToLower(strings.TrimSpace(filter.Type)) {
+		return false
+	}
+	if filter.Enabled != nil && record.Enabled != *filter.Enabled {
+		return false
+	}
+	if filter.Source != "" && record.Source != strings.ToLower(strings.TrimSpace(filter.Source)) {
+		return false
+	}
+	return true
+}
+
+func configuredGRPCPluginRecord(item config.GRPCPluginConfig, now time.Time) repository.PluginRecord {
+	name := strings.TrimSpace(item.Name)
+	if name == "" {
+		return repository.PluginRecord{}
+	}
+	timeoutMs := item.Timeout
+	if timeoutMs <= 0 {
+		timeoutMs = 100
+	}
+	pluginType := strings.TrimSpace(item.Type)
+	if pluginType == "" {
+		pluginType = "gateway"
+	}
+	return repository.PluginRecord{
+		ID:        "config:grpc:" + name,
+		Name:      name,
+		Type:      "grpc",
+		Phases:    normalizePluginPhases(item.Phases, []string{"post_route"}),
+		Address:   strings.TrimSpace(item.Address),
+		TimeoutMs: timeoutMs,
+		Enabled:   true,
+		Source:    "config",
+		Config: map[string]any{
+			"plugin_type":    pluginType,
+			"weight":         item.Weight,
+			"runtime_status": "configured",
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+}
+
+func configuredWASMPluginRecord(item config.WASMPluginConfig, now time.Time) repository.PluginRecord {
+	name := strings.TrimSpace(item.Name)
+	if name == "" {
+		return repository.PluginRecord{}
+	}
+	memoryPages := int(item.MemoryPages)
+	if memoryPages <= 0 {
+		memoryPages = 1
+	}
+	timeoutMs := item.TimeoutMs
+	if timeoutMs <= 0 {
+		timeoutMs = 50
+	}
+	runtimeStatus := "configured"
+	if _, err := os.Stat(item.Path); err != nil {
+		runtimeStatus = "missing_file"
+	}
+	return repository.PluginRecord{
+		ID:          "config:wasm:" + name,
+		Name:        name,
+		Type:        "wasm",
+		Phases:      normalizePluginPhases(item.Phases, []string{"post_upstream"}),
+		FilePath:    strings.TrimSpace(item.Path),
+		TimeoutMs:   timeoutMs,
+		MemoryPages: memoryPages,
+		Enabled:     true,
+		Source:      "config",
+		Config: map[string]any{
+			"runtime_status": runtimeStatus,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+}
+
+func normalizePluginPhases(phases []string, defaultPhases []string) []string {
+	result := make([]string, 0, len(phases))
+	for _, phase := range phases {
+		phase = strings.ToLower(strings.TrimSpace(phase))
+		if phase != "" {
+			result = append(result, phase)
+		}
+	}
+	if len(result) == 0 {
+		return append([]string(nil), defaultPhases...)
+	}
+	return result
 }
 
 func validatePluginRequest(req CreatePluginRequest) error {

@@ -28,6 +28,7 @@ type AdminHandler struct {
 	healthChecker      *provider.HealthChecker
 	metrics            *Metrics
 	pluginDir          string
+	configuredPlugins  []repository.PluginRecord
 	startedAt          time.Time
 }
 
@@ -65,6 +66,27 @@ func (h *AdminHandler) SetPluginDirectory(dir string) {
 	if dir != "" {
 		h.pluginDir = dir
 	}
+}
+
+func (h *AdminHandler) SetConfiguredPlugins(grpcPlugins []config.GRPCPluginConfig, wasmPlugins []config.WASMPluginConfig) {
+	plugins := make([]repository.PluginRecord, 0, len(grpcPlugins)+len(wasmPlugins))
+	now := h.startedAt
+	if now.IsZero() {
+		now = time.Now()
+	}
+	for _, item := range grpcPlugins {
+		record := configuredGRPCPluginRecord(item, now)
+		if record.Name != "" {
+			plugins = append(plugins, record)
+		}
+	}
+	for _, item := range wasmPlugins {
+		record := configuredWASMPluginRecord(item, now)
+		if record.Name != "" {
+			plugins = append(plugins, record)
+		}
+	}
+	h.configuredPlugins = plugins
 }
 
 func (h *AdminHandler) ReloadConfig(c *gin.Context) {

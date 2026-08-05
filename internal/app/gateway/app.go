@@ -192,6 +192,8 @@ func Run(ctx context.Context, configPath string) error {
 		defer pricingFeed.Stop()
 	}
 
+	configuredGRPCPlugins := append([]config.GRPCPluginConfig(nil), cfg.GRPCPlugins...)
+	configuredWASMPlugins := append([]config.WASMPluginConfig(nil), cfg.WASMPlugins...)
 	cfg.GRPCPlugins, cfg.WASMPlugins = HydrateMarketplacePlugins(ctx, store, defaultTenant.ID, cfg.GRPCPlugins, cfg.WASMPlugins)
 	var grpcMgr *grpcplugin.Manager
 	if len(cfg.GRPCPlugins) > 0 {
@@ -267,6 +269,7 @@ func Run(ctx context.Context, configPath string) error {
 	adminHandler.SetMetrics(metrics)
 	adminHandler.SetHealthChecker(healthChecker)
 	adminHandler.SetPluginDirectory(cfg.Plugins.Directory)
+	adminHandler.SetConfiguredPlugins(configuredGRPCPlugins, configuredWASMPlugins)
 
 	persistBus.Start(ctx)
 	srv := handler.NewServer(cfg.Server, h, adminHandler, httpMiddleware)
