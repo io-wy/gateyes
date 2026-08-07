@@ -149,7 +149,7 @@ func Run(ctx context.Context, configPath string) error {
 			redisCache := cache.NewRedisCache(redisClient, cache.RedisConfig{
 				DefaultTTL: time.Duration(cfg.Cache.DefaultTTL) * time.Second,
 			})
-			cacheSvc = cache.NewFallbackCache(redisCache, memCache)
+			cacheSvc = cache.NewLayeredCache(memCache, redisCache)
 		} else {
 			cacheSvc = memCache
 		}

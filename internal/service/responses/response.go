@@ -200,9 +200,13 @@ func buildAccumulatedStreamResponse(responseID, model, assistantText string, str
 	}
 }
 
-func (s *Service) emitStreamPayloadFromResponse(out chan<- provider.ResponseEvent, resp *provider.Response) {
+func (s *Service) emitStreamPayloadFromResponse(out chan<- provider.ResponseEvent, resp *provider.Response, collectors ...*streamTranscriptCollector) {
 	if resp == nil {
 		return
+	}
+	var collector *streamTranscriptCollector
+	if len(collectors) > 0 {
+		collector = collectors[0]
 	}
 	for _, output := range resp.Output {
 		switch output.Type {
@@ -211,17 +215,17 @@ func (s *Service) emitStreamPayloadFromResponse(out chan<- provider.ResponseEven
 				if content.Text == "" {
 					continue
 				}
-				out <- provider.ResponseEvent{
+				emitStreamEvent(out, collector, provider.ResponseEvent{
 					Type:  provider.EventContentDelta,
 					Delta: content.Text,
-				}
+				})
 			}
 		case "function_call":
 			item := output
-			out <- provider.ResponseEvent{
+			emitStreamEvent(out, collector, provider.ResponseEvent{
 				Type:   provider.EventToolCallDone,
 				Output: &item,
-			}
+			})
 		}
 	}
 }

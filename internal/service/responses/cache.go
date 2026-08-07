@@ -3,6 +3,7 @@ package responses
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -49,6 +50,18 @@ func (s *Service) cacheSkipReason(ctx context.Context, req *provider.ResponseReq
 }
 
 func (s *Service) buildCacheKey(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest) string {
+	canon := s.buildCachePromptCanonical(ctx, identity, req)
+	return cache.BuildKey(cache.KeyInput{
+		TenantID:    identity.TenantID,
+		Model:       req.Model,
+		PromptCanon: string(canon),
+		Stream:      req.Stream,
+		Surface:     req.Surface,
+		Bucket:      CacheHintsFrom(ctx).Bucket,
+	})
+}
+
+func (s *Service) buildCachePromptCanonical(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest) []byte {
 	req = s.applyCachePromptRewrite(ctx, identity, req)
 	msgs := req.InputMessages()
 	payload := map[string]any{
@@ -72,14 +85,7 @@ func (s *Service) buildCacheKey(ctx context.Context, identity *repository.AuthId
 		payload["options"] = options
 	}
 	canon, _ := cache.CanonicalizeJSON(payload)
-	return cache.BuildKey(cache.KeyInput{
-		TenantID:    identity.TenantID,
-		Model:       req.Model,
-		PromptCanon: string(canon),
-		Stream:      req.Stream,
-		Surface:     req.Surface,
-		Bucket:      CacheHintsFrom(ctx).Bucket,
-	})
+	return canon
 }
 
 func cacheKeyRequestOptions(options *provider.RequestOptions) map[string]any {
@@ -118,7 +124,7 @@ func (s *Service) lookupCache(ctx context.Context, identity *repository.AuthIden
 		s.metrics.ObserveCacheGetDuration(layer, time.Since(start))
 		if hit {
 			s.metrics.RecordCacheLookup(layer, "hit")
-			s.metrics.ObserveCacheValueSize(layer, len(entry.Response)+len(entry.StreamRaw))
+			s.metrics.ObserveCacheValueSize(layer, cacheEntryValueSize(entry))
 		} else if err != nil {
 			s.metrics.RecordCacheLookup(layer, "error")
 		} else {
@@ -157,19 +163,26 @@ func (s *Service) writeCache(ctx context.Context, identity *repository.AuthIdent
 		}
 		if s.metrics != nil {
 			s.metrics.RecordCacheWrite(layer, "success")
-			s.metrics.ObserveCacheValueSize(layer, len(entry.Response)+len(entry.StreamRaw))
+			s.metrics.ObserveCacheValueSize(layer, cacheEntryValueSize(entry))
 		}
 	}()
 }
 
-func (s *Service) replayCachedStream(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, entry *cache.Entry, responseID string, out chan<- provider.ResponseEvent, errCh chan<- error) {
-	var resp provider.Response
-	if err := json.Unmarshal(entry.Response, &resp); err != nil {
-		errCh <- err
-		return
+func cacheEntryValueSize(entry *cache.Entry) int {
+	if entry == nil {
+		return 0
 	}
+	size := len(entry.Response) + len(entry.StreamRaw)
+	if len(entry.StreamTranscript) > 0 {
+		body, _ := json.Marshal(entry.StreamTranscript)
+		size += len(body)
+	}
+	return size
+}
+
+func (s *Service) replayCachedStream(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, entry *cache.Entry, responseID string, out chan<- provider.ResponseEvent, errCh chan<- error) {
 	startedAt := time.Now()
-	out <- provider.ResponseEvent{
+	emitStreamEvent(out, nil, provider.ResponseEvent{
 		Type: provider.EventResponseStarted,
 		Response: &provider.Response{
 			ID:      responseID,
@@ -178,14 +191,37 @@ func (s *Service) replayCachedStream(ctx context.Context, identity *repository.A
 			Model:   req.Model,
 			Status:  "in_progress",
 		},
+	})
+	if len(entry.StreamTranscript) > 0 {
+		resp, err := s.replayCachedTranscript(out, entry.StreamTranscript, responseID, req.Model)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		body, _ := json.Marshal(resp)
+		_ = s.store.UpdateResponse(ctx, repository.ResponseRecord{
+			ID:           responseID,
+			TenantID:     identity.TenantID,
+			ProjectID:    identity.ProjectID,
+			ProviderName: entry.Provider,
+			Model:        req.Model,
+			Status:       "completed",
+			ResponseBody: body,
+		})
+		return
+	}
+	var resp provider.Response
+	if err := json.Unmarshal(entry.Response, &resp); err != nil {
+		errCh <- err
+		return
 	}
 	resp.ID = responseID
 	resp.Created = startedAt.Unix()
 	resp.Status = "completed"
-	out <- provider.ResponseEvent{
+	emitStreamEvent(out, nil, provider.ResponseEvent{
 		Type:     provider.EventResponseCompleted,
 		Response: &resp,
-	}
+	})
 	body, _ := json.Marshal(resp)
 	_ = s.store.UpdateResponse(ctx, repository.ResponseRecord{
 		ID:           responseID,
@@ -196,4 +232,52 @@ func (s *Service) replayCachedStream(ctx context.Context, identity *repository.A
 		Status:       "completed",
 		ResponseBody: body,
 	})
+}
+
+func (s *Service) replayCachedTranscript(out chan<- provider.ResponseEvent, transcript []cache.StreamEvent, responseID, model string) (*provider.Response, error) {
+	var finalResp *provider.Response
+	completedSent := false
+	for _, cached := range transcript {
+		event, err := cacheEventToStreamEvent(cached)
+		if err != nil {
+			return nil, fmt.Errorf("decode stream transcript: %w", err)
+		}
+		if event.Type == provider.EventResponseStarted {
+			continue
+		}
+		if event.Response != nil {
+			event.Response.ID = responseID
+			event.Response.Model = model
+			if event.Response.Created == 0 {
+				event.Response.Created = time.Now().Unix()
+			}
+			finalResp = event.Response
+		}
+		if event.Type == provider.EventResponseCompleted {
+			completedSent = true
+		}
+		emitStreamEvent(out, nil, event)
+	}
+	if finalResp == nil {
+		finalResp = &provider.Response{
+			ID:      responseID,
+			Object:  "response",
+			Created: time.Now().Unix(),
+			Model:   model,
+			Status:  "completed",
+		}
+	}
+	finalResp.ID = responseID
+	finalResp.Model = model
+	if finalResp.Created == 0 {
+		finalResp.Created = time.Now().Unix()
+	}
+	finalResp.Status = "completed"
+	if !completedSent {
+		emitStreamEvent(out, nil, provider.ResponseEvent{
+			Type:     provider.EventResponseCompleted,
+			Response: finalResp,
+		})
+	}
+	return finalResp, nil
 }

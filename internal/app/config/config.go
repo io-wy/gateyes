@@ -378,14 +378,29 @@ type CircuitBreakerConfig struct {
 }
 
 type CacheConfig struct {
-	Enabled       bool   `yaml:"enabled"`
-	Backend       string `yaml:"backend"`       // "auto" | "memory"; auto = redis if available, else memory
-	DefaultTTL    int    `yaml:"defaultTTL"`    // seconds; 0 = no expiry
-	Capacity      int    `yaml:"capacity"`      // memory cache max entries; <1 = default 1024
-	SkipStream    bool   `yaml:"skipStream"`    // default false
-	SkipTools     bool   `yaml:"skipTools"`     // default true (tools responses are stateful)
-	Singleflight  bool   `yaml:"singleflight"`  // dedupe concurrent cache misses on same key
-	PromptRewrite bool   `yaml:"promptRewrite"` // normalize dynamic prompt markers before cache/provider calls
+	Enabled       bool                `yaml:"enabled"`
+	Backend       string              `yaml:"backend"`       // "auto" | "memory"; auto = redis if available, else memory
+	DefaultTTL    int                 `yaml:"defaultTTL"`    // seconds; 0 = no expiry
+	Capacity      int                 `yaml:"capacity"`      // memory cache max entries; <1 = default 1024
+	SkipStream    bool                `yaml:"skipStream"`    // default false
+	SkipTools     bool                `yaml:"skipTools"`     // default true (tools responses are stateful)
+	Singleflight  bool                `yaml:"singleflight"`  // dedupe concurrent cache misses on same key
+	PromptRewrite bool                `yaml:"promptRewrite"` // normalize dynamic prompt markers before cache/provider calls
+	Semantic      SemanticCacheConfig `yaml:"semantic"`
+}
+
+type SemanticCacheConfig struct {
+	Enabled             bool     `yaml:"enabled"`
+	Backend             string   `yaml:"backend"` // first implementation: "pgvector"
+	EmbeddingProvider   string   `yaml:"embeddingProvider"`
+	EmbeddingModel      string   `yaml:"embeddingModel"`
+	Threshold           float64  `yaml:"threshold"`
+	MaxCandidates       int      `yaml:"maxCandidates"`
+	TTLSeconds          int      `yaml:"ttlSeconds"`
+	WriteAsync          bool     `yaml:"writeAsync"`
+	AllowStream         bool     `yaml:"allowStream"`
+	AllowedSurfaces     []string `yaml:"allowedSurfaces"`
+	RequireServiceOptIn bool     `yaml:"requireServiceOptIn"`
 }
 
 type AffinityConfig struct {
@@ -714,6 +729,17 @@ func DefaultConfig() *Config {
 			SkipStream:    false,
 			SkipTools:     true,
 			PromptRewrite: true,
+			Semantic: SemanticCacheConfig{
+				Enabled:             false,
+				Backend:             "pgvector",
+				Threshold:           0.92,
+				MaxCandidates:       5,
+				TTLSeconds:          3600,
+				WriteAsync:          true,
+				AllowStream:         true,
+				AllowedSurfaces:     []string{"responses", "service_responses"},
+				RequireServiceOptIn: true,
+			},
 		},
 		Persistence: PersistenceConfig{
 			BusBuffer:             10000,

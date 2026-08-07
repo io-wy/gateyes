@@ -108,6 +108,20 @@ cache:
   skipTools: true
   singleflight: true
   promptRewrite: true
+  semantic:
+    enabled: false
+    backend: pgvector
+    embeddingProvider: mock-embeddings
+    embeddingModel: mock-embedding-model
+    threshold: 0.92
+    maxCandidates: 5
+    ttlSeconds: 3600
+    writeAsync: true
+    allowStream: true
+    allowedSurfaces:
+      - responses
+      - service_responses
+    requireServiceOptIn: true
 
 providers:
   - name: codexapis

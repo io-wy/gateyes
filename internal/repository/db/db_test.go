@@ -59,6 +59,16 @@ func TestMigrationNamesUseTableNamedOrder(t *testing.T) {
 			t.Fatalf("migrationNames()[%d] = %q, want %q", i, got, want)
 		}
 	}
+	foundSemantic := false
+	for _, name := range names {
+		if name == "semantic_cache_entries.sql" {
+			foundSemantic = true
+			break
+		}
+	}
+	if !foundSemantic {
+		t.Fatal("migrationNames() missing semantic_cache_entries.sql")
+	}
 }
 
 func TestOpenMigrateRebindAndClose(t *testing.T) {
@@ -105,6 +115,17 @@ FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("schema_migrations count = %d, want > 0", count)
 	}
 
+	var semanticTables int
+	if err := database.Conn.QueryRowContext(context.Background(), `
+SELECT COUNT(1)
+FROM sqlite_master
+WHERE type = 'table' AND name = 'semantic_cache_entries'`).Scan(&semanticTables); err != nil {
+		t.Fatalf("QueryRowContext(semantic_cache_entries) error: %v", err)
+	}
+	if semanticTables != 1 {
+		t.Fatalf("semantic_cache_entries table count = %d, want 1", semanticTables)
+	}
+
 	pending, err := database.MigrationStatus(context.Background())
 	if err != nil {
 		t.Fatalf("DB.MigrationStatus() after migrate error: %v", err)
@@ -144,5 +165,21 @@ FROM schema_migrations`).Scan(&count); err != nil {
 	}
 	if err := (*DB)(nil).Close(); err != nil {
 		t.Fatalf("(*DB)(nil).Close() error: %v", err)
+	}
+}
+
+func TestCompatSQLRewritesPgvectorDDL(t *testing.T) {
+	in := `CREATE EXTENSION IF NOT EXISTS vector;
+CREATE TABLE semantic_cache_entries (embedding vector(1536) NOT NULL);
+CREATE INDEX semantic_cache_lookup_idx ON semantic_cache_entries USING hnsw (embedding vector_cosine_ops);`
+
+	sqlite := sqliteCompatSQL(in)
+	if strings.Contains(sqlite, "CREATE EXTENSION") || strings.Contains(sqlite, "vector(") || strings.Contains(sqlite, "USING hnsw") {
+		t.Fatalf("sqliteCompatSQL() = %q, still contains pgvector syntax", sqlite)
+	}
+
+	mysql := mysqlCompatSQL(in)
+	if strings.Contains(mysql, "CREATE EXTENSION") || strings.Contains(mysql, "vector(") || strings.Contains(mysql, "USING hnsw") {
+		t.Fatalf("mysqlCompatSQL() = %q, still contains pgvector syntax", mysql)
 	}
 }

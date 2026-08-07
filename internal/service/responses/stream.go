@@ -12,7 +12,6 @@ import (
 
 	pluginSvc "github.com/gateyes/gateway/internal/domain/plugin"
 	"github.com/gateyes/gateway/internal/repository"
-	"github.com/gateyes/gateway/internal/service/cache"
 	"github.com/gateyes/gateway/internal/service/guardrail"
 	"github.com/gateyes/gateway/internal/service/provider"
 )
@@ -148,11 +147,26 @@ func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIde
 
 	events := make(chan provider.ResponseEvent)
 	errCh := make(chan error, 1)
+	transcript := &streamTranscriptCollector{}
 	cacheEntry, cacheHit := s.lookupCache(ctx, identity, req)
 	cacheChecked := true
+	semanticMaterial := (*semanticCacheMaterial)(nil)
 	if cacheTrace := CacheTraceFrom(ctx); cacheTrace != nil && cacheTrace.Result != "" && trace != nil {
 		cacheCopy := *cacheTrace
 		trace.Cache = &cacheCopy
+	}
+
+	if !cacheHit {
+		if entry, hit, material := s.lookupSemanticCache(ctx, identity, req); hit {
+			cacheEntry = entry
+			cacheHit = true
+		} else {
+			semanticMaterial = material
+		}
+		if cacheTrace := CacheTraceFrom(ctx); cacheTrace != nil && cacheTrace.Result != "" && trace != nil {
+			cacheCopy := *cacheTrace
+			trace.Cache = &cacheCopy
+		}
 	}
 
 	if cacheHit {
@@ -215,7 +229,7 @@ func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIde
 		return nil, err
 	}
 
-	go s.runStreamWithFallback(ctx, identity, req, sessionID, candidates, responseID, trace, events, errCh, cacheChecked)
+	go s.runStreamWithFallback(ctx, identity, req, sessionID, candidates, responseID, trace, events, errCh, cacheChecked, semanticMaterial, transcript)
 
 	firstProviderName := ""
 	if len(candidates) > 0 {
@@ -230,7 +244,7 @@ func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIde
 	}, nil
 }
 
-func (s *Service) runStreamWithFallback(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string, candidates []provider.Provider, responseID string, trace *routeTrace, out chan<- provider.ResponseEvent, errCh chan<- error, cacheChecked bool) {
+func (s *Service) runStreamWithFallback(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string, candidates []provider.Provider, responseID string, trace *routeTrace, out chan<- provider.ResponseEvent, errCh chan<- error, cacheChecked bool, semanticMaterial *semanticCacheMaterial, transcript *streamTranscriptCollector) {
 	defer close(out)
 	defer close(errCh)
 
@@ -275,7 +289,7 @@ providerLoop:
 		})
 
 		if !firstResponseSent {
-			out <- provider.ResponseEvent{
+			emitStreamEvent(out, transcript, provider.ResponseEvent{
 				Type: provider.EventResponseStarted,
 				Response: &provider.Response{
 					ID:      responseID,
@@ -284,7 +298,7 @@ providerLoop:
 					Model:   req.Model,
 					Status:  "in_progress",
 				},
-			}
+			})
 			firstResponseSent = true
 		}
 
@@ -316,20 +330,7 @@ providerLoop:
 			case "CACHE_HIT":
 				var cached provider.Response
 				if err := json.Unmarshal(cmd.Payload, &cached); err == nil {
-					body, _ := json.Marshal(cached)
-					s.writeCache(ctx, identity, req, &cache.Entry{
-						Response: body,
-						Stream:   true,
-						Model:    req.Model,
-						Provider: providerName,
-						Usage: cache.Usage{
-							PromptTokens:     cached.Usage.PromptTokens,
-							CompletionTokens: cached.Usage.CompletionTokens,
-							TotalTokens:      cached.Usage.TotalTokens,
-							CachedTokens:     cached.Usage.CachedTokens,
-						},
-						CreatedAt: time.Now().Unix(),
-					})
+					s.writeCache(ctx, identity, req, buildStreamCacheEntry(req, providerName, &cached, nil))
 					if entry, hit := s.lookupCache(ctx, identity, req); hit {
 						s.replayCachedStream(ctx, identity, req, entry, responseID, out, errCh)
 						s.providerMgr.Stats.DecrementLoad(providerName)
@@ -382,30 +383,16 @@ providerLoop:
 						errCh <- budgetErr
 						return
 					}
-					body, _ := json.Marshal(finalResponse)
-					s.writeCache(ctx, identity, req, &cache.Entry{
-						Response: body,
-						Stream:   true,
-						Model:    req.Model,
-						Provider: providerName,
-						Usage: cache.Usage{
-							PromptTokens:     finalResponse.Usage.PromptTokens,
-							CompletionTokens: finalResponse.Usage.CompletionTokens,
-							TotalTokens:      finalResponse.Usage.TotalTokens,
-							CachedTokens:     finalResponse.Usage.CachedTokens,
-						},
-						CreatedAt: time.Now().Unix(),
-					})
 					// post_upstream: guardrails and plugins can modify the response.
 					finalResponse, postErr := s.runStreamPostChecks(ctx, identity, req, finalResponse, responseID, tenantID, identity.UserID, req.Model, req.Stream, hasSentPayload)
 					if postErr != nil {
 						if hasSentPayload {
 							slog.Error("stream blocked after content sent", "responseID", responseID, "error", postErr)
-							out <- provider.ResponseEvent{
+							emitStreamEvent(out, transcript, provider.ResponseEvent{
 								Type:         provider.EventResponseCompleted,
 								Response:     finalResponse,
 								FinishReason: "content_filter",
-							}
+							})
 						} else {
 							errCh <- postErr
 						}
@@ -416,7 +403,10 @@ providerLoop:
 						return
 					}
 
-					s.finalizeStream(ctx, identity, responseID, providerName, req.Model, p, finalResponse, latencyMs, trace, out, !hasSentPayload)
+					s.finalizeStream(ctx, identity, responseID, providerName, req.Model, p, finalResponse, latencyMs, trace, out, !hasSentPayload, transcript)
+					streamTranscript := transcript.Events()
+					s.writeCache(ctx, identity, req, buildStreamCacheEntry(req, providerName, finalResponse, streamTranscript))
+					s.writeSemanticCache(ctx, identity, req, providerName, finalResponse, semanticMaterial, streamTranscript)
 
 					// Async audit.
 					s.invokePluginsAsync(pluginSvc.Audit, map[string]any{
@@ -446,12 +436,12 @@ providerLoop:
 					if isRenderableStreamEvent(event) {
 						hasSentPayload = true
 						assistantText += event.Text()
-						out <- event
+						emitStreamEvent(out, transcript, event)
 					}
 				case provider.EventToolCallDone:
 					hasSentPayload = true
 					streamedOutputs = appendStreamOutput(streamedOutputs, event.Output)
-					out <- event
+					emitStreamEvent(out, transcript, event)
 				case provider.EventResponseCompleted:
 					finalResponse = event.Response
 				}
@@ -533,30 +523,16 @@ providerLoop:
 							return
 						}
 						appendRouteAttempt(trace, providerName, retryCfg.MaxRetries, "success", nil)
-						body, _ := json.Marshal(finalResponse)
-						s.writeCache(ctx, identity, req, &cache.Entry{
-							Response: body,
-							Stream:   true,
-							Model:    req.Model,
-							Provider: providerName,
-							Usage: cache.Usage{
-								PromptTokens:     finalResponse.Usage.PromptTokens,
-								CompletionTokens: finalResponse.Usage.CompletionTokens,
-								TotalTokens:      finalResponse.Usage.TotalTokens,
-								CachedTokens:     finalResponse.Usage.CachedTokens,
-							},
-							CreatedAt: time.Now().Unix(),
-						})
 						// post_upstream: guardrails and plugins can modify the response.
 						finalResponse, postErr := s.runStreamPostChecks(ctx, identity, req, finalResponse, responseID, tenantID, identity.UserID, req.Model, req.Stream, hasSentPayload)
 						if postErr != nil {
 							if hasSentPayload {
 								slog.Error("stream blocked after content sent", "responseID", responseID, "error", postErr)
-								out <- provider.ResponseEvent{
+								emitStreamEvent(out, transcript, provider.ResponseEvent{
 									Type:         provider.EventResponseCompleted,
 									Response:     finalResponse,
 									FinishReason: "content_filter",
-								}
+								})
 							} else {
 								errCh <- postErr
 							}
@@ -567,7 +543,10 @@ providerLoop:
 							return
 						}
 
-						s.finalizeStream(ctx, identity, responseID, providerName, req.Model, p, finalResponse, latencyMs, trace, out, !hasSentPayload)
+						s.finalizeStream(ctx, identity, responseID, providerName, req.Model, p, finalResponse, latencyMs, trace, out, !hasSentPayload, transcript)
+						streamTranscript := transcript.Events()
+						s.writeCache(ctx, identity, req, buildStreamCacheEntry(req, providerName, finalResponse, streamTranscript))
+						s.writeSemanticCache(ctx, identity, req, providerName, finalResponse, semanticMaterial, streamTranscript)
 
 						// Async audit.
 						s.invokePluginsAsync(pluginSvc.Audit, map[string]any{
@@ -600,12 +579,12 @@ providerLoop:
 						if isRenderableStreamEvent(event) {
 							hasSentPayload = true
 							assistantText += event.Text()
-							out <- event
+							emitStreamEvent(out, transcript, event)
 						}
 					case provider.EventToolCallDone:
 						hasSentPayload = true
 						streamedOutputs = appendStreamOutput(streamedOutputs, event.Output)
-						out <- event
+						emitStreamEvent(out, transcript, event)
 					case provider.EventResponseCompleted:
 						finalResponse = event.Response
 					}

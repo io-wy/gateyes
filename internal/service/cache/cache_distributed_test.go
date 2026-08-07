@@ -170,9 +170,13 @@ func TestEntry_JSONRoundTrip(t *testing.T) {
 	original := &Entry{
 		Response:  []byte(`{"id":"r1","choices":[{"message":{"content":"hello"}}]}`),
 		StreamRaw: []byte("data: chunk1\n\ndata: chunk2\n\n"),
-		Stream:    true,
-		Model:     "gpt-4o",
-		Provider:  "openai-eastus",
+		StreamTranscript: []StreamEvent{
+			{Type: "content_delta", Delta: "hel", TextDelta: "hel"},
+			{Type: "content_delta", Delta: "lo", TextDelta: "lo"},
+		},
+		Stream:   true,
+		Model:    "gpt-4o",
+		Provider: "openai-eastus",
 		Usage: Usage{
 			PromptTokens:     12,
 			CompletionTokens: 5,
@@ -194,6 +198,9 @@ func TestEntry_JSONRoundTrip(t *testing.T) {
 	}
 	if string(decoded.StreamRaw) != string(original.StreamRaw) {
 		t.Fatalf("stream_raw mismatch")
+	}
+	if len(decoded.StreamTranscript) != len(original.StreamTranscript) || decoded.StreamTranscript[0].TextDelta != "hel" || decoded.StreamTranscript[1].Delta != "lo" {
+		t.Fatalf("stream_transcript mismatch: %+v", decoded.StreamTranscript)
 	}
 	if decoded.Stream != original.Stream {
 		t.Fatalf("stream flag mismatch")

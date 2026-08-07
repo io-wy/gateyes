@@ -408,7 +408,7 @@ func (s *Service) handleStreamError(ctx context.Context, identity *repository.Au
 	}
 }
 
-func (s *Service) finalizeStream(ctx context.Context, identity *repository.AuthIdentity, responseID, providerName, model string, p provider.Provider, resp *provider.Response, latencyMs int64, trace *routeTrace, out chan<- provider.ResponseEvent, emitOutputs bool) {
+func (s *Service) finalizeStream(ctx context.Context, identity *repository.AuthIdentity, responseID, providerName, model string, p provider.Provider, resp *provider.Response, latencyMs int64, trace *routeTrace, out chan<- provider.ResponseEvent, emitOutputs bool, collector *streamTranscriptCollector) {
 	if resp == nil {
 		resp = provider.NewTextResponse(responseID, model, "", provider.Usage{})
 	}
@@ -492,9 +492,9 @@ func (s *Service) finalizeStream(ctx context.Context, identity *repository.AuthI
 	}
 
 	if emitOutputs {
-		s.emitStreamPayloadFromResponse(out, resp)
+		s.emitStreamPayloadFromResponse(out, resp, collector)
 	}
-	out <- provider.ResponseEvent{Type: provider.EventResponseCompleted, Response: resp}
+	emitStreamEvent(out, collector, provider.ResponseEvent{Type: provider.EventResponseCompleted, Response: resp})
 }
 
 // alertStreamingOverage surfaces a budget/quota alert when post-hoc usage

@@ -24,6 +24,7 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 		ctx = responseSvc.WithRawRequestBody(ctx, raw)
 	}
 	ctx = responseSvc.WithAdmissionChecked(ctx)
+	ctx = responseSvc.WithServiceCacheScope(ctx, responseCacheScope(runtime))
 	result, err := s.responses.Create(ctx, identity, preparedReq, sessionID)
 	if err != nil {
 		return nil, runtime.service, err
@@ -40,6 +41,7 @@ func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIde
 		return nil, nil, err
 	}
 	ctx = responseSvc.WithAdmissionChecked(ctx)
+	ctx = responseSvc.WithServiceCacheScope(ctx, responseCacheScope(runtime))
 	stream, err := s.responses.CreateStream(ctx, identity, preparedReq, sessionID)
 	if err != nil {
 		return nil, runtime.service, err
@@ -66,6 +68,7 @@ func (s *Service) CreatePromptInvocation(ctx context.Context, identity *reposito
 		return nil, nil, err
 	}
 	ctx = responseSvc.WithAdmissionChecked(ctx)
+	ctx = responseSvc.WithServiceCacheScope(ctx, responseCacheScope(runtime))
 	result, err := s.responses.Create(ctx, identity, prepared, sessionID)
 	if err != nil {
 		return nil, runtime.service, err
@@ -82,6 +85,7 @@ func (s *Service) CreatePromptInvocationStream(ctx context.Context, identity *re
 		return nil, nil, err
 	}
 	ctx = responseSvc.WithAdmissionChecked(ctx)
+	ctx = responseSvc.WithServiceCacheScope(ctx, responseCacheScope(runtime))
 	stream, err := s.responses.CreateStream(ctx, identity, prepared, sessionID)
 	if err != nil {
 		return nil, runtime.service, err
@@ -100,6 +104,21 @@ func (s *Service) CreatePromptInvocationStream(ctx context.Context, identity *re
 		Events:       events,
 		Errors:       errCh,
 	}, runtime.service, nil
+}
+
+func responseCacheScope(runtime *serviceRuntime) responseSvc.ServiceCacheScope {
+	if runtime == nil || runtime.service == nil {
+		return responseSvc.ServiceCacheScope{}
+	}
+	return responseSvc.ServiceCacheScope{
+		TenantID:        runtime.service.TenantID,
+		ProjectID:       runtime.service.ProjectID,
+		ServiceID:       runtime.service.ID,
+		RequestPrefix:   runtime.service.RequestPrefix,
+		DefaultProvider: runtime.snapshot.DefaultProvider,
+		DefaultModel:    runtime.snapshot.DefaultModel,
+		Metadata:        runtime.snapshot.Config.Metadata,
+	}
 }
 
 // ---- Request preparation ----

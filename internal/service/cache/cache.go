@@ -17,8 +17,10 @@ import (
 
 // Layer identifies the cache tier emitted in metrics labels.
 const (
-	LayerL1       = "l1"
-	LayerL1Stream = "l1_stream"
+	LayerL1               = "l1"
+	LayerL1Stream         = "l1_stream"
+	LayerL2Semantic       = "l2_semantic"
+	LayerL2SemanticStream = "l2_semantic_stream"
 )
 
 // Usage mirrors token accounting fields needed for cached responses.
@@ -34,17 +36,32 @@ type Usage struct {
 // Entry is the cached payload for one logical request.
 //
 // For non-streaming responses, Response holds the full marshalled
-// OpenAI/Anthropic response body. For streaming, StreamRaw holds the raw
-// SSE chunks (concatenated event blocks separated by "\n\n"), and Stream
-// is set to true.
+// OpenAI/Anthropic response body. For streaming, StreamTranscript holds the
+// normalized provider events that were visible to the client, and Stream is
+// set to true. StreamRaw is kept for backwards-compatible cache payloads.
 type Entry struct {
-	Response  []byte `json:"response,omitempty"`
-	StreamRaw []byte `json:"stream_raw,omitempty"`
-	Stream    bool   `json:"stream"`
-	Model     string `json:"model"`
-	Provider  string `json:"provider"`
-	Usage     Usage  `json:"usage"`
-	CreatedAt int64  `json:"created_at"`
+	Response         []byte        `json:"response,omitempty"`
+	StreamRaw        []byte        `json:"stream_raw,omitempty"`
+	StreamTranscript []StreamEvent `json:"stream_transcript,omitempty"`
+	Stream           bool          `json:"stream"`
+	Model            string        `json:"model"`
+	Provider         string        `json:"provider"`
+	Usage            Usage         `json:"usage"`
+	CreatedAt        int64         `json:"created_at"`
+}
+
+type StreamEvent struct {
+	Type          string          `json:"type"`
+	Delta         string          `json:"delta,omitempty"`
+	TextDelta     string          `json:"text_delta,omitempty"`
+	ThinkingDelta string          `json:"thinking_delta,omitempty"`
+	Response      json.RawMessage `json:"response,omitempty"`
+	Output        json.RawMessage `json:"output,omitempty"`
+	ToolCalls     json.RawMessage `json:"tool_calls,omitempty"`
+	FinishReason  string          `json:"finish_reason,omitempty"`
+	Usage         *Usage          `json:"usage,omitempty"`
+	OutputIndex   *int            `json:"output_index,omitempty"`
+	ContentIndex  *int            `json:"content_index,omitempty"`
 }
 
 // KeyInput is the canonical input used to derive a cache key.

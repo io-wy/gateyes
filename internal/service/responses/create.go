@@ -121,6 +121,24 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 		}
 		setCacheTrace(ctx, CacheResultError, s.cacheLayer(req.Stream), "invalid_cached_entry", s.buildCacheKey(ctx, identity, req))
 	}
+	semanticMaterial := (*semanticCacheMaterial)(nil)
+	if entry, hit, material := s.lookupSemanticCache(ctx, identity, req); hit {
+		var resp provider.Response
+		if err := json.Unmarshal(entry.Response, &resp); err == nil {
+			return &CreateResult{
+				Response:         &resp,
+				ProviderName:     entry.Provider,
+				LatencyMs:        time.Since(createStart).Milliseconds(),
+				PromptTokens:     resp.Usage.PromptTokens,
+				CompletionTokens: resp.Usage.CompletionTokens,
+				Retries:          0,
+				Fallback:         0,
+			}, nil
+		}
+		setCacheTrace(ctx, CacheResultError, s.semanticCacheLayer(req.Stream), "invalid_semantic_cached_entry", "")
+	} else {
+		semanticMaterial = material
+	}
 
 	candidates, trace := s.planCandidates(ctx, identity, sessionID, req)
 	if len(candidates) == 0 {
@@ -265,6 +283,7 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 			},
 			CreatedAt: time.Now().Unix(),
 		})
+		s.writeSemanticCache(ctx, identity, req, providerName, resp, semanticMaterial, nil)
 		if s.router != nil {
 			s.router.PromoteAffinity(buildRouteContext(ctx, req, sessionID), providerName)
 		}

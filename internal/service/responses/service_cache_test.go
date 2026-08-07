@@ -2,9 +2,12 @@ package responses
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -159,6 +162,335 @@ func TestWriteCacheSkipsNilEntry(t *testing.T) {
 	}
 }
 
+func TestSemanticCacheWriteThenHitAvoidsSecondUpstreamCall(t *testing.T) {
+	var upstreamCalls int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&upstreamCalls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-upstream","object":"chat.completion","created":1700000000,"model":"provider-model","choices":[{"index":0,"message":{"role":"assistant","content":"semantic cached answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}`))
+	}))
+	defer upstream.Close()
+
+	embeddings := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "embeddings") {
+			t.Fatalf("unexpected embedding provider path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[1,0,0]}],"model":"embed-model","usage":{"prompt_tokens":2,"total_tokens":2}}`))
+	}))
+	defer embeddings.Close()
+
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		upstreamURL: upstream.URL,
+		endpoint:    "chat",
+		providers:   []string{"test-openai"},
+		providerConfigs: []config.ProviderConfig{
+			{Name: "test-openai", Type: "openai", BaseURL: upstream.URL, Endpoint: "chat", APIKey: "upstream-key", Model: "provider-model", Timeout: 5, Enabled: true, MaxTokens: 256},
+			{Name: "semantic-embeddings", Type: "openai", BaseURL: embeddings.URL, Endpoint: "chat", APIKey: "embedding-key", Model: "embed-model", Timeout: 5, Enabled: true, MaxTokens: 256},
+		},
+	})
+	enableSemanticCacheForTest(t, env, false)
+
+	ctx := context.Background()
+	first, err := env.service.Create(ctx, env.identity, &provider.ResponseRequest{
+		Model:   "public-model",
+		Surface: "responses",
+		Input:   "explain cache hit rate",
+	}, "session-semantic")
+	if err != nil {
+		t.Fatalf("first Create() error: %v", err)
+	}
+	if first.Response.OutputText() != "semantic cached answer" {
+		t.Fatalf("first response text = %q", first.Response.OutputText())
+	}
+
+	second, err := env.service.Create(ctx, env.identity, &provider.ResponseRequest{
+		Model:   "public-model",
+		Surface: "responses",
+		Input:   "describe cache-hit-ratio",
+	}, "session-semantic-2")
+	if err != nil {
+		t.Fatalf("second Create() error: %v", err)
+	}
+	if second.Response.OutputText() != "semantic cached answer" {
+		t.Fatalf("semantic hit response text = %q", second.Response.OutputText())
+	}
+	if got := atomic.LoadInt32(&upstreamCalls); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1 after semantic hit", got)
+	}
+}
+
+func TestSemanticCacheRequiresOptInByDefault(t *testing.T) {
+	var upstreamCalls int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&upstreamCalls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-upstream","object":"chat.completion","created":1700000000,"model":"provider-model","choices":[{"index":0,"message":{"role":"assistant","content":"upstream answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}`))
+	}))
+	defer upstream.Close()
+
+	embeddings := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[1,0,0]}],"model":"embed-model","usage":{"prompt_tokens":2,"total_tokens":2}}`))
+	}))
+	defer embeddings.Close()
+
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		upstreamURL: upstream.URL,
+		endpoint:    "chat",
+		providers:   []string{"test-openai"},
+		providerConfigs: []config.ProviderConfig{
+			{Name: "test-openai", Type: "openai", BaseURL: upstream.URL, Endpoint: "chat", APIKey: "upstream-key", Model: "provider-model", Timeout: 5, Enabled: true, MaxTokens: 256},
+			{Name: "semantic-embeddings", Type: "openai", BaseURL: embeddings.URL, Endpoint: "chat", APIKey: "embedding-key", Model: "embed-model", Timeout: 5, Enabled: true, MaxTokens: 256},
+		},
+	})
+	enableSemanticCacheForTest(t, env, true)
+
+	cached := provider.Response{
+		ID:      "semantic-seeded",
+		Object:  "response",
+		Created: time.Now().Unix(),
+		Model:   "public-model",
+		Status:  "completed",
+		Output: []provider.ResponseOutput{{
+			Type:   "message",
+			Role:   "assistant",
+			Status: "completed",
+			Content: []provider.ResponseContent{{
+				Type: "output_text",
+				Text: "seeded semantic answer",
+			}},
+		}},
+		Usage: provider.Usage{PromptTokens: 2, CompletionTokens: 1, TotalTokens: 3},
+	}
+	body, _ := json.Marshal(cached)
+	usage, _ := json.Marshal(cached.Usage)
+	if _, err := env.store.CreateSemanticCacheEntry(context.Background(), repository.CreateSemanticCacheParams{
+		TenantID:            env.identity.TenantID,
+		Surface:             "responses",
+		Model:               "public-model",
+		EmbeddingModel:      "embed-model",
+		PromptHash:          "seeded",
+		PromptCanonical:     []byte(`{"prompt":"seeded"}`),
+		PromptText:          "seeded",
+		Embedding:           []float64{1, 0, 0},
+		ResponseBody:        body,
+		ProviderName:        "test-openai",
+		UsageBody:           usage,
+		SimilarityThreshold: 0.92,
+		ExpiresAt:           time.Now().UTC().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("seed semantic cache: %v", err)
+	}
+
+	result, err := env.service.Create(context.Background(), env.identity, &provider.ResponseRequest{
+		Model:   "public-model",
+		Surface: "responses",
+		Input:   "same semantic prompt",
+	}, "session-no-opt-in")
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+	if result.Response.OutputText() != "upstream answer" {
+		t.Fatalf("response text = %q, want upstream answer", result.Response.OutputText())
+	}
+	if got := atomic.LoadInt32(&upstreamCalls); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1 when semantic cache is not opted in", got)
+	}
+}
+
+func TestSemanticCacheTraceFieldsAreRecorded(t *testing.T) {
+	embeddings := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[1,0,0]}],"model":"embed-model","usage":{"prompt_tokens":2,"total_tokens":2}}`))
+	}))
+	defer embeddings.Close()
+
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		upstreamURL: "http://127.0.0.1:1",
+		endpoint:    "chat",
+		providers:   []string{"test-openai"},
+		providerConfigs: []config.ProviderConfig{
+			{Name: "test-openai", Type: "openai", BaseURL: "http://127.0.0.1:1", Endpoint: "chat", APIKey: "upstream-key", Model: "provider-model", Timeout: 5, Enabled: true, MaxTokens: 256},
+			{Name: "semantic-embeddings", Type: "openai", BaseURL: embeddings.URL, Endpoint: "chat", APIKey: "embedding-key", Model: "embed-model", Timeout: 5, Enabled: true, MaxTokens: 256},
+		},
+	})
+	enableSemanticCacheForTest(t, env, false)
+	seedSemanticCacheEntry(t, env, "trace entry")
+	trace := &CacheTrace{}
+	ctx := WithCacheTrace(context.Background(), trace)
+
+	result, err := env.service.Create(ctx, env.identity, &provider.ResponseRequest{
+		Model:   "public-model",
+		Surface: "responses",
+		Input:   "trace me differently",
+	}, "session-trace")
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+	if result.Response.OutputText() != "trace entry" {
+		t.Fatalf("semantic hit response text = %q", result.Response.OutputText())
+	}
+	if trace.EntryID == "" || trace.EmbeddingModel != "embed-model" || trace.Threshold == 0 {
+		t.Fatalf("trace = %+v, want semantic fields recorded", trace)
+	}
+}
+
+func TestSemanticCacheStreamHitReplaysTranscript(t *testing.T) {
+	var upstreamCalls int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&upstreamCalls, 1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"upstream\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"upstream\",\"created_at\":1,\"model\":\"m\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"upstream\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	embeddings := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[1,0,0]}],"model":"embed-model","usage":{"prompt_tokens":2,"total_tokens":2}}`))
+	}))
+	defer embeddings.Close()
+
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		upstreamURL: upstream.URL,
+		endpoint:    "responses",
+		providers:   []string{"test-openai"},
+		providerConfigs: []config.ProviderConfig{
+			{Name: "test-openai", Type: "openai", BaseURL: upstream.URL, Endpoint: "responses", APIKey: "upstream-key", Model: "provider-model", Timeout: 5, Enabled: true, MaxTokens: 256},
+			{Name: "semantic-embeddings", Type: "openai", BaseURL: embeddings.URL, Endpoint: "chat", APIKey: "embedding-key", Model: "embed-model", Timeout: 5, Enabled: true, MaxTokens: 256},
+		},
+	})
+	enableSemanticCacheForTest(t, env, false)
+
+	cached := provider.NewTextResponse("semantic-seeded", "public-model", "semantic stream", provider.Usage{PromptTokens: 2, CompletionTokens: 2, TotalTokens: 4})
+	body, _ := json.Marshal(cached)
+	usage, _ := json.Marshal(cached.Usage)
+	if _, err := env.store.CreateSemanticCacheEntry(context.Background(), repository.CreateSemanticCacheParams{
+		TenantID:        env.identity.TenantID,
+		Surface:         "responses",
+		Model:           "public-model",
+		EmbeddingModel:  "embed-model",
+		PromptHash:      "seeded-stream",
+		PromptCanonical: []byte(`{"prompt":"seeded stream"}`),
+		PromptText:      "seeded stream",
+		Embedding:       []float64{1, 0, 0},
+		ResponseBody:    body,
+		StreamBody: semanticStreamBody([]cache.StreamEvent{
+			{Type: provider.EventContentDelta, Delta: "semantic ", TextDelta: "semantic "},
+			{Type: provider.EventContentDelta, Delta: "stream", TextDelta: "stream"},
+			{Type: provider.EventResponseCompleted, Response: body},
+		}),
+		ProviderName:        "test-openai",
+		UsageBody:           usage,
+		SimilarityThreshold: 0.92,
+		ExpiresAt:           time.Now().UTC().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("seed semantic stream cache: %v", err)
+	}
+
+	stream, err := env.service.CreateStream(context.Background(), env.identity, &provider.ResponseRequest{
+		Model:   "public-model",
+		Surface: "responses",
+		Input:   "semantically same stream prompt",
+		Stream:  true,
+	}, "session-semantic-stream")
+	if err != nil {
+		t.Fatalf("CreateStream() error: %v", err)
+	}
+
+	var types []string
+	var text string
+	for event := range stream.Events {
+		types = append(types, event.Type)
+		if event.Type == provider.EventContentDelta {
+			text += event.Text()
+		}
+	}
+	for err := range stream.Errors {
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
+	}
+	if got, want := strings.Join(types, ","), "response_started,content_delta,content_delta,response_completed"; got != want {
+		t.Fatalf("event types = %s, want %s", got, want)
+	}
+	if text != "semantic stream" {
+		t.Fatalf("stream text = %q, want semantic stream", text)
+	}
+	if got := atomic.LoadInt32(&upstreamCalls); got != 0 {
+		t.Fatalf("upstream calls = %d, want 0 on semantic stream hit", got)
+	}
+}
+
+func seedSemanticCacheEntry(t *testing.T, env *responsesTestEnv, text string) {
+	t.Helper()
+	cached := provider.Response{
+		ID:      "semantic-seeded",
+		Object:  "response",
+		Created: time.Now().Unix(),
+		Model:   "public-model",
+		Status:  "completed",
+		Output: []provider.ResponseOutput{{
+			Type:   "message",
+			Role:   "assistant",
+			Status: "completed",
+			Content: []provider.ResponseContent{{
+				Type: "output_text",
+				Text: text,
+			}},
+		}},
+		Usage: provider.Usage{PromptTokens: 2, CompletionTokens: 1, TotalTokens: 3},
+	}
+	body, _ := json.Marshal(cached)
+	usage, _ := json.Marshal(cached.Usage)
+	if _, err := env.store.CreateSemanticCacheEntry(context.Background(), repository.CreateSemanticCacheParams{
+		TenantID:            env.identity.TenantID,
+		Surface:             "responses",
+		Model:               "public-model",
+		EmbeddingModel:      "embed-model",
+		PromptHash:          "seeded",
+		PromptCanonical:     []byte(`{"prompt":"seeded"}`),
+		PromptText:          "seeded",
+		Embedding:           []float64{1, 0, 0},
+		ResponseBody:        body,
+		ProviderName:        "test-openai",
+		UsageBody:           usage,
+		SimilarityThreshold: 0.92,
+		ExpiresAt:           time.Now().UTC().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("seed semantic cache: %v", err)
+	}
+}
+
+func enableSemanticCacheForTest(t *testing.T, env *responsesTestEnv, requireOptIn bool) {
+	t.Helper()
+	env.service.cache = newMockCache()
+	env.service.cfg.Cache = config.CacheConfig{
+		Enabled:    true,
+		DefaultTTL: 60,
+		Semantic: config.SemanticCacheConfig{
+			Enabled:             true,
+			Backend:             "pgvector",
+			EmbeddingProvider:   "semantic-embeddings",
+			EmbeddingModel:      "embed-model",
+			Threshold:           0.92,
+			MaxCandidates:       5,
+			TTLSeconds:          60,
+			WriteAsync:          false,
+			AllowStream:         true,
+			AllowedSurfaces:     []string{"responses"},
+			RequireServiceOptIn: requireOptIn,
+		},
+	}
+	embedder, ok := env.providerMgr.Get("semantic-embeddings")
+	if !ok {
+		t.Fatal("semantic embedding provider not found")
+	}
+	env.service.embedding = embedder
+}
+
 func TestBuildCacheKeyIsDeterministic(t *testing.T) {
 	svc := newCacheService(newMockCache())
 	identity := &repository.AuthIdentity{TenantID: "t1"}
@@ -231,6 +563,59 @@ func TestReplayCachedStreamEmitsEvents(t *testing.T) {
 	}
 	if len(events) != 2 || events[0] != provider.EventResponseStarted || events[1] != provider.EventResponseCompleted {
 		t.Fatalf("unexpected events: %v", events)
+	}
+}
+
+func TestReplayCachedStreamTranscriptEmitsDeltas(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`))
+	}))
+	defer up.Close()
+
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		upstreamURL: up.URL,
+		endpoint:    "chat",
+		providers:   []string{"test-openai"},
+	})
+	respBody := []byte(`{"id":"orig","object":"response","created":1,"model":"m1","status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hello"}]}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`)
+	startBody := []byte(`{"id":"orig-start","object":"response","created":1,"model":"m1","status":"in_progress"}`)
+	entry := &cache.Entry{
+		Response: respBody,
+		Provider: "p1",
+		StreamTranscript: []cache.StreamEvent{
+			{Type: provider.EventResponseStarted, Response: startBody},
+			{Type: provider.EventContentDelta, Delta: "hel", TextDelta: "hel"},
+			{Type: provider.EventContentDelta, Delta: "lo", TextDelta: "lo"},
+			{Type: provider.EventResponseCompleted, Response: respBody},
+		},
+	}
+
+	out := make(chan provider.ResponseEvent, 8)
+	errCh := make(chan error, 1)
+	env.service.replayCachedStream(context.Background(), env.identity, &provider.ResponseRequest{Model: "m1"}, entry, "resp-1", out, errCh)
+	close(out)
+	close(errCh)
+
+	var types []string
+	var text, completedID string
+	for e := range out {
+		types = append(types, e.Type)
+		if e.Type == provider.EventContentDelta {
+			text += e.Text()
+		}
+		if e.Type == provider.EventResponseCompleted && e.Response != nil {
+			completedID = e.Response.ID
+		}
+	}
+	if got, want := strings.Join(types, ","), "response_started,content_delta,content_delta,response_completed"; got != want {
+		t.Fatalf("event types = %s, want %s", got, want)
+	}
+	if text != "hello" {
+		t.Fatalf("stream text = %q, want hello", text)
+	}
+	if completedID != "resp-1" {
+		t.Fatalf("completed response id = %q, want resp-1", completedID)
 	}
 }
 

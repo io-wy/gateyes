@@ -14,6 +14,10 @@ type CacheTrace struct {
 	Layer          string   `json:"layer,omitempty"`
 	Reason         string   `json:"reason,omitempty"`
 	Key            string   `json:"key,omitempty"`
+	EntryID        string   `json:"entry_id,omitempty"`
+	Similarity     float64  `json:"similarity,omitempty"`
+	Threshold      float64  `json:"threshold,omitempty"`
+	EmbeddingModel string   `json:"embedding_model,omitempty"`
 	Rewrites       []string `json:"rewrites,omitempty"`
 	PromptCacheKey string   `json:"prompt_cache_key,omitempty"`
 }

@@ -43,6 +43,7 @@ func ParseRoutingHintsFromHeaders(header func(string) string) RoutingHints {
 
 func WithGatewayHintsFromHeaders(ctx context.Context, header func(string) string) context.Context {
 	ctx = WithCacheHints(ctx, ParseCacheHintsFromHeaders(header))
+	ctx = WithSemanticCacheHints(ctx, ParseSemanticCacheHintsFromHeaders(header))
 	ctx = WithRoutingHints(ctx, ParseRoutingHintsFromHeaders(header))
 	return ctx
 }

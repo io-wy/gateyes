@@ -82,6 +82,9 @@ func (c *MemoryCache) Get(ctx context.Context, key string) (*Entry, bool, error)
 	if cp.StreamRaw != nil {
 		cp.StreamRaw = append([]byte(nil), cp.StreamRaw...)
 	}
+	if cp.StreamTranscript != nil {
+		cp.StreamTranscript = cloneStreamTranscript(cp.StreamTranscript)
+	}
 	return &cp, true, nil
 }
 
@@ -147,6 +150,43 @@ func (c *MemoryCache) Stats() Stats {
 // Close releases resources. The memory cache holds no external handles
 // so this is a no-op kept for interface compliance.
 func (c *MemoryCache) Close() error { return nil }
+
+func cloneStreamTranscript(in []StreamEvent) []StreamEvent {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]StreamEvent, len(in))
+	for i, event := range in {
+		out[i] = event
+		out[i].Response = cloneBytes(event.Response)
+		out[i].Output = cloneBytes(event.Output)
+		out[i].ToolCalls = cloneBytes(event.ToolCalls)
+		out[i].OutputIndex = cloneIntPtr(event.OutputIndex)
+		out[i].ContentIndex = cloneIntPtr(event.ContentIndex)
+		if event.Usage != nil {
+			usage := *event.Usage
+			out[i].Usage = &usage
+		}
+	}
+	return out
+}
+
+func cloneBytes(in []byte) []byte {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]byte, len(in))
+	copy(out, in)
+	return out
+}
+
+func cloneIntPtr(in *int) *int {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
+}
 
 // Len returns the current entry count. Exposed for diagnostics/tests.
 func (c *MemoryCache) Len() int {

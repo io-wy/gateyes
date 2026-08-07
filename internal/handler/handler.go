@@ -100,6 +100,18 @@ func attachCacheHeaders(c *gin.Context, trace *responseSvc.CacheTrace) {
 	if trace.Reason != "" {
 		c.Header("X-Gateyes-Cache-Reason", trace.Reason)
 	}
+	if trace.EntryID != "" {
+		c.Header("X-Gateyes-Cache-Entry-ID", trace.EntryID)
+	}
+	if trace.Similarity > 0 {
+		c.Header("X-Gateyes-Cache-Similarity", strconv.FormatFloat(trace.Similarity, 'f', 4, 64))
+	}
+	if trace.Threshold > 0 {
+		c.Header("X-Gateyes-Cache-Threshold", strconv.FormatFloat(trace.Threshold, 'f', 4, 64))
+	}
+	if trace.EmbeddingModel != "" {
+		c.Header("X-Gateyes-Cache-Embedding-Model", trace.EmbeddingModel)
+	}
 	if len(trace.Rewrites) > 0 {
 		c.Header("X-Gateyes-Cache-Rewrites", strings.Join(trace.Rewrites, ","))
 	}

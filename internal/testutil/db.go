@@ -20,6 +20,8 @@ func OpenTestDB(t *testing.T) *db.DB {
 	if err != nil {
 		t.Fatalf("open test db: %v", err)
 	}
+	database.Conn.SetMaxOpenConns(1)
+	database.Conn.SetMaxIdleConns(1)
 	if err := database.Migrate(context.Background()); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}

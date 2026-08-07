@@ -150,7 +150,7 @@ func TestFinalizeStream(t *testing.T) {
 	out := make(chan provider.ResponseEvent, 4)
 	trace := &routeTrace{}
 	billingProvider := &streamMockProvider{name: "test-openai", modelName: "public-model", unitCost: 0.5}
-	env.service.finalizeStream(context.Background(), env.identity, "resp-1", "test-openai", "public-model", billingProvider, resp, 100, trace, out, true)
+	env.service.finalizeStream(context.Background(), env.identity, "resp-1", "test-openai", "public-model", billingProvider, resp, 100, trace, out, true, nil)
 	close(out)
 
 	var events []string

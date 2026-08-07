@@ -93,6 +93,55 @@ func TestDefaultConfigHasExpectedDefaults(t *testing.T) {
 	if got, want := cfg.Admin.DefaultTenant, "default"; got != want {
 		t.Fatalf("DefaultConfig().Admin.DefaultTenant = %q, want %q", got, want)
 	}
+	if cfg.Cache.Semantic.Enabled {
+		t.Fatal("DefaultConfig().Cache.Semantic.Enabled = true, want false")
+	}
+}
+
+func TestLoadSemanticCacheConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	data := strings.TrimSpace(`
+server:
+  listenAddr: :8080
+cache:
+  enabled: true
+  backend: auto
+  semantic:
+    enabled: true
+    backend: pgvector
+    embeddingProvider: openai-embeddings
+    embeddingModel: text-embedding-3-small
+    threshold: 0.93
+    maxCandidates: 7
+    ttlSeconds: 7200
+    writeAsync: true
+    allowStream: true
+    allowedSurfaces:
+      - responses
+      - service_responses
+    requireServiceOptIn: true
+`)
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	semantic := cfg.Cache.Semantic
+	if !semantic.Enabled || semantic.Backend != "pgvector" || semantic.EmbeddingProvider != "openai-embeddings" {
+		t.Fatalf("semantic config = %+v, want enabled pgvector provider", semantic)
+	}
+	if semantic.Threshold != 0.93 || semantic.MaxCandidates != 7 || semantic.TTLSeconds != 7200 {
+		t.Fatalf("semantic numeric config = %+v", semantic)
+	}
+	if !semantic.WriteAsync || !semantic.AllowStream || !semantic.RequireServiceOptIn {
+		t.Fatalf("semantic bool config = %+v", semantic)
+	}
+	if len(semantic.AllowedSurfaces) != 2 || semantic.AllowedSurfaces[0] != "responses" || semantic.AllowedSurfaces[1] != "service_responses" {
+		t.Fatalf("AllowedSurfaces = %#v", semantic.AllowedSurfaces)
+	}
 }
 
 func TestValidateRejectsUnsupportedValues(t *testing.T) {

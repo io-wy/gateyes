@@ -326,6 +326,30 @@ func (m *mockStore) GetUserRoleIDs(ctx context.Context, userID string) ([]string
 func (m *mockStore) GetUserPermissions(ctx context.Context, userID string) ([]repository.PermissionRecord, error) {
 	return nil, nil
 }
+func (m *mockStore) CreateSemanticCacheEntry(ctx context.Context, params repository.CreateSemanticCacheParams) (*repository.SemanticCacheRecord, error) {
+	return nil, nil
+}
+func (m *mockStore) ListSemanticCacheEntries(ctx context.Context, filter repository.SemanticCacheFilter) ([]repository.SemanticCacheRecord, error) {
+	return nil, nil
+}
+func (m *mockStore) FindSemanticCacheCandidates(ctx context.Context, filter repository.SemanticCacheFilter, embedding []float64) ([]repository.SemanticCacheCandidate, error) {
+	return nil, nil
+}
+func (m *mockStore) GetSemanticCacheEntry(ctx context.Context, tenantID, id string) (*repository.SemanticCacheRecord, error) {
+	return nil, nil
+}
+func (m *mockStore) UpdateSemanticCacheEntry(ctx context.Context, tenantID, id string, params repository.UpdateSemanticCacheParams) (*repository.SemanticCacheRecord, error) {
+	return nil, nil
+}
+func (m *mockStore) DeleteSemanticCacheEntry(ctx context.Context, tenantID, id string) error {
+	return nil
+}
+func (m *mockStore) DisableSemanticCacheEntriesByScope(ctx context.Context, tenantID, projectID, serviceID, apiKeyID, surface, model string) (int64, error) {
+	return 0, nil
+}
+func (m *mockStore) DeleteSemanticCacheEntriesExpiredBefore(ctx context.Context, before time.Time) (int64, error) {
+	return 0, nil
+}
 
 func newMockCatalogService(store repository.Store) *Service {
 	authSvc := auth.NewAuth(store)

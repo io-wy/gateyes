@@ -56,6 +56,7 @@ type Dependencies struct {
 type Service struct {
 	cfg            *config.Config
 	store          repository.Store
+	semanticCache  repository.SemanticCacheStore
 	auth           *auth.Auth
 	providerMgr    *provider.Manager
 	router         *router.Router
@@ -68,6 +69,7 @@ type Service struct {
 	eventBus       *eventbus.Bus
 	guardrails     *guardrail.Manager
 	pricingFeed    *pricing.Feed
+	embedding      semanticEmbeddingProvider
 	sfg            singleflight.Group
 	drainSem       chan struct{}
 	persistSem     chan struct{}
@@ -107,6 +109,7 @@ func New(deps *Dependencies) *Service {
 	s := &Service{
 		cfg:            deps.Config,
 		store:          deps.Store,
+		semanticCache:  deps.Store,
 		auth:           deps.Auth,
 		providerMgr:    deps.ProviderMgr,
 		router:         deps.Router,
@@ -121,6 +124,13 @@ func New(deps *Dependencies) *Service {
 		pricingFeed:    deps.PricingFeed,
 		drainSem:       make(chan struct{}, 100),
 		persistSem:     make(chan struct{}, 50),
+	}
+	if s.cfg != nil && s.providerMgr != nil {
+		if name := s.cfg.Cache.Semantic.EmbeddingProvider; name != "" {
+			if p, ok := s.providerMgr.Get(name); ok {
+				s.embedding = p
+			}
+		}
 	}
 	if deps.EventBus != nil {
 		deps.EventBus.RegisterEventHandler(eventbus.EventTypeResponseUpdate, s.handleUpdateResponseEvent)

@@ -33,6 +33,7 @@ var migrationOrder = []string{
 	"service_subscriptions.sql",
 	"responses.sql",
 	"response_details.sql",
+	"semantic_cache_entries.sql",
 	"usage_records.sql",
 	"audit_logs.sql",
 	"roles.sql",
@@ -47,6 +48,13 @@ var migrationOrder = []string{
 type DB struct {
 	Conn   *sql.DB
 	driver string
+}
+
+func (d *DB) Driver() string {
+	if d == nil {
+		return ""
+	}
+	return d.driver
 }
 
 func Open(cfg config.DatabaseConfig) (*DB, error) {
@@ -246,14 +254,14 @@ func (d *DB) isApplied(ctx context.Context, version string) (bool, error) {
 	return count > 0, nil
 }
 
-// mysqlCompatSQL adapts PostgreSQL/SQLite migration SQL for MySQL compatibility.
-// Currently a minimal pass-through; extend as needed for MySQL-specific syntax.
+// mysqlCompatSQL adapts PostgreSQL migration SQL for MySQL compatibility.
 func mysqlCompatSQL(sql string) string {
-	return sql
+	return portableCompatSQL(sql)
 }
 
 // sqliteCompatSQL adapts PostgreSQL-specific migration SQL for SQLite compatibility.
 func sqliteCompatSQL(sql string) string {
+	sql = portableCompatSQL(sql)
 	// SQLite supports INSERT OR IGNORE but not INSERT ... ON CONFLICT DO NOTHING
 	// with INSERT INTO ... SELECT. Rewrite all occurrences.
 	for strings.Contains(sql, "ON CONFLICT") && strings.Contains(sql, "INSERT INTO") {
@@ -269,6 +277,27 @@ func sqliteCompatSQL(sql string) string {
 		sql = sql[:idx] + sql[end:]
 	}
 	return sql
+}
+
+func portableCompatSQL(sql string) string {
+	sql = removeStatementContaining(sql, "CREATE EXTENSION")
+	sql = removeStatementContaining(sql, "USING ivfflat")
+	sql = removeStatementContaining(sql, "USING hnsw")
+	sql = strings.ReplaceAll(sql, "vector(1536)", "TEXT")
+	sql = strings.ReplaceAll(sql, "VECTOR(1536)", "TEXT")
+	return sql
+}
+
+func removeStatementContaining(sql string, marker string) string {
+	parts := strings.Split(sql, ";")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if strings.Contains(part, marker) {
+			continue
+		}
+		out = append(out, part)
+	}
+	return strings.Join(out, ";")
 }
 
 func driverName(driver string) (string, error) {

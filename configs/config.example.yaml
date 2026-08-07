@@ -105,6 +105,30 @@ persistence:
     readMaxBytes: 10485760
     maxAttempts: 3
 
+cache:
+  enabled: true
+  backend: auto
+  defaultTTL: 300
+  capacity: 1000
+  skipStream: false
+  skipTools: true
+  singleflight: true
+  promptRewrite: true
+  semantic:
+    enabled: false
+    backend: pgvector
+    embeddingProvider: openai-embeddings
+    embeddingModel: text-embedding-3-small
+    threshold: 0.92
+    maxCandidates: 5
+    ttlSeconds: 3600
+    writeAsync: true
+    allowStream: true
+    allowedSurfaces:
+      - responses
+      - service_responses
+    requireServiceOptIn: true
+
 providers:
   - name: longcat-openai
     type: openai

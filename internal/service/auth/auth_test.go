@@ -469,6 +469,30 @@ func (f *fakeIdentityStore) GetUserRoleIDs(ctx context.Context, userID string) (
 func (f *fakeIdentityStore) GetUserPermissions(ctx context.Context, userID string) ([]repository.PermissionRecord, error) {
 	return nil, nil
 }
+func (f *fakeIdentityStore) CreateSemanticCacheEntry(ctx context.Context, params repository.CreateSemanticCacheParams) (*repository.SemanticCacheRecord, error) {
+	return nil, nil
+}
+func (f *fakeIdentityStore) ListSemanticCacheEntries(ctx context.Context, filter repository.SemanticCacheFilter) ([]repository.SemanticCacheRecord, error) {
+	return nil, nil
+}
+func (f *fakeIdentityStore) FindSemanticCacheCandidates(ctx context.Context, filter repository.SemanticCacheFilter, embedding []float64) ([]repository.SemanticCacheCandidate, error) {
+	return nil, nil
+}
+func (f *fakeIdentityStore) GetSemanticCacheEntry(ctx context.Context, tenantID, id string) (*repository.SemanticCacheRecord, error) {
+	return nil, nil
+}
+func (f *fakeIdentityStore) UpdateSemanticCacheEntry(ctx context.Context, tenantID, id string, params repository.UpdateSemanticCacheParams) (*repository.SemanticCacheRecord, error) {
+	return nil, nil
+}
+func (f *fakeIdentityStore) DeleteSemanticCacheEntry(ctx context.Context, tenantID, id string) error {
+	return nil
+}
+func (f *fakeIdentityStore) DisableSemanticCacheEntriesByScope(ctx context.Context, tenantID, projectID, serviceID, apiKeyID, surface, model string) (int64, error) {
+	return 0, nil
+}
+func (f *fakeIdentityStore) DeleteSemanticCacheEntriesExpiredBefore(ctx context.Context, before time.Time) (int64, error) {
+	return 0, nil
+}
 
 func baseIdentity() *repository.AuthIdentity {
 	return &repository.AuthIdentity{

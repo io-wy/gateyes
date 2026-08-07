@@ -39,6 +39,7 @@ type Store interface {
 	AuditLogStore
 	VirtualKeyStore
 	RoleStore
+	SemanticCacheStore
 	Ping(ctx context.Context) error
 }
 
@@ -515,6 +516,87 @@ type ResponseRecord struct {
 	RouteTraceBody []byte
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+}
+
+type SemanticCacheRecord struct {
+	ID                  string
+	TenantID            string
+	ProjectID           string
+	ServiceID           string
+	APIKeyID            string
+	Surface             string
+	Model               string
+	EmbeddingModel      string
+	PromptHash          string
+	PromptCanonical     []byte
+	PromptText          string
+	Embedding           []float64
+	ResponseBody        []byte
+	StreamBody          []byte
+	ProviderName        string
+	UsageBody           []byte
+	SimilarityThreshold float64
+	ExpiresAt           time.Time
+	CreatedAt           time.Time
+	LastHitAt           *time.Time
+	HitCount            int64
+	Disabled            bool
+}
+
+type SemanticCacheCandidate struct {
+	SemanticCacheRecord
+	Similarity float64
+}
+
+type SemanticCacheFilter struct {
+	TenantID       string
+	ProjectID      string
+	ServiceID      string
+	APIKeyID       string
+	Surface        string
+	Model          string
+	EmbeddingModel string
+	Disabled       *bool
+	Limit          int
+}
+
+type CreateSemanticCacheParams struct {
+	TenantID            string
+	ProjectID           string
+	ServiceID           string
+	APIKeyID            string
+	Surface             string
+	Model               string
+	EmbeddingModel      string
+	PromptHash          string
+	PromptCanonical     []byte
+	PromptText          string
+	Embedding           []float64
+	ResponseBody        []byte
+	StreamBody          []byte
+	ProviderName        string
+	UsageBody           []byte
+	SimilarityThreshold float64
+	ExpiresAt           time.Time
+	Disabled            bool
+}
+
+type UpdateSemanticCacheParams struct {
+	LastHitAt *time.Time
+	HitCount  *int64
+	Disabled  *bool
+	ExpiresAt *time.Time
+}
+
+type SemanticCacheStore interface {
+	CreateSemanticCacheEntry(ctx context.Context, params CreateSemanticCacheParams) (*SemanticCacheRecord, error)
+	ListSemanticCacheEntries(ctx context.Context, filter SemanticCacheFilter) ([]SemanticCacheRecord, error)
+	FindSemanticCacheCandidates(ctx context.Context, filter SemanticCacheFilter, embedding []float64) ([]SemanticCacheCandidate, error)
+	GetSemanticCacheEntry(ctx context.Context, tenantID, id string) (*SemanticCacheRecord, error)
+	UpdateSemanticCacheEntry(ctx context.Context, tenantID, id string, params UpdateSemanticCacheParams) (*SemanticCacheRecord, error)
+	DeleteSemanticCacheEntry(ctx context.Context, tenantID, id string) error
+	DisableSemanticCacheEntriesByScope(ctx context.Context, tenantID, projectID, serviceID, apiKeyID, surface, model string) (int64, error)
+	DeleteSemanticCacheEntriesExpiredBefore(ctx context.Context, before time.Time) (int64, error)
 }
 
 type ServiceRecord struct {
