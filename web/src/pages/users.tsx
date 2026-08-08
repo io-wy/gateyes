@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Plus, Pencil, Trash2, BarChart3, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -6,6 +6,14 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { ScopeCheckboxGroup } from '@/components/scope-checkbox-group'
 import {
   Table,
   TableBody,
@@ -22,23 +30,38 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { providersApi } from '@/api/providers'
+import { projectsApi } from '@/api/projects'
+import { tenantsApi } from '@/api/tenants'
 import { usersApi } from '@/api/users'
 import type { User, CreateUserRequest } from '@/types/user'
+import type { ScopeOption } from '@/components/scope-checkbox-group'
 import { toast } from 'sonner'
 
 interface FormState extends CreateUserRequest {
   status?: string
 }
 
-function parseArray(value: string): string[] {
-  return value
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
+const EMPTY_SELECT_VALUE = '__empty__'
+
+const ROLE_OPTIONS = [
+  { value: 'tenant_user', label: '租户用户' },
+  { value: 'tenant_admin', label: '租户管理员' },
+  { value: 'super_admin', label: '平台管理员' },
+]
+
+function optionalSelectValue(value?: string | null) {
+  return value || EMPTY_SELECT_VALUE
 }
 
-function formatArray(arr?: string[]): string {
-  return (arr || []).join(', ')
+function fromOptionalSelectValue(value?: string | null) {
+  return !value || value === EMPTY_SELECT_VALUE ? '' : value
+}
+
+function uniqueSortedOptions(values: string[]): ScopeOption[] {
+  return [...new Set(values.filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b))
+    .map((value) => ({ value, label: value }))
 }
 
 export function UsersPage() {
@@ -48,11 +71,66 @@ export function UsersPage() {
   const [deletingUser, setDeletingUser] = useState<User | null>(null)
   const [usageUser, setUsageUser] = useState<User | null>(null)
   const [secretUser, setSecretUser] = useState<User | null>(null)
+  const [form, setForm] = useState<FormState>({
+    tenant_id: '',
+    project_id: '',
+    name: '',
+    email: '',
+    role: 'tenant_user',
+    quota: -1,
+    qps: 0,
+    key_budget_usd: 0,
+    models: [],
+    status: 'active',
+  })
 
   const { data: users, isLoading } = useQuery({
     queryKey: ['users'],
     queryFn: () => usersApi.list(),
   })
+
+  const { data: tenants } = useQuery({
+    queryKey: ['tenants', 'user-form'],
+    queryFn: () => tenantsApi.list(),
+  })
+
+  const { data: projects } = useQuery({
+    queryKey: ['projects', 'user-form'],
+    queryFn: () => projectsApi.list(),
+  })
+
+  const { data: providers } = useQuery({
+    queryKey: ['providers', 'user-form'],
+    queryFn: () => providersApi.list(),
+  })
+
+  const tenantOptions = useMemo(
+    () =>
+      (tenants || []).map((tenant) => ({
+        value: tenant.id,
+        label: `${tenant.name} (${tenant.slug || tenant.id})`,
+      })),
+    [tenants]
+  )
+
+  const projectOptions = useMemo(
+    () =>
+      (projects || [])
+        .filter(
+          (project) => !form.tenant_id || project.tenant_id === form.tenant_id
+        )
+        .map((project) => ({
+          value: project.id,
+          label: `${project.name} (${project.slug || project.id})`,
+        })),
+    [form.tenant_id, projects]
+  )
+
+  const modelOptions = useMemo(
+    () =>
+      uniqueSortedOptions((providers || []).map((provider) => provider.model)),
+    [providers]
+  )
 
   const { data: usageData } = useQuery({
     queryKey: ['user-usage', usageUser?.id],
@@ -101,19 +179,6 @@ export function UsersPage() {
       queryClient.invalidateQueries({ queryKey: ['users'] })
       toast.success('User 用量已重置')
     },
-  })
-
-  const [form, setForm] = useState<FormState>({
-    tenant_id: '',
-    project_id: '',
-    name: '',
-    email: '',
-    role: 'tenant_user',
-    quota: -1,
-    qps: 0,
-    key_budget_usd: 0,
-    models: [],
-    status: 'active',
   })
 
   const openCreate = () => {
@@ -298,34 +363,78 @@ export function UsersPage() {
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="role">角色</Label>
-                <Input
-                  id="role"
-                  value={form.role}
-                  onChange={(e) => setForm({ ...form, role: e.target.value })}
-                  placeholder="tenant_user / tenant_admin"
-                />
+                <Label>角色</Label>
+                <Select
+                  value={form.role || 'tenant_user'}
+                  onValueChange={(role) =>
+                    setForm({ ...form, role: role || 'tenant_user' })
+                  }
+                >
+                  <SelectTrigger className="w-full" aria-label="选择角色">
+                    <SelectValue placeholder="选择角色" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {ROLE_OPTIONS.map((role) => (
+                      <SelectItem key={role.value} value={role.value}>
+                        {role.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="project_id">Project ID</Label>
-                <Input
-                  id="project_id"
-                  value={form.project_id}
-                  onChange={(e) =>
-                    setForm({ ...form, project_id: e.target.value })
+                <Label>项目</Label>
+                <Select
+                  value={optionalSelectValue(form.project_id)}
+                  onValueChange={(value) =>
+                    setForm({
+                      ...form,
+                      project_id: fromOptionalSelectValue(value),
+                    })
                   }
-                />
+                >
+                  <SelectTrigger className="w-full" aria-label="选择项目">
+                    <SelectValue placeholder="不绑定项目" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={EMPTY_SELECT_VALUE}>
+                      不绑定项目
+                    </SelectItem>
+                    {projectOptions.map((project) => (
+                      <SelectItem key={project.value} value={project.value}>
+                        {project.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               {!editingUser && (
                 <div className="space-y-2">
-                  <Label htmlFor="tenant_id">Tenant ID（超级管理员）</Label>
-                  <Input
-                    id="tenant_id"
-                    value={form.tenant_id}
-                    onChange={(e) =>
-                      setForm({ ...form, tenant_id: e.target.value })
+                  <Label>租户</Label>
+                  <Select
+                    value={optionalSelectValue(form.tenant_id)}
+                    onValueChange={(value) =>
+                      setForm({
+                        ...form,
+                        tenant_id: fromOptionalSelectValue(value),
+                        project_id: '',
+                      })
                     }
-                  />
+                  >
+                    <SelectTrigger className="w-full" aria-label="选择租户">
+                      <SelectValue placeholder="使用当前租户" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={EMPTY_SELECT_VALUE}>
+                        使用当前租户
+                      </SelectItem>
+                      {tenantOptions.map((tenant) => (
+                        <SelectItem key={tenant.value} value={tenant.value}>
+                          {tenant.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
               )}
               <div className="space-y-2">
@@ -366,16 +475,13 @@ export function UsersPage() {
               </div>
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="models">允许模型（逗号分隔）</Label>
-              <Input
-                id="models"
-                value={formatArray(form.models)}
-                onChange={(e) =>
-                  setForm({ ...form, models: parseArray(e.target.value) })
-                }
-              />
-            </div>
+            <ScopeCheckboxGroup
+              idPrefix="user-model"
+              label="允许模型"
+              value={form.models}
+              options={modelOptions}
+              onChange={(models) => setForm({ ...form, models })}
+            />
 
             {editingUser && (
               <div className="flex items-center gap-2">

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Plus, Pencil, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -6,6 +6,14 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { ScopeCheckboxGroup } from '@/components/scope-checkbox-group'
 import {
   Table,
   TableBody,
@@ -23,26 +31,46 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { virtualKeysApi } from '@/api/virtual-keys'
+import { apiKeysApi } from '@/api/api-keys'
+import { providersApi } from '@/api/providers'
+import { projectsApi } from '@/api/projects'
+import { usersApi } from '@/api/users'
 import type { VirtualKey, CreateVirtualKeyRequest } from '@/types/virtual-key'
+import type { APIKey } from '@/types/api-key'
+import type { ScopeOption } from '@/components/scope-checkbox-group'
+import { useAuthStore } from '@/stores/auth-store'
+import { isAdminIdentity } from '@/lib/authz'
 import { toast } from 'sonner'
 
 interface FormState extends CreateVirtualKeyRequest {
   status?: string
 }
 
-function parseArray(value: string): string[] {
-  return value
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
+const EMPTY_SELECT_VALUE = '__empty__'
+
+function optionalSelectValue(value?: string | null) {
+  return value || EMPTY_SELECT_VALUE
 }
 
-function formatArray(arr?: string[]): string {
-  return (arr || []).join(', ')
+function fromOptionalSelectValue(value?: string | null) {
+  return !value || value === EMPTY_SELECT_VALUE ? '' : value
+}
+
+function uniqueSortedOptions(values: string[]): ScopeOption[] {
+  return [...new Set(values.filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b))
+    .map((value) => ({ value, label: value }))
+}
+
+function apiKeyLabel(key: APIKey) {
+  const owner = key.user_name || key.user_email || key.user_id
+  return owner ? `${key.api_key} / ${owner}` : key.api_key
 }
 
 export function VirtualKeysPage() {
   const queryClient = useQueryClient()
+  const identity = useAuthStore((state) => state.identity)
+  const isAdmin = isAdminIdentity(identity)
   const [formOpen, setFormOpen] = useState(false)
   const [editingKey, setEditingKey] = useState<VirtualKey | null>(null)
   const [deletingKey, setDeletingKey] = useState<VirtualKey | null>(null)
@@ -54,6 +82,74 @@ export function VirtualKeysPage() {
   })
 
   const keys = listData?.Items
+
+  const { data: apiKeys } = useQuery({
+    queryKey: ['api-keys', 'for-virtual-key'],
+    queryFn: () => apiKeysApi.list(),
+  })
+
+  const { data: users } = useQuery({
+    queryKey: ['users', 'virtual-key-form'],
+    queryFn: () => usersApi.list(),
+    enabled: isAdmin,
+  })
+
+  const { data: projects } = useQuery({
+    queryKey: ['projects', 'virtual-key-form'],
+    queryFn: () => projectsApi.list(),
+    enabled: isAdmin,
+  })
+
+  const { data: providers } = useQuery({
+    queryKey: ['providers', 'virtual-key-form'],
+    queryFn: () => providersApi.list(),
+  })
+
+  const activeAPIKeyOptions = useMemo(
+    () =>
+      (apiKeys || [])
+        .filter((key) => key.status === 'active')
+        .map((key) => ({
+          value: key.id,
+          label: apiKeyLabel(key),
+        })),
+    [apiKeys]
+  )
+
+  const userOptions = useMemo(
+    () =>
+      (users || []).map((user) => ({
+        value: user.id,
+        label: user.email ? `${user.name} (${user.email})` : user.name,
+      })),
+    [users]
+  )
+
+  const projectOptions = useMemo(
+    () =>
+      (projects || []).map((project) => ({
+        value: project.id,
+        label: `${project.name} (${project.slug || project.id})`,
+      })),
+    [projects]
+  )
+
+  const providerOptions = useMemo(
+    () =>
+      (providers || []).map((provider) => ({
+        value: provider.name,
+        label: provider.model
+          ? `${provider.name} (${provider.model})`
+          : provider.name,
+      })),
+    [providers]
+  )
+
+  const modelOptions = useMemo(
+    () =>
+      uniqueSortedOptions((providers || []).map((provider) => provider.model)),
+    [providers]
+  )
 
   const createMutation = useMutation({
     mutationFn: virtualKeysApi.create,
@@ -105,10 +201,12 @@ export function VirtualKeysPage() {
   })
 
   const openCreate = () => {
+    const defaultAPIKeyID =
+      apiKeys?.find((key) => key.status === 'active')?.id || ''
     setEditingKey(null)
     setForm({
       user_id: '',
-      api_key_id: '',
+      api_key_id: isAdmin ? '' : defaultAPIKeyID,
       project_id: '',
       name: '',
       budget_usd: 0,
@@ -142,6 +240,14 @@ export function VirtualKeysPage() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
+    if (!form.api_key_id) {
+      toast.error('请选择父 API Key')
+      return
+    }
+    if (isAdmin && !form.user_id) {
+      toast.error('请选择用户')
+      return
+    }
     if (editingKey) {
       updateMutation.mutate({
         id: editingKey.id,
@@ -164,7 +270,9 @@ export function VirtualKeysPage() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Virtual Key 管理</h1>
+        <h1 className="text-2xl font-semibold">
+          {isAdmin ? 'Virtual Key 管理' : '我的 Virtual Key'}
+        </h1>
         <Button onClick={openCreate}>
           <Plus className="mr-2 h-4 w-4" />
           创建 Virtual Key
@@ -248,30 +356,104 @@ export function VirtualKeysPage() {
           </DialogHeader>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="user_id">用户 ID *</Label>
-                <Input
-                  id="user_id"
-                  value={form.user_id}
-                  onChange={(e) =>
-                    setForm({ ...form, user_id: e.target.value })
-                  }
-                  required
-                  disabled={!!editingKey}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="api_key_id">API Key ID *</Label>
-                <Input
-                  id="api_key_id"
-                  value={form.api_key_id}
-                  onChange={(e) =>
-                    setForm({ ...form, api_key_id: e.target.value })
-                  }
-                  required
-                  disabled={!!editingKey}
-                />
-              </div>
+              {isAdmin ? (
+                <>
+                  <div className="space-y-2">
+                    <Label>用户 *</Label>
+                    <Select
+                      value={optionalSelectValue(form.user_id)}
+                      onValueChange={(value) =>
+                        setForm({
+                          ...form,
+                          user_id: fromOptionalSelectValue(value),
+                        })
+                      }
+                      disabled={!!editingKey}
+                    >
+                      <SelectTrigger className="w-full" aria-label="选择用户">
+                        <SelectValue placeholder="选择用户" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={EMPTY_SELECT_VALUE}>
+                          请选择用户
+                        </SelectItem>
+                        {userOptions.map((user) => (
+                          <SelectItem key={user.value} value={user.value}>
+                            {user.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>父 API Key *</Label>
+                    <Select
+                      value={optionalSelectValue(form.api_key_id)}
+                      onValueChange={(value) => {
+                        const apiKeyID = fromOptionalSelectValue(value)
+                        const parent = apiKeys?.find(
+                          (key) => key.id === apiKeyID
+                        )
+                        setForm({
+                          ...form,
+                          api_key_id: apiKeyID,
+                          user_id: parent?.user_id || form.user_id,
+                          project_id: parent?.project_id || form.project_id,
+                        })
+                      }}
+                      disabled={!!editingKey}
+                    >
+                      <SelectTrigger
+                        className="w-full"
+                        aria-label="选择父 API Key"
+                      >
+                        <SelectValue placeholder="选择 API Key" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={EMPTY_SELECT_VALUE}>
+                          请选择 API Key
+                        </SelectItem>
+                        {activeAPIKeyOptions.map((key) => (
+                          <SelectItem key={key.value} value={key.value}>
+                            {key.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </>
+              ) : (
+                <div className="space-y-2 md:col-span-2">
+                  <Label>父 API Key *</Label>
+                  <Select
+                    value={optionalSelectValue(form.api_key_id)}
+                    onValueChange={(value) =>
+                      setForm({
+                        ...form,
+                        api_key_id: fromOptionalSelectValue(value),
+                      })
+                    }
+                    disabled={!!editingKey}
+                  >
+                    <SelectTrigger
+                      className="w-full"
+                      aria-label="选择父 API Key"
+                    >
+                      <SelectValue placeholder="选择 API Key" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={EMPTY_SELECT_VALUE}>
+                        请选择 API Key
+                      </SelectItem>
+                      {activeAPIKeyOptions.map((key) => (
+                        <SelectItem key={key.value} value={key.value}>
+                          {key.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
               <div className="space-y-2">
                 <Label htmlFor="name">名称</Label>
                 <Input
@@ -280,16 +462,34 @@ export function VirtualKeysPage() {
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
                 />
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="project_id">Project ID</Label>
-                <Input
-                  id="project_id"
-                  value={form.project_id}
-                  onChange={(e) =>
-                    setForm({ ...form, project_id: e.target.value })
-                  }
-                />
-              </div>
+              {isAdmin && (
+                <div className="space-y-2">
+                  <Label>项目</Label>
+                  <Select
+                    value={optionalSelectValue(form.project_id)}
+                    onValueChange={(value) =>
+                      setForm({
+                        ...form,
+                        project_id: fromOptionalSelectValue(value),
+                      })
+                    }
+                  >
+                    <SelectTrigger className="w-full" aria-label="选择项目">
+                      <SelectValue placeholder="不绑定项目" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={EMPTY_SELECT_VALUE}>
+                        不绑定项目
+                      </SelectItem>
+                      {projectOptions.map((project) => (
+                        <SelectItem key={project.value} value={project.value}>
+                          {project.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
               <div className="space-y-2">
                 <Label htmlFor="budget_usd">预算 (USD)</Label>
                 <Input
@@ -320,32 +520,28 @@ export function VirtualKeysPage() {
               </div>
             </div>
 
-            {[
-              {
-                key: 'allowed_models',
-                label: '允许模型（逗号分隔）',
-                value: formatArray(form.allowed_models),
-              },
-              {
-                key: 'allowed_providers',
-                label: '允许 Provider（逗号分隔）',
-                value: formatArray(form.allowed_providers),
-              },
-            ].map((field) => (
-              <div key={field.key} className="space-y-2">
-                <Label htmlFor={field.key}>{field.label}</Label>
-                <Input
-                  id={field.key}
-                  value={field.value}
-                  onChange={(e) =>
-                    setForm({
-                      ...form,
-                      [field.key]: parseArray(e.target.value),
-                    } as FormState)
+            {isAdmin && (
+              <div className="grid gap-4 md:grid-cols-2">
+                <ScopeCheckboxGroup
+                  idPrefix="virtual-key-model"
+                  label="允许模型"
+                  value={form.allowed_models}
+                  options={modelOptions}
+                  onChange={(allowed_models) =>
+                    setForm({ ...form, allowed_models })
+                  }
+                />
+                <ScopeCheckboxGroup
+                  idPrefix="virtual-key-provider"
+                  label="允许 Provider"
+                  value={form.allowed_providers}
+                  options={providerOptions}
+                  onChange={(allowed_providers) =>
+                    setForm({ ...form, allowed_providers })
                   }
                 />
               </div>
-            ))}
+            )}
 
             <div className="space-y-2">
               <Label htmlFor="callback_url">Callback URL</Label>
