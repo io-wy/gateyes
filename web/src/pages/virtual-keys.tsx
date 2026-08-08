@@ -103,6 +103,7 @@ export function VirtualKeysPage() {
   const { data: providers } = useQuery({
     queryKey: ['providers', 'virtual-key-form'],
     queryFn: () => providersApi.list(),
+    enabled: isAdmin,
   })
 
   const activeAPIKeyOptions = useMemo(

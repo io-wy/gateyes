@@ -193,6 +193,9 @@ func (s *Store) UpdateVirtualKey(ctx context.Context, tenantID string, idOrKey s
 	if _, err := s.db.Conn.ExecContext(ctx, s.db.Rebind(query), args...); err != nil {
 		return nil, fmt.Errorf("update virtual key: %w", err)
 	}
+	if params.BudgetUSD != nil || params.BudgetPolicy != nil {
+		s.invalidateBudgetLedgerScope(ctx, "virtual_key", record.ID)
+	}
 	return s.GetVirtualKey(ctx, tenantID, record.ID)
 }
 
@@ -204,6 +207,7 @@ func (s *Store) DeleteVirtualKey(ctx context.Context, tenantID string, idOrKey s
 	if _, err := s.db.Conn.ExecContext(ctx, s.db.Rebind(`DELETE FROM virtual_keys WHERE id = ?`), record.ID); err != nil {
 		return fmt.Errorf("delete virtual key: %w", err)
 	}
+	s.invalidateBudgetLedgerScope(ctx, "virtual_key", record.ID)
 	return nil
 }
 

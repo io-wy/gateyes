@@ -130,6 +130,7 @@ func (h *AdminHandler) UpdateAPIKey(c *gin.Context) {
 		return
 	}
 	h.invalidateAPIKeyCache(record.Key)
+	h.invalidateAPIKeyIdentity(record.ID)
 	writeOK(c, apiKeyToResponse(*record))
 }
 
@@ -149,6 +150,7 @@ func (h *AdminHandler) RotateAPIKey(c *gin.Context) {
 	response["api_secret"] = result.Secret
 	response["token"] = result.Token
 	h.invalidateAPIKeyCache(result.OldKey, result.Record.Key)
+	h.invalidateAPIKeyIdentity(result.Record.ID)
 	h.recordAudit(c, "api_key.rotate", "api_key", result.Record.ID, gin.H{"api_key_id": result.Record.ID})
 	writeOK(c, response)
 }
@@ -165,6 +167,7 @@ func (h *AdminHandler) RevokeAPIKey(c *gin.Context) {
 		return
 	}
 	h.invalidateAPIKeyCache(record.Key)
+	h.invalidateAPIKeyIdentity(record.ID)
 	h.recordAudit(c, "api_key.revoke", "api_key", record.ID, gin.H{"api_key_id": record.ID})
 	writeOK(c, apiKeyToResponse(*record))
 }

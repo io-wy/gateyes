@@ -85,10 +85,21 @@ LIMIT 1`), key, key)
 }
 
 func (s *Store) TouchAPIKey(ctx context.Context, apiKeyID string, at time.Time) error {
+	if apiKeyID == "" {
+		return nil
+	}
+	if s.rdb != nil {
+		value := at.UTC().Format(time.RFC3339Nano)
+		_ = s.rdb.Set(ctx, lastUsedLatestKey(apiKeyID), value, lastUsedLatestTTL).Err()
+		shouldWrite, err := s.rdb.SetNX(ctx, lastUsedDebounceKey(apiKeyID), value, lastUsedDebounceWindow).Result()
+		if err == nil && !shouldWrite {
+			return nil
+		}
+	}
 	if _, err := s.db.Conn.ExecContext(ctx, s.db.Rebind(`
 UPDATE api_keys
 SET last_used_at = ?, updated_at = ?
-WHERE id = ?`), at, at, apiKeyID); err != nil {
+WHERE id = ?`), at.UTC(), at.UTC(), apiKeyID); err != nil {
 		return fmt.Errorf("touch api key: %w", err)
 	}
 	return nil
@@ -202,7 +213,13 @@ func (s *Store) ConsumeBudgets(ctx context.Context, apiKeyID, projectID, tenantI
 	if cost <= 0 && tokens <= 0 {
 		return true, nil
 	}
+	if ok, handled, err := s.consumeBudgetsRedis(ctx, apiKeyID, projectID, tenantID, virtualKeyID, userID, cost, tokens); handled {
+		return ok, err
+	}
+	return s.consumeBudgetsPG(ctx, apiKeyID, projectID, tenantID, virtualKeyID, userID, cost, tokens)
+}
 
+func (s *Store) consumeBudgetsPG(ctx context.Context, apiKeyID, projectID, tenantID, virtualKeyID, userID string, cost float64, tokens int) (bool, error) {
 	tx, err := s.db.Conn.BeginTx(ctx, nil)
 	if err != nil {
 		return false, fmt.Errorf("begin budget tx: %w", err)
@@ -331,12 +348,12 @@ func (s *Store) ConsumeBudgets(ctx context.Context, apiKeyID, projectID, tenantI
 	return true, nil
 }
 
-func budgetScopes(apiKeyID, projectID, tenantID, virtualKeyID string) []struct{ id, table string } {
-	return []struct{ id, table string }{
-		{virtualKeyID, "virtual_keys"},
-		{apiKeyID, "api_keys"},
-		{projectID, "projects"},
-		{tenantID, "tenants"},
+func budgetScopes(apiKeyID, projectID, tenantID, virtualKeyID string) []budgetScope {
+	return []budgetScope{
+		{ID: virtualKeyID, Scope: "virtual_key", Table: "virtual_keys"},
+		{ID: apiKeyID, Scope: "api_key", Table: "api_keys"},
+		{ID: projectID, Scope: "project", Table: "projects"},
+		{ID: tenantID, Scope: "tenant", Table: "tenants"},
 	}
 }
 
@@ -352,6 +369,9 @@ func (s *Store) ReserveBudgets(ctx context.Context, apiKeyID, projectID, tenantI
 	if amount <= 0 {
 		return true, nil
 	}
+	if ok, handled, err := s.reserveBudgetsRedis(ctx, apiKeyID, projectID, tenantID, virtualKeyID, amount); handled {
+		return ok, err
+	}
 	tx, err := s.db.Conn.BeginTx(ctx, nil)
 	if err != nil {
 		return false, fmt.Errorf("begin reserve tx: %w", err)
@@ -360,21 +380,21 @@ func (s *Store) ReserveBudgets(ctx context.Context, apiKeyID, projectID, tenantI
 
 	now := time.Now().UTC()
 	for _, sc := range budgetScopes(apiKeyID, projectID, tenantID, virtualKeyID) {
-		if sc.id == "" {
+		if sc.ID == "" {
 			continue
 		}
 		result, err := tx.ExecContext(ctx, s.db.Rebind(fmt.Sprintf(`
 			UPDATE %s
 			SET reserved_usd = reserved_usd + ?, updated_at = ?
 			WHERE id = ?
-			  AND (budget_usd <= 0 OR reserved_usd + ? <= budget_usd)
-		`, sc.table)), amount, now, sc.id, amount)
+			  AND (budget_usd <= 0 OR spent_usd + reserved_usd + ? <= budget_usd OR budget_policy != 'hard_reject')
+		`, sc.Table)), amount, now, sc.ID, amount)
 		if err != nil {
-			return false, fmt.Errorf("reserve %s budget: %w", sc.table, err)
+			return false, fmt.Errorf("reserve %s budget: %w", sc.Table, err)
 		}
 		rows, err := result.RowsAffected()
 		if err != nil {
-			return false, fmt.Errorf("reserve %s budget rows: %w", sc.table, err)
+			return false, fmt.Errorf("reserve %s budget rows: %w", sc.Table, err)
 		}
 		if rows == 0 {
 			return false, nil
@@ -392,6 +412,9 @@ func (s *Store) CommitBudgets(ctx context.Context, apiKeyID, projectID, tenantID
 	if amount <= 0 {
 		return nil
 	}
+	if handled, err := s.commitBudgetsRedis(ctx, apiKeyID, projectID, tenantID, virtualKeyID, amount); handled {
+		return err
+	}
 	tx, err := s.db.Conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin commit tx: %w", err)
@@ -400,15 +423,15 @@ func (s *Store) CommitBudgets(ctx context.Context, apiKeyID, projectID, tenantID
 
 	now := time.Now().UTC()
 	for _, sc := range budgetScopes(apiKeyID, projectID, tenantID, virtualKeyID) {
-		if sc.id == "" {
+		if sc.ID == "" {
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, s.db.Rebind(fmt.Sprintf(`
 			UPDATE %s
 			SET reserved_usd = reserved_usd - ?, spent_usd = spent_usd + ?, updated_at = ?
 			WHERE id = ?
-		`, sc.table)), amount, amount, now, sc.id); err != nil {
-			return fmt.Errorf("commit %s budget: %w", sc.table, err)
+		`, sc.Table)), amount, amount, now, sc.ID); err != nil {
+			return fmt.Errorf("commit %s budget: %w", sc.Table, err)
 		}
 	}
 
@@ -423,6 +446,9 @@ func (s *Store) ReleaseBudgets(ctx context.Context, apiKeyID, projectID, tenantI
 	if amount <= 0 {
 		return nil
 	}
+	if handled, err := s.releaseBudgetsRedis(ctx, apiKeyID, projectID, tenantID, virtualKeyID, amount); handled {
+		return err
+	}
 	tx, err := s.db.Conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin release tx: %w", err)
@@ -431,15 +457,15 @@ func (s *Store) ReleaseBudgets(ctx context.Context, apiKeyID, projectID, tenantI
 
 	now := time.Now().UTC()
 	for _, sc := range budgetScopes(apiKeyID, projectID, tenantID, virtualKeyID) {
-		if sc.id == "" {
+		if sc.ID == "" {
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, s.db.Rebind(fmt.Sprintf(`
 			UPDATE %s
 			SET reserved_usd = reserved_usd - ?, updated_at = ?
 			WHERE id = ?
-		`, sc.table)), amount, now, sc.id); err != nil {
-			return fmt.Errorf("release %s budget: %w", sc.table, err)
+		`, sc.Table)), amount, now, sc.ID); err != nil {
+			return fmt.Errorf("release %s budget: %w", sc.Table, err)
 		}
 	}
 

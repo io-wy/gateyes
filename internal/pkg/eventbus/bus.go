@@ -58,6 +58,8 @@ type EventHandler func(ctx context.Context, payload []byte) error
 const (
 	EventTypeResponseDetails = "response:details"
 	EventTypeResponseUpdate  = "response:update"
+	EventTypeUsageRecord     = "usage:record"
+	EventTypeBudgetLedger    = "budget:ledger"
 	EventTypeBatchItem       = "batch:item"
 )
 

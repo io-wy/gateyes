@@ -124,6 +124,7 @@ func Run(ctx context.Context, configPath string) error {
 			return fmt.Errorf("connect redis: %w", err)
 		}
 		defer redispkg.Close(redisClient)
+		store.SetRedis(redisClient)
 		limiterSvc.SetRedis(redisClient)
 		slog.Info("Redis connected", "addr", cfg.Redis.Addr)
 	}
@@ -304,6 +305,9 @@ func Run(ctx context.Context, configPath string) error {
 	runtime.Go("response-ttl-cleanup", func(ctx context.Context) {
 		runResponseTTLCleanup(ctx, store)
 	})
+	runtime.Go("budget-ledger-flush", func(ctx context.Context) {
+		runBudgetLedgerFlush(ctx, store)
+	})
 	runtime.OnStart("health-checker", func(ctx context.Context) {
 		healthChecker.Start(ctx)
 	})
@@ -373,5 +377,33 @@ func cleanupResponses(ctx context.Context, store responseTTLStore) {
 	}
 	if deleted > 0 {
 		slog.Info("response TTL cleanup completed", "deleted", deleted)
+	}
+}
+
+type budgetLedgerFlusher interface {
+	FlushBudgetLedgerDeltas(context.Context) error
+}
+
+func runBudgetLedgerFlush(ctx context.Context, store budgetLedgerFlusher) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	flushBudgetLedger(ctx, store)
+	for {
+		select {
+		case <-ticker.C:
+			flushBudgetLedger(ctx, store)
+		case <-ctx.Done():
+			flushBudgetLedger(context.Background(), store)
+			return
+		}
+	}
+}
+
+func flushBudgetLedger(ctx context.Context, store budgetLedgerFlusher) {
+	if store == nil {
+		return
+	}
+	if err := store.FlushBudgetLedgerDeltas(ctx); err != nil {
+		slog.Error("budget ledger flush failed", "error", err)
 	}
 }

@@ -180,6 +180,7 @@ func (h *AdminHandler) UpdateUser(c *gin.Context) {
 		return
 	}
 
+	h.invalidateUserIdentities(user.ID)
 	h.recordAudit(c, "user.update", "user", user.ID, req)
 	writeOK(c, userToResponse(*user))
 }
@@ -191,7 +192,16 @@ func (h *AdminHandler) DeleteUser(c *gin.Context) {
 		tenantID = ""
 	}
 
-	if err := h.store.DeleteUser(c.Request.Context(), tenantID, c.Param("id")); err != nil {
+	user, err := h.store.GetUser(c.Request.Context(), tenantID, c.Param("id"))
+	if err != nil {
+		if err == repository.ErrNotFound {
+			writeError(c, http.StatusNotFound, CodeUserNotFound, "user not found")
+			return
+		}
+		writeInternalError(c, err)
+		return
+	}
+	if err := h.store.DeleteUser(c.Request.Context(), tenantID, user.ID); err != nil {
 		if err == repository.ErrNotFound {
 			writeError(c, http.StatusNotFound, CodeUserNotFound, "user not found")
 			return
@@ -200,7 +210,8 @@ func (h *AdminHandler) DeleteUser(c *gin.Context) {
 		return
 	}
 
-	h.recordAudit(c, "user.delete", "user", c.Param("id"), gin.H{"user_id": c.Param("id")})
+	h.invalidateUserIdentities(user.ID)
+	h.recordAudit(c, "user.delete", "user", user.ID, gin.H{"user_id": user.ID})
 	writeOKMsg(c, "user deleted", nil)
 }
 

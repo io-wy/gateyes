@@ -2,9 +2,14 @@ package sqlstore
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/gateyes/gateway/internal/pkg/eventbus"
 	"github.com/gateyes/gateway/internal/repository"
+	"github.com/gateyes/gateway/internal/testutil"
 )
 
 // reserveTestTenant creates an active tenant with the given budget and returns its ID.
@@ -32,6 +37,16 @@ func readReservedSpent(t *testing.T, store *Store, table, id string) (reserved, 
 		t.Fatalf("read %s reserved/spent for %s: %v", table, id, err)
 	}
 	return reserved, spent
+}
+
+func readUserUsed(t *testing.T, store *Store, userID string) int {
+	t.Helper()
+	var used int
+	if err := store.db.Conn.QueryRowContext(context.Background(), store.db.Rebind(
+		"SELECT used FROM users WHERE id = ?"), userID).Scan(&used); err != nil {
+		t.Fatalf("read user used for %s: %v", userID, err)
+	}
+	return used
 }
 
 func TestReserveBudgetsSucceedsWithinBudget(t *testing.T) {
@@ -132,6 +147,165 @@ func TestReserveBudgetsUnlimitedAndNonPositiveAmount(t *testing.T) {
 	}
 	if reserved, _ := readReservedSpent(t, store, "tenants", capped); reserved != 0 {
 		t.Fatalf("reserved after reserve(0) = %v, want 0", reserved)
+	}
+}
+
+func TestConsumeBudgetsRedisLedgerDefersPGFlush(t *testing.T) {
+	store := newTestStore(t)
+	rdb := testutil.NewRedisClient(t)
+	store.SetRedis(rdb)
+	bus := eventbus.New(eventbus.Options{Buffer: 8, Workers: 1})
+	store.SetEventBus(bus)
+	t.Cleanup(func() { _ = bus.Close() })
+
+	ctx := context.Background()
+	tenantID := reserveTestTenant(t, store, "tenant-ledger-defer", 100)
+	if err := store.EnsureBootstrapKey(ctx, repository.BootstrapAPIKeyParams{
+		TenantID:   tenantID,
+		Key:        "ledger-defer-key",
+		SecretHash: repository.HashSecret("secret"),
+		Name:       "ledger defer",
+		Email:      "ledger-defer@example.com",
+		Role:       repository.RoleTenantUser,
+		Quota:      100,
+		QPS:        10,
+	}); err != nil {
+		t.Fatalf("seed api key: %v", err)
+	}
+	identity, err := store.Authenticate(ctx, "ledger-defer-key")
+	if err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+
+	ok, err := store.ConsumeBudgets(ctx, identity.APIKeyID, "", tenantID, "", identity.UserID, 12, 7)
+	if err != nil || !ok {
+		t.Fatalf("ConsumeBudgets(redis) = (%v,%v), want (true,nil)", ok, err)
+	}
+	if _, spent := readReservedSpent(t, store, "tenants", tenantID); spent != 0 {
+		t.Fatalf("tenant spent before eventbus start = %v, want 0", spent)
+	}
+	if used := readUserUsed(t, store, identity.UserID); used != 0 {
+		t.Fatalf("user used before eventbus start = %v, want 0", used)
+	}
+	ledgerSpent, err := rdb.HGet(ctx, budgetLedgerKey("tenant", tenantID), "spent").Float64()
+	if err != nil || ledgerSpent != 12 {
+		t.Fatalf("redis ledger spent = (%v,%v), want (12,nil)", ledgerSpent, err)
+	}
+	quotaUsed, err := rdb.HGet(ctx, quotaLedgerKey(identity.UserID), "used").Float64()
+	if err != nil || quotaUsed != 7 {
+		t.Fatalf("redis quota used = (%v,%v), want (7,nil)", quotaUsed, err)
+	}
+
+	bus.Start(ctx)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		_, spent := readReservedSpent(t, store, "tenants", tenantID)
+		used := readUserUsed(t, store, identity.UserID)
+		if spent == 12 && used == 7 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("ledger deltas not flushed: spent=%v used=%v", spent, used)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestConsumeBudgetsRedisLedgerRejectsConcurrentOverBudget(t *testing.T) {
+	store := newTestStore(t)
+	rdb := testutil.NewRedisClient(t)
+	store.SetRedis(rdb)
+	store.SetEventBus(eventbus.New(eventbus.Options{Buffer: 64, Workers: 1}))
+
+	ctx := context.Background()
+	tenantID := reserveTestTenant(t, store, "tenant-ledger-concurrent", 100)
+	if err := store.ensureBudgetLedgerScopes(ctx, activeBudgetScopes("", "", tenantID, "")); err != nil {
+		t.Fatalf("ensure ledger: %v", err)
+	}
+
+	var allowed atomic.Int64
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ok, err := store.ConsumeBudgets(ctx, "", "", tenantID, "", "", 3, 0)
+			if err != nil {
+				t.Errorf("ConsumeBudgets(redis) error: %v", err)
+				return
+			}
+			if ok {
+				allowed.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if allowed.Load() != 33 {
+		t.Fatalf("allowed requests = %d, want 33", allowed.Load())
+	}
+	ledgerSpent, err := rdb.HGet(ctx, budgetLedgerKey("tenant", tenantID), "spent").Float64()
+	if err != nil || ledgerSpent != 99 {
+		t.Fatalf("redis ledger spent = (%v,%v), want (99,nil)", ledgerSpent, err)
+	}
+	if _, spent := readReservedSpent(t, store, "tenants", tenantID); spent != 0 {
+		t.Fatalf("tenant PG spent before eventbus start = %v, want 0", spent)
+	}
+}
+
+func TestReserveCommitReleaseBudgetsRedisLedger(t *testing.T) {
+	store := newTestStore(t)
+	rdb := testutil.NewRedisClient(t)
+	store.SetRedis(rdb)
+	bus := eventbus.New(eventbus.Options{Buffer: 16, Workers: 1})
+	store.SetEventBus(bus)
+	t.Cleanup(func() { _ = bus.Close() })
+
+	ctx := context.Background()
+	tenantID := reserveTestTenant(t, store, "tenant-ledger-reserve", 100)
+	ok, err := store.ReserveBudgets(ctx, "", "", tenantID, "", 40)
+	if err != nil || !ok {
+		t.Fatalf("ReserveBudgets(redis) = (%v,%v), want (true,nil)", ok, err)
+	}
+	redisReserved, err := rdb.HGet(ctx, budgetLedgerKey("tenant", tenantID), "reserved").Float64()
+	if err != nil || redisReserved != 40 {
+		t.Fatalf("redis reserved after reserve = (%v,%v), want (40,nil)", redisReserved, err)
+	}
+
+	if err := store.ReleaseBudgets(ctx, "", "", tenantID, "", 10); err != nil {
+		t.Fatalf("ReleaseBudgets(redis): %v", err)
+	}
+	redisReserved, err = rdb.HGet(ctx, budgetLedgerKey("tenant", tenantID), "reserved").Float64()
+	if err != nil || redisReserved != 30 {
+		t.Fatalf("redis reserved after release = (%v,%v), want (30,nil)", redisReserved, err)
+	}
+
+	if err := store.CommitBudgets(ctx, "", "", tenantID, "", 30); err != nil {
+		t.Fatalf("CommitBudgets(redis): %v", err)
+	}
+	redisReserved, err = rdb.HGet(ctx, budgetLedgerKey("tenant", tenantID), "reserved").Float64()
+	if err != nil || redisReserved != 0 {
+		t.Fatalf("redis reserved after commit = (%v,%v), want (0,nil)", redisReserved, err)
+	}
+	redisSpent, err := rdb.HGet(ctx, budgetLedgerKey("tenant", tenantID), "spent").Float64()
+	if err != nil || redisSpent != 30 {
+		t.Fatalf("redis spent after commit = (%v,%v), want (30,nil)", redisSpent, err)
+	}
+	if reserved, spent := readReservedSpent(t, store, "tenants", tenantID); reserved != 0 || spent != 0 {
+		t.Fatalf("PG before eventbus start = reserved:%v spent:%v, want zero", reserved, spent)
+	}
+
+	bus.Start(ctx)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		reserved, spent := readReservedSpent(t, store, "tenants", tenantID)
+		if reserved == 0 && spent == 30 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("reserve ledger deltas not flushed: reserved=%v spent=%v", reserved, spent)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

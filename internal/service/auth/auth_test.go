@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gateyes/gateway/internal/repository"
+	"github.com/gateyes/gateway/internal/testutil"
 )
 
 type fakeIdentityStore struct {
@@ -31,6 +32,7 @@ type fakeIdentityStore struct {
 	usageRecords               []repository.UsageRecord
 	virtualKey                 *repository.VirtualKeyRecord
 	virtualKeyErr              error
+	authenticateCalls          int
 }
 
 func (f *fakeIdentityStore) CreateUser(ctx context.Context, params repository.CreateUserParams) (*repository.UserRecord, error) {
@@ -62,6 +64,7 @@ func (f *fakeIdentityStore) Stats(ctx context.Context, tenantID string) (*reposi
 }
 
 func (f *fakeIdentityStore) Authenticate(ctx context.Context, key string) (*repository.AuthIdentity, error) {
+	f.authenticateCalls++
 	if f.authenticateErr != nil {
 		return nil, f.authenticateErr
 	}
@@ -566,6 +569,80 @@ func TestInvalidateKeyClearsCachedIdentity(t *testing.T) {
 	service.InvalidateKey("key-1")
 	if _, err := service.Authenticate(context.Background(), "key-1", "secret-1"); !errors.Is(err, ErrInactiveAPIKey) {
 		t.Fatalf("Authenticate(after invalidate) error = %v, want %v", err, ErrInactiveAPIKey)
+	}
+}
+
+func TestAuthenticateUsesRedisIdentityCacheAcrossInstances(t *testing.T) {
+	ctx := context.Background()
+	rdb := testutil.NewRedisClient(t)
+
+	store1 := &fakeIdentityStore{identity: baseIdentity()}
+	service1 := NewAuth(store1)
+	service1.SetRedis(rdb)
+	if _, err := service1.Authenticate(ctx, "key-1", "secret-1"); err != nil {
+		t.Fatalf("Authenticate(seed redis) error: %v", err)
+	}
+	if store1.authenticateCalls != 1 {
+		t.Fatalf("Authenticate(seed redis) calls = %d, want 1", store1.authenticateCalls)
+	}
+
+	store2 := &fakeIdentityStore{authenticateErr: errors.New("store should not be called")}
+	service2 := NewAuth(store2)
+	service2.SetRedis(rdb)
+	got, err := service2.Authenticate(ctx, "key-1", "secret-1")
+	if err != nil {
+		t.Fatalf("Authenticate(redis hit) error: %v", err)
+	}
+	if got.UserID != "user-1" {
+		t.Fatalf("Authenticate(redis hit).UserID = %q, want user-1", got.UserID)
+	}
+	if store2.authenticateCalls != 0 {
+		t.Fatalf("Authenticate(redis hit) store calls = %d, want 0", store2.authenticateCalls)
+	}
+
+	service2.InvalidateKey("key-1")
+	store3 := &fakeIdentityStore{identity: store1.identity}
+	service3 := NewAuth(store3)
+	service3.SetRedis(rdb)
+	if _, err := service3.Authenticate(ctx, "key-1", "secret-1"); err != nil {
+		t.Fatalf("Authenticate(after redis invalidate) error: %v", err)
+	}
+	if store3.authenticateCalls != 1 {
+		t.Fatalf("Authenticate(after redis invalidate) calls = %d, want 1", store3.authenticateCalls)
+	}
+}
+
+func TestAuthenticateInvalidatesRedisIdentityCacheByUserRevision(t *testing.T) {
+	ctx := context.Background()
+	rdb := testutil.NewRedisClient(t)
+
+	store1 := &fakeIdentityStore{identity: baseIdentity()}
+	service1 := NewAuth(store1)
+	service1.SetRedis(rdb)
+	if _, err := service1.Authenticate(ctx, "key-1", "secret-1"); err != nil {
+		t.Fatalf("Authenticate(seed redis) error: %v", err)
+	}
+
+	store2 := &fakeIdentityStore{identity: baseIdentity()}
+	service2 := NewAuth(store2)
+	service2.SetRedis(rdb)
+	if _, err := service2.Authenticate(ctx, "key-1", "secret-1"); err != nil {
+		t.Fatalf("Authenticate(redis hit) error: %v", err)
+	}
+	if store2.authenticateCalls != 0 {
+		t.Fatalf("Authenticate(redis hit) store calls = %d, want 0", store2.authenticateCalls)
+	}
+
+	revoked := baseIdentity()
+	revoked.UserStatus = repository.StatusInactive
+	store2.identity = revoked
+	service2.InvalidateUser("user-1")
+
+	if _, err := service2.Authenticate(ctx, "key-1", "secret-1"); !errors.Is(err, ErrInactiveAPIKey) {
+		t.Fatalf("Authenticate(after user invalidate) error = %v, want %v", err, ErrInactiveAPIKey)
+	}
+	if store2.authenticateCalls != 1 {
+		t.Fatalf("Authenticate(after user invalidate) store calls = %d, want 1", store2.authenticateCalls)
 	}
 }
 

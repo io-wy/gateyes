@@ -108,6 +108,7 @@ func (h *AdminHandler) UpdateTenant(c *gin.Context) {
 		return
 	}
 
+	h.invalidateTenantIdentities(tenant.ID)
 	h.recordAudit(c, "tenant.update", "tenant", tenant.ID, req)
 	writeOK(c, tenantToResponse(*tenant))
 }
@@ -150,7 +151,8 @@ func (h *AdminHandler) ReplaceTenantProviders(c *gin.Context) {
 }
 
 func (h *AdminHandler) DeleteTenant(c *gin.Context) {
-	if err := h.store.DeleteTenant(c.Request.Context(), c.Param("id")); err != nil {
+	tenant, err := h.store.GetTenant(c.Request.Context(), c.Param("id"))
+	if err != nil {
 		if err == repository.ErrNotFound {
 			writeError(c, http.StatusNotFound, CodeBadRequest, "tenant not found")
 			return
@@ -158,8 +160,17 @@ func (h *AdminHandler) DeleteTenant(c *gin.Context) {
 		writeInternalError(c, err)
 		return
 	}
-	h.recordAudit(c, "tenant.delete", "tenant", c.Param("id"), gin.H{"tenant_id": c.Param("id")})
-	writeOK(c, gin.H{"id": c.Param("id"), "deleted": true})
+	if err := h.store.DeleteTenant(c.Request.Context(), tenant.ID); err != nil {
+		if err == repository.ErrNotFound {
+			writeError(c, http.StatusNotFound, CodeBadRequest, "tenant not found")
+			return
+		}
+		writeInternalError(c, err)
+		return
+	}
+	h.invalidateTenantIdentities(tenant.ID)
+	h.recordAudit(c, "tenant.delete", "tenant", tenant.ID, gin.H{"tenant_id": tenant.ID})
+	writeOK(c, gin.H{"id": tenant.ID, "deleted": true})
 }
 
 func (h *AdminHandler) allProvidersExist(names []string) bool {

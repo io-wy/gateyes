@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gateyes/gateway/internal/repository"
+	"github.com/gateyes/gateway/internal/testutil"
 )
 
 func seedTenantAndUser(t *testing.T, store *Store) (string, string) {
@@ -198,6 +199,47 @@ func TestTouchAPIKey(t *testing.T) {
 	}
 	if got.LastUsedAt == nil || !got.LastUsedAt.Equal(now) {
 		t.Fatalf("TouchAPIKey() last_used_at not set correctly")
+	}
+}
+
+func TestTouchAPIKeyRedisDebounce(t *testing.T) {
+	store := newTestStore(t)
+	store.SetRedis(testutil.NewRedisClient(t))
+	ctx := context.Background()
+
+	_, userID := seedTenantAndUser(t, store)
+	key, err := store.CreateAPIKey(ctx, repository.CreateAPIKeyParams{
+		UserID:     userID,
+		Key:        "touch-redis-key",
+		SecretHash: repository.HashSecret("touch-redis-secret"),
+	})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error: %v", err)
+	}
+
+	first := time.Now().UTC().Truncate(time.Microsecond)
+	second := first.Add(10 * time.Second)
+	if err := store.TouchAPIKey(ctx, key.ID, first); err != nil {
+		t.Fatalf("TouchAPIKey(first) error: %v", err)
+	}
+	if err := store.TouchAPIKey(ctx, key.ID, second); err != nil {
+		t.Fatalf("TouchAPIKey(second) error: %v", err)
+	}
+
+	got, err := store.GetAPIKey(ctx, "", key.ID)
+	if err != nil {
+		t.Fatalf("GetAPIKey() error: %v", err)
+	}
+	if got.LastUsedAt == nil || !got.LastUsedAt.Equal(first) {
+		t.Fatalf("TouchAPIKey() last_used_at = %v, want debounced first value %v", got.LastUsedAt, first)
+	}
+
+	latest, err := store.rdb.Get(ctx, lastUsedLatestKey(key.ID)).Result()
+	if err != nil {
+		t.Fatalf("redis latest last_used_at: %v", err)
+	}
+	if latest != second.Format(time.RFC3339Nano) {
+		t.Fatalf("redis latest last_used_at = %q, want %q", latest, second.Format(time.RFC3339Nano))
 	}
 }
 

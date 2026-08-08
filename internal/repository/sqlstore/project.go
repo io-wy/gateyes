@@ -126,6 +126,9 @@ SET %s
 WHERE id = ?`, strings.Join(sets, ", "))), args...); err != nil {
 		return nil, fmt.Errorf("update project: %w", err)
 	}
+	if params.BudgetUSD != nil || params.BudgetPolicy != nil {
+		s.invalidateBudgetLedgerScope(ctx, "project", project.ID)
+	}
 	return s.GetProject(ctx, project.TenantID, project.ID)
 }
 
@@ -179,6 +182,7 @@ func (s *Store) DeleteProject(ctx context.Context, tenantID string, idOrSlug str
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit delete project: %w", err)
 	}
+	s.invalidateBudgetLedgerScope(ctx, "project", project.ID)
 	return nil
 }
 

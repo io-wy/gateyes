@@ -127,12 +127,14 @@ func (h *AdminHandler) UpdateProject(c *gin.Context) {
 		writeInternalError(c, err)
 		return
 	}
+	h.invalidateProjectIdentities(project.ID)
 	writeOK(c, projectToResponse(*project))
 }
 
 func (h *AdminHandler) DeleteProject(c *gin.Context) {
 	tenantID := h.adminTenantID(c)
-	if err := h.store.DeleteProject(c.Request.Context(), tenantID, c.Param("id")); err != nil {
+	project, err := h.store.GetProject(c.Request.Context(), tenantID, c.Param("id"))
+	if err != nil {
 		if err == repository.ErrNotFound {
 			writeError(c, http.StatusNotFound, CodeProjectNotFound, "project not found")
 			return
@@ -140,8 +142,17 @@ func (h *AdminHandler) DeleteProject(c *gin.Context) {
 		writeInternalError(c, err)
 		return
 	}
-	h.recordAudit(c, "project.delete", "project", c.Param("id"), gin.H{"project_id": c.Param("id")})
-	writeOK(c, gin.H{"id": c.Param("id"), "deleted": true})
+	if err := h.store.DeleteProject(c.Request.Context(), tenantID, project.ID); err != nil {
+		if err == repository.ErrNotFound {
+			writeError(c, http.StatusNotFound, CodeProjectNotFound, "project not found")
+			return
+		}
+		writeInternalError(c, err)
+		return
+	}
+	h.invalidateProjectIdentities(project.ID)
+	h.recordAudit(c, "project.delete", "project", project.ID, gin.H{"project_id": project.ID})
+	writeOK(c, gin.H{"id": project.ID, "deleted": true})
 }
 
 func projectToResponse(project repository.ProjectRecord) gin.H {

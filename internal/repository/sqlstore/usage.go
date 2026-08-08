@@ -2,11 +2,14 @@ package sqlstore
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/gateyes/gateway/internal/pkg/eventbus"
 	"github.com/gateyes/gateway/internal/repository"
 )
 
@@ -18,6 +21,36 @@ func (s *Store) CreateUsageRecord(ctx context.Context, record repository.UsageRe
 		record.CreatedAt = time.Now().UTC()
 	}
 
+	if s.eventBus != nil {
+		payload, err := json.Marshal(record)
+		if err != nil {
+			return fmt.Errorf("marshal usage record event: %w", err)
+		}
+		if s.eventBus.PublishEvent(ctx, eventbus.Event{
+			Key:     record.ID,
+			Type:    eventbus.EventTypeUsageRecord,
+			Payload: payload,
+		}) {
+			return nil
+		}
+	}
+
+	return s.insertUsageRecord(ctx, record)
+}
+
+func (s *Store) handleUsageRecordEvent(ctx context.Context, payload []byte) error {
+	var record repository.UsageRecord
+	if err := json.Unmarshal(payload, &record); err != nil {
+		return fmt.Errorf("decode usage record event: %w", err)
+	}
+	if err := s.insertUsageRecord(ctx, record); err != nil {
+		slog.Error("async CreateUsageRecord failed", "usage_id", record.ID, "error", err)
+		return err
+	}
+	return nil
+}
+
+func (s *Store) insertUsageRecord(ctx context.Context, record repository.UsageRecord) error {
 	if _, err := s.db.Conn.ExecContext(ctx, s.db.Rebind(`
 INSERT INTO usage_records (
 	id, tenant_id, project_id, user_id, api_key_id, provider_name, model,

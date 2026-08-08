@@ -238,6 +238,9 @@ SET %s
 WHERE id = ?`, strings.Join(sets, ", "))), args...); err != nil {
 		return nil, fmt.Errorf("update api key: %w", err)
 	}
+	if params.BudgetUSD != nil || params.BudgetPolicy != nil {
+		s.invalidateBudgetLedgerScope(ctx, "api_key", record.ID)
+	}
 
 	return s.GetAPIKey(ctx, record.TenantID, record.ID)
 }

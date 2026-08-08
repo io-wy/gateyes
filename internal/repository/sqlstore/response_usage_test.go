@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gateyes/gateway/internal/pkg/eventbus"
 	"github.com/gateyes/gateway/internal/repository"
 )
 
@@ -118,6 +119,55 @@ func TestCreateUsageRecord(t *testing.T) {
 	}
 	if summary.SuccessRequests != 1 || summary.TotalTokens != 5 {
 		t.Fatalf("unexpected summary: %+v", summary)
+	}
+}
+
+func TestCreateUsageRecordUsesEventBus(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	bus := eventbus.New(eventbus.Options{Buffer: 4, Workers: 1})
+	bus.Start(ctx)
+	t.Cleanup(func() { _ = bus.Close() })
+	store.SetEventBus(bus)
+
+	tenant, err := store.EnsureTenant(ctx, repository.EnsureTenantParams{
+		ID:     "tenant-usage-bus",
+		Slug:   "tenant-usage-bus",
+		Name:   "tenant-usage-bus",
+		Status: repository.StatusActive,
+	})
+	if err != nil {
+		t.Fatalf("ensure tenant: %v", err)
+	}
+
+	record := repository.UsageRecord{
+		ID:           "usage-bus-create",
+		TenantID:     tenant.ID,
+		UserID:       "user-bus",
+		APIKeyID:     "api-key-bus",
+		ProviderName: "openai-primary",
+		Model:        "gpt-test",
+		TotalTokens:  7,
+		Status:       "success",
+		CreatedAt:    time.Now().UTC(),
+	}
+	if err := store.CreateUsageRecord(ctx, record); err != nil {
+		t.Fatalf("create usage record: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		summary, err := store.GetUsageSummary(ctx, tenant.ID)
+		if err != nil {
+			t.Fatalf("usage summary: %v", err)
+		}
+		if summary.SuccessRequests == 1 && summary.TotalTokens == 7 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("usage record was not inserted asynchronously: %+v", summary)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

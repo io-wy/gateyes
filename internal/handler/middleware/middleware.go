@@ -45,6 +45,7 @@ func New(cfg *config.Config, store repository.Store, limiterSvc *limiter.Limiter
 		jwtSvc = oidc.NewJWTService([]byte(cfg.OIDC.JWTSecret))
 	}
 	authMW := NewAuthMiddleware(store, oidcSvc, jwtSvc, metrics)
+	authMW.Service().SetRedis(rdb)
 
 	var rbacTTL time.Duration
 	if cfg != nil && cfg.RBAC.CacheTTLSeconds > 0 {

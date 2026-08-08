@@ -97,6 +97,9 @@ SET %s
 WHERE id = ?`, strings.Join(sets, ", "))), args...); err != nil {
 		return nil, fmt.Errorf("update tenant: %w", err)
 	}
+	if params.BudgetUSD != nil || params.BudgetPolicy != nil {
+		s.invalidateBudgetLedgerScope(ctx, "tenant", tenant.ID)
+	}
 
 	return s.loadTenant(ctx, tenant.ID)
 }
@@ -218,6 +221,7 @@ func (s *Store) DeleteTenant(ctx context.Context, idOrSlug string) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit delete tenant: %w", err)
 	}
+	s.invalidateBudgetLedgerScope(ctx, "tenant", tenant.ID)
 	return nil
 }
 

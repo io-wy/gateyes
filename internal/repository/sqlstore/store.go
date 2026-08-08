@@ -16,7 +16,11 @@ import (
 	"github.com/gateyes/gateway/internal/repository/db"
 )
 
-const budgetCacheTTL = 5 * time.Second
+const (
+	budgetCacheTTL         = 5 * time.Second
+	lastUsedDebounceWindow = 30 * time.Second
+	lastUsedLatestTTL      = 2 * time.Minute
+)
 
 type budgetCacheValue struct {
 	BudgetUSD float64 `json:"budget"`
@@ -38,6 +42,8 @@ func (s *Store) SetEventBus(bus *eventbus.Bus) {
 	s.eventBus = bus
 	if bus != nil {
 		bus.RegisterEventHandler(eventbus.EventTypeResponseDetails, s.handleResponseDetailsEvent)
+		bus.RegisterEventHandler(eventbus.EventTypeUsageRecord, s.handleUsageRecordEvent)
+		bus.RegisterEventHandler(eventbus.EventTypeBudgetLedger, s.handleBudgetLedgerEvent)
 	}
 }
 
@@ -47,6 +53,38 @@ func (s *Store) SetRedis(rdb *redis.Client) {
 
 func budgetCacheKey(scope, id string) string {
 	return fmt.Sprintf("budget:%s:%s", scope, id)
+}
+
+func budgetLedgerKey(scope, id string) string {
+	return fmt.Sprintf("budget:ledger:%s:%s", scope, id)
+}
+
+func budgetLedgerFlushLockKey(scope, id string) string {
+	return fmt.Sprintf("budget:ledger:flush_lock:%s:%s", scope, id)
+}
+
+func budgetLedgerInitLockKey(scope, id string) string {
+	return fmt.Sprintf("budget:ledger:init_lock:%s:%s", scope, id)
+}
+
+func quotaLedgerKey(userID string) string {
+	return fmt.Sprintf("quota:ledger:user:%s", userID)
+}
+
+func quotaLedgerFlushLockKey(userID string) string {
+	return fmt.Sprintf("quota:ledger:flush_lock:user:%s", userID)
+}
+
+func quotaLedgerInitLockKey(userID string) string {
+	return fmt.Sprintf("quota:ledger:init_lock:user:%s", userID)
+}
+
+func lastUsedLatestKey(apiKeyID string) string {
+	return fmt.Sprintf("api_key:last_used:latest:%s", apiKeyID)
+}
+
+func lastUsedDebounceKey(apiKeyID string) string {
+	return fmt.Sprintf("api_key:last_used:debounce:%s", apiKeyID)
 }
 
 func (s *Store) budgetCacheGet(ctx context.Context, scope, id string) (*budgetCacheValue, bool) {
@@ -282,6 +320,12 @@ func (s *Store) UpdateUser(ctx context.Context, tenantID string, idOrAPIKey stri
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit update user: %w", err)
 	}
+	if params.Quota != nil {
+		s.invalidateQuotaLedger(ctx, user.ID)
+	}
+	if params.KeyBudgetUSD != nil {
+		s.invalidateAPIKeyLedgersForUser(ctx, user.ID)
+	}
 
 	return s.GetUser(ctx, user.TenantID, user.ID)
 }
@@ -293,6 +337,9 @@ func (s *Store) DeleteUser(ctx context.Context, tenantID string, idOrAPIKey stri
 	}
 
 	tx, err := s.db.Conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin delete user: %w", err)
+	}
 
 	now := time.Now().UTC()
 
@@ -326,6 +373,8 @@ func (s *Store) DeleteUser(ctx context.Context, tenantID string, idOrAPIKey stri
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit delete user: %w", err)
 	}
+	s.invalidateQuotaLedger(ctx, user.ID)
+	s.invalidateAPIKeyLedgersForUser(ctx, user.ID)
 
 	return nil
 }
@@ -342,6 +391,7 @@ SET used = 0, updated_at = ?
 WHERE id = ?`), time.Now().UTC(), user.ID); err != nil {
 		return nil, fmt.Errorf("reset user usage: %w", err)
 	}
+	s.invalidateQuotaLedger(ctx, user.ID)
 
 	return s.GetUser(ctx, user.TenantID, user.ID)
 }

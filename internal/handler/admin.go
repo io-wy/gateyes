@@ -141,6 +141,30 @@ func (h *AdminHandler) invalidateAPIKeyCache(keys ...string) {
 	}
 }
 
+func (h *AdminHandler) invalidateAPIKeyIdentity(apiKeyID string) {
+	if h.authSvc != nil {
+		h.authSvc.InvalidateAPIKey(apiKeyID)
+	}
+}
+
+func (h *AdminHandler) invalidateUserIdentities(userID string) {
+	if h.authSvc != nil {
+		h.authSvc.InvalidateUser(userID)
+	}
+}
+
+func (h *AdminHandler) invalidateProjectIdentities(projectID string) {
+	if h.authSvc != nil {
+		h.authSvc.InvalidateProject(projectID)
+	}
+}
+
+func (h *AdminHandler) invalidateTenantIdentities(tenantID string) {
+	if h.authSvc != nil {
+		h.authSvc.InvalidateTenant(tenantID)
+	}
+}
+
 func scopedTenant(identity *repository.AuthIdentity) string {
 	if identity == nil {
 		return ""
