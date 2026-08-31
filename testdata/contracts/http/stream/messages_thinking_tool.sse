@@ -1,0 +1,26 @@
+event: message_start
+data: {"message":{"content":[],"id":"<generated-id>","model":"claude-public","role":"assistant","stop_reason":"","type":"message","usage":{"input_tokens":0,"output_tokens":0}},"type":"message_start"}
+
+event: content_block_start
+data: {"block":{"type":"text"},"type":"content_block_start"}
+
+event: content_block_delta
+data: {"delta":{"text":"hello","type":"text_delta"},"type":"content_block_delta"}
+
+event: content_block_stop
+data: {"type":"content_block_stop"}
+
+event: content_block_start
+data: {"block":{"id":"tool-weather","input":{"city":"Shanghai"},"name":"weather","type":"tool_use"},"index":1,"type":"content_block_start"}
+
+event: content_block_stop
+data: {"index":1,"type":"content_block_stop"}
+
+event: message_delta
+data: {"delta":{"stop_reason":"tool_use"},"message":{"content":null,"id":"","model":"","role":"","stop_reason":"tool_use","type":"","usage":{"input_tokens":5,"output_tokens":4}},"type":"message_delta"}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+data: [DONE]
+

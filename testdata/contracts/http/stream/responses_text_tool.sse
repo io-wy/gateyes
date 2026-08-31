@@ -1,0 +1,27 @@
+event: response.created
+data: {"response":{"created_at":0,"id":"<generated-id>","model":"public-model","object":"response","output":null,"status":"in_progress","usage":{"input_tokens":0,"input_tokens_details":{"cached_tokens":0},"output_tokens":0,"total_tokens":0}},"type":"response.created"}
+
+event: response.output_item.added
+data: {"item":{"content":[],"id":"<generated-id>","role":"assistant","status":"in_progress","type":"message"},"output_index":0,"type":"response.output_item.added"}
+
+event: response.content_part.added
+data: {"content_index":0,"output_index":0,"part":{"text":"","type":"output_text"},"type":"response.content_part.added"}
+
+event: response.output_text.delta
+data: {"content_index":0,"delta":"hello","output_index":0,"type":"response.output_text.delta"}
+
+event: response.output_item.done
+data: {"output":{"arguments":"{\"city\":\"Shanghai\"}","call_id":"call-weather","id":"call-weather","name":"weather","type":"function_call"},"type":"response.output_item.done"}
+
+event: response.output_text.done
+data: {"content_index":0,"output_index":0,"type":"response.output_text.done"}
+
+event: response.content_part.done
+data: {"content_index":0,"output_index":0,"part":{"text":"hello","type":"output_text"},"type":"response.content_part.done"}
+
+event: response.output_item.done
+data: {"item":{"content":[{"text":"hello","type":"output_text"}],"id":"<generated-id>","role":"assistant","status":"completed","type":"message"},"output_index":0,"type":"response.output_item.done"}
+
+event: response.completed
+data: {"response":{"created_at":0,"id":"<generated-id>","model":"public-model","object":"response","output":[{"content":[{"text":"hello","type":"output_text"}],"id":"item-text","role":"assistant","status":"completed","type":"message"},{"arguments":"{\"city\":\"Shanghai\"}","call_id":"call-weather","id":"call-weather","name":"weather","type":"function_call"}],"status":"completed","usage":{"input_tokens":4,"input_tokens_details":{"cached_tokens":1},"output_tokens":3,"total_tokens":7}},"type":"response.completed"}
+
