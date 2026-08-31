@@ -8,7 +8,7 @@ import (
 
 	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/gateyes/gateway/internal/handler/middleware"
-	"github.com/gateyes/gateway/internal/repository"
+	"github.com/gateyes/gateway/internal/ports"
 	"github.com/gateyes/gateway/internal/service/adminconsole"
 	authSvc "github.com/gateyes/gateway/internal/service/auth"
 	"github.com/gateyes/gateway/internal/service/catalog"
@@ -17,22 +17,22 @@ import (
 )
 
 type AdminHandler struct {
-	store              repository.Store
+	store              ports.AdminAccessPort
 	providerMgr        *provider.Manager
 	providerRuntimeSvc *provider.RuntimeRegistryService
 	authSvc            *authSvc.Auth
-	consoleSvc         *adminconsole.Service
-	catalogSvc         *catalog.Service
+	consoleSvc         ports.AdminConsoleUseCase
+	catalogSvc         ports.CatalogUseCase
 	routerSvc          *router.Router
 	reloader           *config.Reloader
 	healthChecker      *provider.HealthChecker
 	metrics            *Metrics
 	pluginDir          string
-	configuredPlugins  []repository.PluginRecord
+	configuredPlugins  []ports.PluginRecord
 	startedAt          time.Time
 }
 
-func NewAdminHandler(store repository.Store, providerMgr *provider.Manager, catalogSvc *catalog.Service, reloader *config.Reloader) *AdminHandler {
+func NewAdminHandler(store ports.AdminAccessPort, providerMgr *provider.Manager, catalogSvc *catalog.Service, reloader *config.Reloader) *AdminHandler {
 	providerRuntimeSvc := provider.NewRuntimeRegistryService(store, providerMgr)
 	return &AdminHandler{
 		store:              store,
@@ -69,7 +69,7 @@ func (h *AdminHandler) SetPluginDirectory(dir string) {
 }
 
 func (h *AdminHandler) SetConfiguredPlugins(grpcPlugins []config.GRPCPluginConfig, wasmPlugins []config.WASMPluginConfig) {
-	plugins := make([]repository.PluginRecord, 0, len(grpcPlugins)+len(wasmPlugins))
+	plugins := make([]ports.PluginRecord, 0, len(grpcPlugins)+len(wasmPlugins))
 	now := h.startedAt
 	if now.IsZero() {
 		now = time.Now()
@@ -104,7 +104,7 @@ func (h *AdminHandler) ReloadConfig(c *gin.Context) {
 
 func (h *AdminHandler) adminTenantID(c *gin.Context) string {
 	identity, _ := middleware.Identity(c)
-	if identity.Role == repository.RoleSuperAdmin {
+	if identity.Role == ports.RoleSuperAdmin {
 		if tenantID := c.Query("tenant_id"); tenantID != "" {
 			return tenantID
 		}
@@ -112,8 +112,8 @@ func (h *AdminHandler) adminTenantID(c *gin.Context) string {
 	return identity.TenantID
 }
 
-func (h *AdminHandler) scopeTenantID(c *gin.Context, identity *repository.AuthIdentity) (string, bool) {
-	if identity.Role == repository.RoleSuperAdmin {
+func (h *AdminHandler) scopeTenantID(c *gin.Context, identity *ports.AuthIdentity) (string, bool) {
+	if identity.Role == ports.RoleSuperAdmin {
 		if tenantID := c.Query("tenant_id"); tenantID != "" {
 			return tenantID, true
 		}
@@ -121,8 +121,8 @@ func (h *AdminHandler) scopeTenantID(c *gin.Context, identity *repository.AuthId
 	return identity.TenantID, true
 }
 
-func (h *AdminHandler) resolveTargetTenant(c *gin.Context, identity *repository.AuthIdentity, requested string) (string, bool) {
-	if identity.Role == repository.RoleSuperAdmin {
+func (h *AdminHandler) resolveTargetTenant(c *gin.Context, identity *ports.AuthIdentity, requested string) (string, bool) {
+	if identity.Role == ports.RoleSuperAdmin {
 		if requested == "" {
 			writeError(c, http.StatusBadRequest, CodeMissingRequiredField, "tenant_id is required")
 			return "", false
@@ -165,18 +165,18 @@ func (h *AdminHandler) invalidateTenantIdentities(tenantID string) {
 	}
 }
 
-func scopedTenant(identity *repository.AuthIdentity) string {
+func scopedTenant(identity *ports.AuthIdentity) string {
 	if identity == nil {
 		return ""
 	}
 	return identity.TenantID
 }
 
-func isTenantUser(identity *repository.AuthIdentity) bool {
-	return identity != nil && identity.Role == repository.RoleTenantUser
+func isTenantUser(identity *ports.AuthIdentity) bool {
+	return identity != nil && identity.Role == ports.RoleTenantUser
 }
 
-func (h *AdminHandler) requireAdminIdentity(c *gin.Context) (*repository.AuthIdentity, string, bool) {
+func (h *AdminHandler) requireAdminIdentity(c *gin.Context) (*ports.AuthIdentity, string, bool) {
 	identity, _ := middleware.Identity(c)
 	tenantID, ok := h.scopeTenantID(c, identity)
 	if !ok {
@@ -186,7 +186,7 @@ func (h *AdminHandler) requireAdminIdentity(c *gin.Context) (*repository.AuthIde
 }
 
 func (h *AdminHandler) handleNotFound(c *gin.Context, err error, code Code, msg string) bool {
-	if err == repository.ErrNotFound {
+	if err == ports.ErrNotFound {
 		writeError(c, http.StatusNotFound, code, msg)
 		return true
 	}
@@ -207,7 +207,7 @@ func providerNames(items []provider.Provider) []string {
 
 func validEntityStatus(value string) bool {
 	switch value {
-	case repository.StatusActive, repository.StatusInactive, repository.StatusRevoked:
+	case ports.StatusActive, ports.StatusInactive, ports.StatusRevoked:
 		return true
 	default:
 		return false
