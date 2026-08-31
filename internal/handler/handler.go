@@ -17,8 +17,7 @@ import (
 
 	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/gateyes/gateway/internal/handler/middleware"
-	"github.com/gateyes/gateway/internal/repository"
-	batchSvc "github.com/gateyes/gateway/internal/service/batch"
+	"github.com/gateyes/gateway/internal/ports"
 	"github.com/gateyes/gateway/internal/service/catalog"
 	"github.com/gateyes/gateway/internal/service/provider"
 	responseSvc "github.com/gateyes/gateway/internal/service/responses"
@@ -27,21 +26,21 @@ import (
 type Handler struct {
 	cfg       *config.Config
 	deps      *Dependencies
-	responses *responseSvc.Service
-	catalog   *catalog.Service
-	batch     *batchSvc.Service
+	responses ports.InferenceUseCase
+	catalog   ports.CatalogUseCase
+	batch     ports.BatchUseCase
 	metrics   *Metrics
 	logger    *slog.Logger
 }
 
 type Dependencies struct {
 	Config      *config.Config
-	Store       repository.Store
+	Store       ports.AdminAccessPort
 	Metrics     *Metrics
-	ProviderMgr *provider.Manager
-	ResponseSvc *responseSvc.Service
-	CatalogSvc  *catalog.Service
-	BatchSvc    *batchSvc.Service
+	ProviderMgr ports.ProviderCatalog
+	ResponseSvc ports.InferenceUseCase
+	CatalogSvc  ports.CatalogUseCase
+	BatchSvc    ports.BatchUseCase
 	RedisPing   func(ctx context.Context) error
 }
 
@@ -407,7 +406,7 @@ func (h *Handler) Metrics(c *gin.Context) {
 	h.metrics.Handler().ServeHTTP(c.Writer, c.Request)
 }
 
-func (h *Handler) requireIdentity(c *gin.Context, surface string) (*repository.AuthIdentity, bool) {
+func (h *Handler) requireIdentity(c *gin.Context, surface string) (*ports.AuthIdentity, bool) {
 	identity, ok := middleware.Identity(c)
 	if !ok {
 		h.metrics.RecordError(surface, "", metricsResultAuthError, "invalid_api_key")
@@ -643,7 +642,7 @@ func writeSSEDone(c *gin.Context) {
 	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
 }
 
-func matchesModelFilters(c *gin.Context, record repository.ProviderRegistryRecord) bool {
+func matchesModelFilters(c *gin.Context, record ports.ProviderRegistryRecord) bool {
 	if providerName := c.Query("provider"); providerName != "" && providerName != record.Name {
 		return false
 	}
