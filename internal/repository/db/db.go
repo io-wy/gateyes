@@ -285,6 +285,8 @@ func portableCompatSQL(sql string) string {
 	sql = removeStatementContaining(sql, "USING hnsw")
 	sql = strings.ReplaceAll(sql, "vector(1536)", "TEXT")
 	sql = strings.ReplaceAll(sql, "VECTOR(1536)", "TEXT")
+	sql = strings.ReplaceAll(sql, "BYTEA", "BLOB")
+	sql = strings.ReplaceAll(sql, "bytea", "BLOB")
 	return sql
 }
 

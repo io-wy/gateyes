@@ -236,7 +236,7 @@ func TestTenantAndUsageQueryPaths(t *testing.T) {
 		t.Fatalf("defaultRole(\"\") = %q, want %q", got, want)
 	}
 
-	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second)
 	rows := []struct {
 		id        string
 		createdAt string

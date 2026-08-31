@@ -23,7 +23,7 @@ jobs:
       GATEYES_ADMIN_BOOTSTRAP_SECRET: admin-secret-001
     services:
       postgres:
-        image: postgres:16
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: gateyes
           POSTGRES_PASSWORD: gateyes_pw
