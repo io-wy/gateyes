@@ -1,0 +1,29 @@
+{
+  "code": 20000,
+  "data": {
+    "created": 0,
+    "id": "<id>",
+    "model": "provider-model",
+    "object": "response",
+    "output": [
+      {
+        "content": [
+          {
+            "text": "contract hello",
+            "type": "output_text"
+          }
+        ],
+        "type": "message"
+      }
+    ],
+    "status": "completed",
+    "usage": {
+      "cached_tokens": 0,
+      "completion_tokens": 2,
+      "prompt_tokens": 3,
+      "total_tokens": 5
+    }
+  },
+  "message": "ok",
+  "success": true
+}
