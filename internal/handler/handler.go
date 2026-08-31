@@ -3,7 +3,6 @@ package handler
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -21,6 +20,7 @@ import (
 	"github.com/gateyes/gateway/internal/service/catalog"
 	"github.com/gateyes/gateway/internal/service/provider"
 	responseSvc "github.com/gateyes/gateway/internal/service/responses"
+	httpresponse "github.com/gateyes/gateway/internal/transport/http/response"
 )
 
 type Handler struct {
@@ -89,34 +89,7 @@ func (h *Handler) logRequestFailed(c *gin.Context, surface, providerName string,
 }
 
 func attachCacheHeaders(c *gin.Context, trace *responseSvc.CacheTrace) {
-	if c == nil || trace == nil || trace.Result == "" {
-		return
-	}
-	c.Header("X-Gateyes-Cache-Result", trace.Result)
-	if trace.Layer != "" {
-		c.Header("X-Gateyes-Cache-Layer", trace.Layer)
-	}
-	if trace.Reason != "" {
-		c.Header("X-Gateyes-Cache-Reason", trace.Reason)
-	}
-	if trace.EntryID != "" {
-		c.Header("X-Gateyes-Cache-Entry-ID", trace.EntryID)
-	}
-	if trace.Similarity > 0 {
-		c.Header("X-Gateyes-Cache-Similarity", strconv.FormatFloat(trace.Similarity, 'f', 4, 64))
-	}
-	if trace.Threshold > 0 {
-		c.Header("X-Gateyes-Cache-Threshold", strconv.FormatFloat(trace.Threshold, 'f', 4, 64))
-	}
-	if trace.EmbeddingModel != "" {
-		c.Header("X-Gateyes-Cache-Embedding-Model", trace.EmbeddingModel)
-	}
-	if len(trace.Rewrites) > 0 {
-		c.Header("X-Gateyes-Cache-Rewrites", strings.Join(trace.Rewrites, ","))
-	}
-	if trace.PromptCacheKey != "" {
-		c.Header("X-Gateyes-Prompt-Cache-Key", trace.PromptCacheKey)
-	}
+	httpresponse.AttachCacheHeaders(c, trace)
 }
 
 // captureRequestBody reads the raw request body from the gin context and
@@ -621,25 +594,15 @@ func (h *Handler) SyncCircuitBreakerStates() {
 }
 
 func writeSSE(c *gin.Context, payload any) error {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	_, err = c.Writer.Write([]byte("data: " + string(data) + "\n\n"))
-	return err
+	return httpresponse.WriteSSE(c, payload)
 }
 
 func writeSSEEvent(c *gin.Context, eventType string, payload any) error {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	_, err = c.Writer.Write([]byte("event: " + eventType + "\ndata: " + string(data) + "\n\n"))
-	return err
+	return httpresponse.WriteSSEEvent(c, eventType, payload)
 }
 
 func writeSSEDone(c *gin.Context) {
-	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
+	httpresponse.WriteSSEDone(c)
 }
 
 func matchesModelFilters(c *gin.Context, record ports.ProviderRegistryRecord) bool {
