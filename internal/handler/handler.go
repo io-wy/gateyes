@@ -3,7 +3,6 @@ package handler
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -17,31 +16,31 @@ import (
 
 	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/gateyes/gateway/internal/handler/middleware"
-	"github.com/gateyes/gateway/internal/repository"
-	batchSvc "github.com/gateyes/gateway/internal/service/batch"
+	"github.com/gateyes/gateway/internal/ports"
 	"github.com/gateyes/gateway/internal/service/catalog"
 	"github.com/gateyes/gateway/internal/service/provider"
 	responseSvc "github.com/gateyes/gateway/internal/service/responses"
+	httpresponse "github.com/gateyes/gateway/internal/transport/http/response"
 )
 
 type Handler struct {
 	cfg       *config.Config
 	deps      *Dependencies
-	responses *responseSvc.Service
-	catalog   *catalog.Service
-	batch     *batchSvc.Service
+	responses ports.InferenceUseCase
+	catalog   ports.CatalogUseCase
+	batch     ports.BatchUseCase
 	metrics   *Metrics
 	logger    *slog.Logger
 }
 
 type Dependencies struct {
 	Config      *config.Config
-	Store       repository.Store
+	Store       ports.AdminAccessPort
 	Metrics     *Metrics
-	ProviderMgr *provider.Manager
-	ResponseSvc *responseSvc.Service
-	CatalogSvc  *catalog.Service
-	BatchSvc    *batchSvc.Service
+	ProviderMgr ports.ProviderCatalog
+	ResponseSvc ports.InferenceUseCase
+	CatalogSvc  ports.CatalogUseCase
+	BatchSvc    ports.BatchUseCase
 	RedisPing   func(ctx context.Context) error
 }
 
@@ -90,34 +89,7 @@ func (h *Handler) logRequestFailed(c *gin.Context, surface, providerName string,
 }
 
 func attachCacheHeaders(c *gin.Context, trace *responseSvc.CacheTrace) {
-	if c == nil || trace == nil || trace.Result == "" {
-		return
-	}
-	c.Header("X-Gateyes-Cache-Result", trace.Result)
-	if trace.Layer != "" {
-		c.Header("X-Gateyes-Cache-Layer", trace.Layer)
-	}
-	if trace.Reason != "" {
-		c.Header("X-Gateyes-Cache-Reason", trace.Reason)
-	}
-	if trace.EntryID != "" {
-		c.Header("X-Gateyes-Cache-Entry-ID", trace.EntryID)
-	}
-	if trace.Similarity > 0 {
-		c.Header("X-Gateyes-Cache-Similarity", strconv.FormatFloat(trace.Similarity, 'f', 4, 64))
-	}
-	if trace.Threshold > 0 {
-		c.Header("X-Gateyes-Cache-Threshold", strconv.FormatFloat(trace.Threshold, 'f', 4, 64))
-	}
-	if trace.EmbeddingModel != "" {
-		c.Header("X-Gateyes-Cache-Embedding-Model", trace.EmbeddingModel)
-	}
-	if len(trace.Rewrites) > 0 {
-		c.Header("X-Gateyes-Cache-Rewrites", strings.Join(trace.Rewrites, ","))
-	}
-	if trace.PromptCacheKey != "" {
-		c.Header("X-Gateyes-Prompt-Cache-Key", trace.PromptCacheKey)
-	}
+	httpresponse.AttachCacheHeaders(c, trace)
 }
 
 // captureRequestBody reads the raw request body from the gin context and
@@ -407,7 +379,7 @@ func (h *Handler) Metrics(c *gin.Context) {
 	h.metrics.Handler().ServeHTTP(c.Writer, c.Request)
 }
 
-func (h *Handler) requireIdentity(c *gin.Context, surface string) (*repository.AuthIdentity, bool) {
+func (h *Handler) requireIdentity(c *gin.Context, surface string) (*ports.AuthIdentity, bool) {
 	identity, ok := middleware.Identity(c)
 	if !ok {
 		h.metrics.RecordError(surface, "", metricsResultAuthError, "invalid_api_key")
@@ -622,28 +594,18 @@ func (h *Handler) SyncCircuitBreakerStates() {
 }
 
 func writeSSE(c *gin.Context, payload any) error {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	_, err = c.Writer.Write([]byte("data: " + string(data) + "\n\n"))
-	return err
+	return httpresponse.WriteSSE(c, payload)
 }
 
 func writeSSEEvent(c *gin.Context, eventType string, payload any) error {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	_, err = c.Writer.Write([]byte("event: " + eventType + "\ndata: " + string(data) + "\n\n"))
-	return err
+	return httpresponse.WriteSSEEvent(c, eventType, payload)
 }
 
 func writeSSEDone(c *gin.Context) {
-	_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
+	httpresponse.WriteSSEDone(c)
 }
 
-func matchesModelFilters(c *gin.Context, record repository.ProviderRegistryRecord) bool {
+func matchesModelFilters(c *gin.Context, record ports.ProviderRegistryRecord) bool {
 	if providerName := c.Query("provider"); providerName != "" && providerName != record.Name {
 		return false
 	}
