@@ -1,0 +1,21 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "message": {
+        "content": "contract hello",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 0,
+  "id": "<id>",
+  "model": "public-model",
+  "object": "chat.completion",
+  "usage": {
+    "cached_tokens": 0,
+    "completion_tokens": 2,
+    "prompt_tokens": 3,
+    "total_tokens": 5
+  }
+}
