@@ -3,6 +3,7 @@ package inference
 
 import (
 	"context"
+	"time"
 
 	"github.com/gateyes/gateway/internal/ports"
 	"github.com/gateyes/gateway/internal/repository"
@@ -14,6 +15,44 @@ import (
 type Adapter struct{ service *responseSvc.Service }
 
 func New(service *responseSvc.Service) *Adapter { return &Adapter{service: service} }
+
+// OrchestratedAdapter exposes the port-driven workflow through the existing
+// transport-facing InferenceUseCase contract. It lets composition roots opt
+// into the new application orchestration without changing HTTP handlers.
+type OrchestratedAdapter struct{ orchestrator *Orchestrator }
+
+func NewOrchestrated(deps Dependencies) *OrchestratedAdapter {
+	return &OrchestratedAdapter{orchestrator: NewOrchestrator(deps)}
+}
+
+func (a *OrchestratedAdapter) Create(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*responseSvc.CreateResult, error) {
+	result, err := a.orchestrator.Create(ctx, identity, req, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return &responseSvc.CreateResult{
+		Response:         result.Response,
+		ProviderName:     result.ProviderName,
+		LatencyMs:        result.Latency.Milliseconds(),
+		PromptTokens:     result.Response.Usage.PromptTokens,
+		CompletionTokens: result.Response.Usage.CompletionTokens,
+		Retries:          result.Retries,
+		Fallback:         result.Fallback,
+	}, nil
+}
+
+func (a *OrchestratedAdapter) CreateStream(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*responseSvc.Stream, error) {
+	result, err := a.orchestrator.CreateStream(ctx, identity, req, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return &responseSvc.Stream{ResponseID: result.ResponseID, ProviderName: result.ProviderName, StartedAt: time.Now(), Events: result.Events, Errors: result.Errors}, nil
+}
+
+func (a *OrchestratedAdapter) GetCircuitBreakerStates() map[string]int    { return map[string]int{} }
+func (a *OrchestratedAdapter) PersistCircuitBreakerState(context.Context) {}
+
+var _ ports.InferenceUseCase = (*OrchestratedAdapter)(nil)
 
 func (a *Adapter) Create(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*responseSvc.CreateResult, error) {
 	return a.service.Create(ctx, identity, req, sessionID)
