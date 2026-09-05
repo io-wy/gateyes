@@ -52,6 +52,10 @@ func TestProtoToolchainIsPinnedAndGated(t *testing.T) {
 			t.Errorf("%s must not use an unpinned @latest tool", name)
 		}
 	}
+
+	if revisions := strings.Count(files["buf.gen.yaml"], "revision: 1"); revisions != 2 {
+		t.Errorf("buf.gen.yaml pins %d remote plugin revisions, want 2", revisions)
+	}
 }
 
 func repositoryRoot(t *testing.T) string {

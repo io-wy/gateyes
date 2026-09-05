@@ -30,7 +30,7 @@ compatibility rules.
 | google.golang.org/protobuf runtime | existing go.mod pin | BSD-3-Clause | Already a direct project dependency |
 | google.golang.org/grpc runtime | existing go.mod pin | Apache-2.0 | Already a direct project dependency |
 
-The generator plugins are pinned by immutable version labels in
+The generator plugins are pinned by version and registry revision in
 `buf.gen.yaml`; the Buf CLI is installed at its exact Go module version into a
 repository-local ignored directory. No new runtime dependency is introduced.
 

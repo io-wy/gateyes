@@ -22,8 +22,9 @@ domains. Workflow status remains a business-state enum; a workflow failure may
 embed a runtime error while retaining its own workflow error code.
 
 Buf supplies descriptor-aware lint and FILE-level compatibility checks against
-`main`. Remote generator revisions and the Buf CLI version are pinned. Checked-in
-bindings make downstream Go builds independent of generator availability.
+`main`. Remote generator versions and registry revisions plus the Buf CLI
+version are pinned. Checked-in bindings make downstream Go builds independent
+of generator availability.
 
 ## Alternatives
 
