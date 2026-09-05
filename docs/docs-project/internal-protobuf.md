@@ -14,8 +14,9 @@ consumers can compile without installing Protobuf generators.
 - Do not translate these contracts into changes to public HTTP, JSON, SSE,
   errors, or headers.
 
-Use `make proto` after editing a proto. `make proto-check` regenerates bindings
-and fails on drift. `make proto-lint` applies Buf STANDARD lint rules, and
+Use `make proto` after editing any internal or plugin proto. `make proto-check`
+regenerates every binding and fails on drift. `make proto-lint` applies Buf
+STANDARD lint rules, and
 `make proto-breaking` compares the schema with the `main` branch using Buf FILE
 compatibility rules.
 

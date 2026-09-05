@@ -24,10 +24,12 @@ func TestProtoToolchainIsPinnedAndGated(t *testing.T) {
 			"git status --porcelain --untracked-files=all",
 			"proto-lint:",
 			"proto-breaking:",
+			"pkg/plugin",
 		},
 		"buf.gen.yaml": {
 			"buf.build/protocolbuffers/go:v1.36.11",
 			"buf.build/grpc/go:v1.6.2",
+			"- proto\n",
 		},
 		".github/workflows/ci.yml": {
 			"make proto-check",

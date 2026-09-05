@@ -11,6 +11,4 @@ plugins:
 inputs:
   - directory: .
     paths:
-      - proto/control
-      - proto/runtime
-      - proto/workflow
+      - proto

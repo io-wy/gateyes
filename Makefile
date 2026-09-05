@@ -18,7 +18,7 @@ proto: $(BUF)
 	$(BUF) generate
 
 proto-check: proto
-	@dirty="$$(git status --porcelain --untracked-files=all -- pkg/control pkg/runtime pkg/workflow)"; \
+	@dirty="$$(git status --porcelain --untracked-files=all -- pkg/control pkg/plugin pkg/runtime pkg/workflow)"; \
 	if [ -n "$$dirty" ]; then \
 		echo "generated protobuf files are out of date:"; \
 		echo "$$dirty"; \
@@ -117,7 +117,7 @@ help:
 	@echo "  make vuln          Run govulncheck"
 	@echo "  make run           Run gateway"
 	@echo "  make docker-build  Build local Docker image"
-	@echo "  make proto         Regenerate internal protobuf files with pinned tools"
+	@echo "  make proto         Regenerate all protobuf files with pinned tools"
 	@echo "  make proto-check   Fail when generated protobuf files drift"
 	@echo "  make proto-lint    Lint protobuf contracts"
 	@echo "  make proto-breaking Check protobuf compatibility against main"
