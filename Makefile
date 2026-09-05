@@ -1,18 +1,35 @@
 GO ?= go
 GO_MOD := $(shell go list -m 2>/dev/null || echo "unknown-module")
 CONFIG ?= configs/config.example.yaml
+TOOLS_DIR := $(CURDIR)/.tools/bin
+BUF_VERSION := 1.72.0
+BUF := $(TOOLS_DIR)/buf
+PROTO_BASELINE ?= .git\#branch=origin/main
 
-.PHONY: fmt test test-race vet lint vuln migrate-up migrate-status run docker-build proto \
+.PHONY: fmt test test-race vet lint vuln migrate-up migrate-status run docker-build proto proto-check \
+	proto-lint proto-breaking \
 	lint-arch lint-quality harness-audit help
 
-proto:
-	protoc \
-		--proto_path=. \
-		--go_out=. \
-		--go_opt=module=$(GO_MOD) \
-		--go-grpc_out=. \
-		--go-grpc_opt=module=$(GO_MOD) \
-		proto/plugin/v1/plugin.proto proto/plugin/v1/router.proto proto/plugin/v1/gateway.proto
+$(BUF):
+	mkdir -p $(TOOLS_DIR)
+	GOBIN=$(TOOLS_DIR) $(GO) install github.com/bufbuild/buf/cmd/buf@v$(BUF_VERSION)
+
+proto: $(BUF)
+	$(BUF) generate
+
+proto-check: proto
+	@dirty="$$(git status --porcelain --untracked-files=all -- pkg/control pkg/runtime pkg/workflow)"; \
+	if [ -n "$$dirty" ]; then \
+		echo "generated protobuf files are out of date:"; \
+		echo "$$dirty"; \
+		exit 1; \
+	fi
+
+proto-lint: $(BUF)
+	$(BUF) lint
+
+proto-breaking: $(BUF)
+	$(BUF) breaking --against '$(PROTO_BASELINE)'
 
 fmt:
 	$(GO) fmt ./...
@@ -100,7 +117,10 @@ help:
 	@echo "  make vuln          Run govulncheck"
 	@echo "  make run           Run gateway"
 	@echo "  make docker-build  Build local Docker image"
-	@echo "  make proto         Regenerate plugin protobuf files"
+	@echo "  make proto         Regenerate internal protobuf files with pinned tools"
+	@echo "  make proto-check   Fail when generated protobuf files drift"
+	@echo "  make proto-lint    Lint protobuf contracts"
+	@echo "  make proto-breaking Check protobuf compatibility against main"
 	@echo ""
 	@echo "=== Harness ==="
 	@echo "  make lint-arch     Run harness architecture lint"

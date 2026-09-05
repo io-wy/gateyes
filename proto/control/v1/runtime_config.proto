@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package gateyes.control.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/gateyes/gateway/pkg/control/v1;controlv1";
+
+// RuntimeConfigService exposes versioned configuration snapshots to runtimes.
+service RuntimeConfigService {
+  // GetRuntimeSnapshot returns the latest snapshot or marks it unchanged.
+  rpc GetRuntimeSnapshot(GetRuntimeSnapshotRequest) returns (GetRuntimeSnapshotResponse);
+  // GetRuntimeRevision returns lightweight revision metadata.
+  rpc GetRuntimeRevision(GetRuntimeRevisionRequest) returns (GetRuntimeRevisionResponse);
+}
+
+message SchemaVersion {
+  uint32 major = 1;
+  uint32 minor = 2;
+}
+
+message RequestMetadata {
+  string request_id = 1;
+  string trace_id = 2;
+  string tenant_id = 3;
+}
+
+message GetRuntimeSnapshotRequest {
+  SchemaVersion schema_version = 1;
+  RequestMetadata metadata = 2;
+  string known_revision_id = 3;
+}
+
+message GetRuntimeSnapshotResponse {
+  SchemaVersion schema_version = 1;
+  RequestMetadata metadata = 2;
+  RuntimeSnapshot snapshot = 3;
+  bool not_modified = 4;
+  ControlErrorDetail error = 5;
+}
+
+message GetRuntimeRevisionRequest {
+  SchemaVersion schema_version = 1;
+  RequestMetadata metadata = 2;
+}
+
+message GetRuntimeRevisionResponse {
+  SchemaVersion schema_version = 1;
+  RequestMetadata metadata = 2;
+  RuntimeRevision revision = 3;
+  ControlErrorDetail error = 4;
+}
+
+message RuntimeSnapshot {
+  RuntimeRevision revision = 1;
+  string content_type = 2;
+  bytes payload = 3;
+}
+
+message RuntimeRevision {
+  string revision_id = 1;
+  uint64 generation = 2;
+  google.protobuf.Timestamp updated_at = 3;
+  string checksum_sha256 = 4;
+}
+
+message ControlErrorDetail {
+  ControlErrorCode code = 1;
+  string message = 2;
+  bool retryable = 3;
+}
+
+enum ControlErrorCode {
+  CONTROL_ERROR_CODE_UNSPECIFIED = 0;
+  CONTROL_ERROR_CODE_INVALID_REQUEST = 1;
+  CONTROL_ERROR_CODE_REVISION_NOT_FOUND = 2;
+  CONTROL_ERROR_CODE_UNAVAILABLE = 3;
+  CONTROL_ERROR_CODE_INTERNAL = 4;
+}
