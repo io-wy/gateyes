@@ -1,0 +1,102 @@
+syntax = "proto3";
+
+package gateyes.runtime.v1;
+
+option go_package = "github.com/gateyes/gateway/pkg/runtime/v1;runtimev1";
+
+// InferenceRuntimeService executes provider-facing inference work.
+service InferenceRuntimeService {
+  // Execute returns one complete inference result.
+  rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+  // ExecuteStream returns ordered inference chunks ending in a terminal chunk.
+  rpc ExecuteStream(ExecuteStreamRequest) returns (stream ExecuteStreamResponse);
+}
+
+message SchemaVersion {
+  uint32 major = 1;
+  uint32 minor = 2;
+}
+
+message TraceMetadata {
+  string request_id = 1;
+  string trace_id = 2;
+  string span_id = 3;
+  string parent_span_id = 4;
+  string tenant_id = 5;
+  string session_id = 6;
+}
+
+message ExecuteRequest {
+  SchemaVersion schema_version = 1;
+  string idempotency_key = 2;
+  TraceMetadata metadata = 3;
+  string model = 4;
+  string surface = 5;
+  string content_type = 6;
+  bytes payload = 7;
+}
+
+message ExecuteResponse {
+  SchemaVersion schema_version = 1;
+  TraceMetadata metadata = 2;
+  string provider = 3;
+  string content_type = 4;
+  bytes payload = 5;
+  Usage usage = 6;
+  RuntimeErrorDetail error = 7;
+}
+
+message ExecuteStreamRequest {
+  SchemaVersion schema_version = 1;
+  string idempotency_key = 2;
+  TraceMetadata metadata = 3;
+  string model = 4;
+  string surface = 5;
+  string content_type = 6;
+  bytes payload = 7;
+}
+
+message ExecuteStreamResponse {
+  SchemaVersion schema_version = 1;
+  TraceMetadata metadata = 2;
+  uint64 sequence = 3;
+  string content_type = 4;
+  bytes payload = 5;
+  bool terminal = 6;
+  Usage usage = 7;
+  RuntimeErrorDetail error = 8;
+}
+
+message Usage {
+  uint64 input_tokens = 1;
+  uint64 output_tokens = 2;
+  uint64 total_tokens = 3;
+}
+
+message RuntimeErrorDetail {
+  RuntimeErrorDomain domain = 1;
+  RuntimeErrorCode code = 2;
+  string message = 3;
+  bool retryable = 4;
+  string provider = 5;
+}
+
+enum RuntimeErrorDomain {
+  RUNTIME_ERROR_DOMAIN_UNSPECIFIED = 0;
+  RUNTIME_ERROR_DOMAIN_PROVIDER = 1;
+  RUNTIME_ERROR_DOMAIN_INTERNAL_RPC = 2;
+  RUNTIME_ERROR_DOMAIN_CONFIGURATION = 3;
+}
+
+enum RuntimeErrorCode {
+  RUNTIME_ERROR_CODE_UNSPECIFIED = 0;
+  RUNTIME_ERROR_CODE_INVALID_REQUEST = 1;
+  RUNTIME_ERROR_CODE_UNAUTHENTICATED = 2;
+  RUNTIME_ERROR_CODE_PERMISSION_DENIED = 3;
+  RUNTIME_ERROR_CODE_NOT_FOUND = 4;
+  RUNTIME_ERROR_CODE_RATE_LIMITED = 5;
+  RUNTIME_ERROR_CODE_TIMEOUT = 6;
+  RUNTIME_ERROR_CODE_UNAVAILABLE = 7;
+  RUNTIME_ERROR_CODE_CANCELLED = 8;
+  RUNTIME_ERROR_CODE_INTERNAL = 9;
+}

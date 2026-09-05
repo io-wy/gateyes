@@ -1,0 +1,27 @@
+version: v2
+modules:
+  - path: .
+    includes:
+      - proto
+lint:
+  use:
+    - STANDARD
+  except:
+    # The repository paths are fixed by the existing public Go import layout.
+    - PACKAGE_DIRECTORY_MATCH
+  ignore_only:
+    ENUM_VALUE_PREFIX:
+      - proto/plugin/v1/plugin.proto
+    ENUM_ZERO_VALUE_SUFFIX:
+      - proto/plugin/v1/plugin.proto
+    RPC_REQUEST_STANDARD_NAME:
+      - proto/plugin/v1/gateway.proto
+      - proto/plugin/v1/plugin.proto
+    RPC_RESPONSE_STANDARD_NAME:
+      - proto/plugin/v1/gateway.proto
+      - proto/plugin/v1/plugin.proto
+    SERVICE_SUFFIX:
+      - proto/plugin/v1
+breaking:
+  use:
+    - FILE
