@@ -53,6 +53,9 @@ jobs:
             echo "::warning::Unformatted files: $unformatted"
           fi
 
+      - name: Architecture boundaries
+        run: make lint-arch
+
       - name: Unit tests
         run: go test ./...
 

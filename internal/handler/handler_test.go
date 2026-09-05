@@ -15,9 +15,11 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/gateyes/gateway/internal/app/config"
+	"github.com/gateyes/gateway/internal/application/administration"
 	"github.com/gateyes/gateway/internal/handler/middleware"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/repository/sqlstore"
+	"github.com/gateyes/gateway/internal/service/adminconsole"
 	"github.com/gateyes/gateway/internal/service/budget"
 	"github.com/gateyes/gateway/internal/service/catalog"
 	"github.com/gateyes/gateway/internal/service/limiter"
@@ -466,7 +468,7 @@ func newHandlerTestEnv(t *testing.T, cfg handlerTestEnvConfig) *handlerTestEnv {
 		ResponseSvc: responseService,
 		CatalogSvc:  catalogSvc,
 	})
-	adminHandler := NewAdminHandler(store, providerMgr, catalogSvc, nil)
+	adminHandler := newTestAdminHandler(store, providerMgr, catalogSvc)
 	adminHandler.SetAuthService(mw.AuthService())
 	adminHandler.SetRouter(routerSvc)
 	healthChecker := provider.NewHealthChecker(config.HealthCheckConfig{
@@ -484,4 +486,15 @@ func newHandlerTestEnv(t *testing.T, cfg handlerTestEnvConfig) *handlerTestEnv {
 		adminHandler:     adminHandler,
 		metricsNamespace: cfgObj.Metrics.Namespace,
 	}
+}
+
+func newTestAdminHandler(store repository.Store, providerMgr *provider.Manager, catalogSvc *catalog.Service) *AdminHandler {
+	providerRuntimeSvc := provider.NewRuntimeRegistryService(store, providerMgr)
+	return NewAdminHandler(AdminDependencies{
+		Store:           store,
+		ProviderManager: providerMgr,
+		ProviderRuntime: providerRuntimeSvc,
+		Console:         administration.NewConsole(adminconsole.New(store, catalogSvc, providerRuntimeSvc)),
+		Catalog:         administration.NewCatalog(catalogSvc),
+	})
 }

@@ -8,39 +8,45 @@ import (
 
 	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/gateyes/gateway/internal/handler/middleware"
-	"github.com/gateyes/gateway/internal/repository"
-	"github.com/gateyes/gateway/internal/service/adminconsole"
+	"github.com/gateyes/gateway/internal/ports"
 	authSvc "github.com/gateyes/gateway/internal/service/auth"
-	"github.com/gateyes/gateway/internal/service/catalog"
 	"github.com/gateyes/gateway/internal/service/provider"
 	"github.com/gateyes/gateway/internal/service/router"
 )
 
 type AdminHandler struct {
-	store              repository.Store
+	store              ports.AdminAccessPort
 	providerMgr        *provider.Manager
 	providerRuntimeSvc *provider.RuntimeRegistryService
 	authSvc            *authSvc.Auth
-	consoleSvc         *adminconsole.Service
-	catalogSvc         *catalog.Service
+	consoleSvc         ports.AdminConsoleUseCase
+	catalogSvc         ports.CatalogUseCase
 	routerSvc          *router.Router
-	reloader           *config.Reloader
+	runtimeConfig      ports.RuntimeConfigPort
 	healthChecker      *provider.HealthChecker
 	metrics            *Metrics
 	pluginDir          string
-	configuredPlugins  []repository.PluginRecord
+	configuredPlugins  []ports.PluginRecord
 	startedAt          time.Time
 }
 
-func NewAdminHandler(store repository.Store, providerMgr *provider.Manager, catalogSvc *catalog.Service, reloader *config.Reloader) *AdminHandler {
-	providerRuntimeSvc := provider.NewRuntimeRegistryService(store, providerMgr)
+type AdminDependencies struct {
+	Store           ports.AdminAccessPort
+	ProviderManager *provider.Manager
+	ProviderRuntime *provider.RuntimeRegistryService
+	Console         ports.AdminConsoleUseCase
+	Catalog         ports.CatalogUseCase
+	RuntimeConfig   ports.RuntimeConfigPort
+}
+
+func NewAdminHandler(deps AdminDependencies) *AdminHandler {
 	return &AdminHandler{
-		store:              store,
-		providerMgr:        providerMgr,
-		providerRuntimeSvc: providerRuntimeSvc,
-		consoleSvc:         adminconsole.New(store, catalogSvc, providerRuntimeSvc),
-		catalogSvc:         catalogSvc,
-		reloader:           reloader,
+		store:              deps.Store,
+		providerMgr:        deps.ProviderManager,
+		providerRuntimeSvc: deps.ProviderRuntime,
+		consoleSvc:         deps.Console,
+		catalogSvc:         deps.Catalog,
+		runtimeConfig:      deps.RuntimeConfig,
 		pluginDir:          "./plugins",
 		startedAt:          time.Now(),
 	}
@@ -69,7 +75,7 @@ func (h *AdminHandler) SetPluginDirectory(dir string) {
 }
 
 func (h *AdminHandler) SetConfiguredPlugins(grpcPlugins []config.GRPCPluginConfig, wasmPlugins []config.WASMPluginConfig) {
-	plugins := make([]repository.PluginRecord, 0, len(grpcPlugins)+len(wasmPlugins))
+	plugins := make([]ports.PluginRecord, 0, len(grpcPlugins)+len(wasmPlugins))
 	now := h.startedAt
 	if now.IsZero() {
 		now = time.Now()
@@ -90,11 +96,11 @@ func (h *AdminHandler) SetConfiguredPlugins(grpcPlugins []config.GRPCPluginConfi
 }
 
 func (h *AdminHandler) ReloadConfig(c *gin.Context) {
-	if h.reloader == nil {
+	if h.runtimeConfig == nil {
 		writeError(c, http.StatusNotImplemented, CodeServiceUnavailable, "reloader not configured")
 		return
 	}
-	if err := h.reloader.Reload(c.Request.Context()); err != nil {
+	if err := h.runtimeConfig.Reload(c.Request.Context()); err != nil {
 		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}
@@ -104,7 +110,7 @@ func (h *AdminHandler) ReloadConfig(c *gin.Context) {
 
 func (h *AdminHandler) adminTenantID(c *gin.Context) string {
 	identity, _ := middleware.Identity(c)
-	if identity.Role == repository.RoleSuperAdmin {
+	if identity.Role == ports.RoleSuperAdmin {
 		if tenantID := c.Query("tenant_id"); tenantID != "" {
 			return tenantID
 		}
@@ -112,8 +118,8 @@ func (h *AdminHandler) adminTenantID(c *gin.Context) string {
 	return identity.TenantID
 }
 
-func (h *AdminHandler) scopeTenantID(c *gin.Context, identity *repository.AuthIdentity) (string, bool) {
-	if identity.Role == repository.RoleSuperAdmin {
+func (h *AdminHandler) scopeTenantID(c *gin.Context, identity *ports.AuthIdentity) (string, bool) {
+	if identity.Role == ports.RoleSuperAdmin {
 		if tenantID := c.Query("tenant_id"); tenantID != "" {
 			return tenantID, true
 		}
@@ -121,8 +127,8 @@ func (h *AdminHandler) scopeTenantID(c *gin.Context, identity *repository.AuthId
 	return identity.TenantID, true
 }
 
-func (h *AdminHandler) resolveTargetTenant(c *gin.Context, identity *repository.AuthIdentity, requested string) (string, bool) {
-	if identity.Role == repository.RoleSuperAdmin {
+func (h *AdminHandler) resolveTargetTenant(c *gin.Context, identity *ports.AuthIdentity, requested string) (string, bool) {
+	if identity.Role == ports.RoleSuperAdmin {
 		if requested == "" {
 			writeError(c, http.StatusBadRequest, CodeMissingRequiredField, "tenant_id is required")
 			return "", false
@@ -165,18 +171,18 @@ func (h *AdminHandler) invalidateTenantIdentities(tenantID string) {
 	}
 }
 
-func scopedTenant(identity *repository.AuthIdentity) string {
+func scopedTenant(identity *ports.AuthIdentity) string {
 	if identity == nil {
 		return ""
 	}
 	return identity.TenantID
 }
 
-func isTenantUser(identity *repository.AuthIdentity) bool {
-	return identity != nil && identity.Role == repository.RoleTenantUser
+func isTenantUser(identity *ports.AuthIdentity) bool {
+	return identity != nil && identity.Role == ports.RoleTenantUser
 }
 
-func (h *AdminHandler) requireAdminIdentity(c *gin.Context) (*repository.AuthIdentity, string, bool) {
+func (h *AdminHandler) requireAdminIdentity(c *gin.Context) (*ports.AuthIdentity, string, bool) {
 	identity, _ := middleware.Identity(c)
 	tenantID, ok := h.scopeTenantID(c, identity)
 	if !ok {
@@ -186,7 +192,7 @@ func (h *AdminHandler) requireAdminIdentity(c *gin.Context) (*repository.AuthIde
 }
 
 func (h *AdminHandler) handleNotFound(c *gin.Context, err error, code Code, msg string) bool {
-	if err == repository.ErrNotFound {
+	if err == ports.ErrNotFound {
 		writeError(c, http.StatusNotFound, code, msg)
 		return true
 	}
@@ -207,7 +213,7 @@ func providerNames(items []provider.Provider) []string {
 
 func validEntityStatus(value string) bool {
 	switch value {
-	case repository.StatusActive, repository.StatusInactive, repository.StatusRevoked:
+	case ports.StatusActive, ports.StatusInactive, ports.StatusRevoked:
 		return true
 	default:
 		return false

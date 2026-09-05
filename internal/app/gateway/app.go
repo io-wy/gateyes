@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/gateyes/gateway/internal/app/config"
+	"github.com/gateyes/gateway/internal/application/administration"
+	"github.com/gateyes/gateway/internal/application/inference"
 	"github.com/gateyes/gateway/internal/handler"
 	"github.com/gateyes/gateway/internal/handler/middleware"
 	"github.com/gateyes/gateway/internal/pkg/eventbus"
@@ -16,6 +18,7 @@ import (
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/repository/db"
 	"github.com/gateyes/gateway/internal/repository/sqlstore"
+	"github.com/gateyes/gateway/internal/service/adminconsole"
 	"github.com/gateyes/gateway/internal/service/alert"
 	batchSvc "github.com/gateyes/gateway/internal/service/batch"
 	"github.com/gateyes/gateway/internal/service/budget"
@@ -233,6 +236,9 @@ func Run(ctx context.Context, configPath string) error {
 		responsesService.SetRedis(redisClient)
 		responsesService.RestoreCircuitBreakerState(ctx)
 	}
+	inferenceService := inference.NewOrchestrated(inference.Dependencies{
+		Executor: responsesService,
+	})
 	batchService := batchSvc.New(batchSvc.Dependencies{
 		Store:     store,
 		Responses: responsesService,
@@ -246,6 +252,10 @@ func Run(ctx context.Context, configPath string) error {
 		AlertSvc:  alertSvc,
 		Responses: responsesService,
 	})
+	providerRuntimeSvc := provider.NewRuntimeRegistryService(store, providerMgr)
+	consoleSvc := administration.NewConsole(adminconsole.New(store, catalogSvc, providerRuntimeSvc))
+	catalogApp := administration.NewCatalog(catalogSvc)
+	runtimeConfig := administration.NewRuntimeConfig(reloader)
 
 	redisPing := func(ctx context.Context) error {
 		if redisClient == nil {
@@ -258,13 +268,20 @@ func Run(ctx context.Context, configPath string) error {
 		Store:       store,
 		Metrics:     metrics,
 		ProviderMgr: providerMgr,
-		ResponseSvc: responsesService,
+		ResponseSvc: inferenceService,
 		CatalogSvc:  catalogSvc,
 		BatchSvc:    batchService,
 		RedisPing:   redisPing,
 	})
 
-	adminHandler := handler.NewAdminHandler(store, providerMgr, catalogSvc, reloader)
+	adminHandler := handler.NewAdminHandler(handler.AdminDependencies{
+		Store:           store,
+		ProviderManager: providerMgr,
+		ProviderRuntime: providerRuntimeSvc,
+		Console:         consoleSvc,
+		Catalog:         catalogApp,
+		RuntimeConfig:   runtimeConfig,
+	})
 	adminHandler.SetAuthService(httpMiddleware.AuthService())
 	adminHandler.SetRouter(routerSvc)
 	adminHandler.SetMetrics(metrics)
