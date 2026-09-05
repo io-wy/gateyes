@@ -9,9 +9,7 @@ import (
 	"github.com/gateyes/gateway/internal/app/config"
 	"github.com/gateyes/gateway/internal/handler/middleware"
 	"github.com/gateyes/gateway/internal/ports"
-	"github.com/gateyes/gateway/internal/service/adminconsole"
 	authSvc "github.com/gateyes/gateway/internal/service/auth"
-	"github.com/gateyes/gateway/internal/service/catalog"
 	"github.com/gateyes/gateway/internal/service/provider"
 	"github.com/gateyes/gateway/internal/service/router"
 )
@@ -24,7 +22,7 @@ type AdminHandler struct {
 	consoleSvc         ports.AdminConsoleUseCase
 	catalogSvc         ports.CatalogUseCase
 	routerSvc          *router.Router
-	reloader           *config.Reloader
+	runtimeConfig      ports.RuntimeConfigPort
 	healthChecker      *provider.HealthChecker
 	metrics            *Metrics
 	pluginDir          string
@@ -32,15 +30,23 @@ type AdminHandler struct {
 	startedAt          time.Time
 }
 
-func NewAdminHandler(store ports.AdminAccessPort, providerMgr *provider.Manager, catalogSvc *catalog.Service, reloader *config.Reloader) *AdminHandler {
-	providerRuntimeSvc := provider.NewRuntimeRegistryService(store, providerMgr)
+type AdminDependencies struct {
+	Store           ports.AdminAccessPort
+	ProviderManager *provider.Manager
+	ProviderRuntime *provider.RuntimeRegistryService
+	Console         ports.AdminConsoleUseCase
+	Catalog         ports.CatalogUseCase
+	RuntimeConfig   ports.RuntimeConfigPort
+}
+
+func NewAdminHandler(deps AdminDependencies) *AdminHandler {
 	return &AdminHandler{
-		store:              store,
-		providerMgr:        providerMgr,
-		providerRuntimeSvc: providerRuntimeSvc,
-		consoleSvc:         adminconsole.New(store, catalogSvc, providerRuntimeSvc),
-		catalogSvc:         catalogSvc,
-		reloader:           reloader,
+		store:              deps.Store,
+		providerMgr:        deps.ProviderManager,
+		providerRuntimeSvc: deps.ProviderRuntime,
+		consoleSvc:         deps.Console,
+		catalogSvc:         deps.Catalog,
+		runtimeConfig:      deps.RuntimeConfig,
 		pluginDir:          "./plugins",
 		startedAt:          time.Now(),
 	}
@@ -90,11 +96,11 @@ func (h *AdminHandler) SetConfiguredPlugins(grpcPlugins []config.GRPCPluginConfi
 }
 
 func (h *AdminHandler) ReloadConfig(c *gin.Context) {
-	if h.reloader == nil {
+	if h.runtimeConfig == nil {
 		writeError(c, http.StatusNotImplemented, CodeServiceUnavailable, "reloader not configured")
 		return
 	}
-	if err := h.reloader.Reload(c.Request.Context()); err != nil {
+	if err := h.runtimeConfig.Reload(c.Request.Context()); err != nil {
 		writeError(c, http.StatusInternalServerError, CodeInternalError, err.Error())
 		return
 	}

@@ -3,7 +3,6 @@ package inference
 
 import (
 	"context"
-	"time"
 
 	"github.com/gateyes/gateway/internal/ports"
 	"github.com/gateyes/gateway/internal/repository"
@@ -11,46 +10,45 @@ import (
 	responseSvc "github.com/gateyes/gateway/internal/service/responses"
 )
 
-// Adapter exposes the existing response service through the application port.
-type Adapter struct{ service *responseSvc.Service }
+// ProductionExecutor is the complete inference execution contract retained
+// during the incremental application-layer migration. Keeping it as a port
+// preserves production semantics without coupling the adapter to a concrete
+// response service.
+type ProductionExecutor interface {
+	ports.InferenceUseCase
+}
 
-func New(service *responseSvc.Service) *Adapter { return &Adapter{service: service} }
+// Adapter exposes the existing response service through the application port.
+type Adapter struct{ service ProductionExecutor }
+
+func New(service ProductionExecutor) *Adapter { return &Adapter{service: service} }
 
 // OrchestratedAdapter exposes the port-driven workflow through the existing
 // transport-facing InferenceUseCase contract. It lets composition roots opt
 // into the new application orchestration without changing HTTP handlers.
-type OrchestratedAdapter struct{ orchestrator *Orchestrator }
+type OrchestratedAdapter struct {
+	orchestrator *Orchestrator
+}
 
 func NewOrchestrated(deps Dependencies) *OrchestratedAdapter {
 	return &OrchestratedAdapter{orchestrator: NewOrchestrator(deps)}
 }
 
 func (a *OrchestratedAdapter) Create(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*responseSvc.CreateResult, error) {
-	result, err := a.orchestrator.Create(ctx, identity, req, sessionID)
-	if err != nil {
-		return nil, err
-	}
-	return &responseSvc.CreateResult{
-		Response:         result.Response,
-		ProviderName:     result.ProviderName,
-		LatencyMs:        result.Latency.Milliseconds(),
-		PromptTokens:     result.Response.Usage.PromptTokens,
-		CompletionTokens: result.Response.Usage.CompletionTokens,
-		Retries:          result.Retries,
-		Fallback:         result.Fallback,
-	}, nil
+	return a.orchestrator.Execute(ctx, identity, req, sessionID)
 }
 
 func (a *OrchestratedAdapter) CreateStream(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*responseSvc.Stream, error) {
-	result, err := a.orchestrator.CreateStream(ctx, identity, req, sessionID)
-	if err != nil {
-		return nil, err
-	}
-	return &responseSvc.Stream{ResponseID: result.ResponseID, ProviderName: result.ProviderName, StartedAt: time.Now(), Events: result.Events, Errors: result.Errors}, nil
+	return a.orchestrator.ExecuteStream(ctx, identity, req, sessionID)
 }
 
-func (a *OrchestratedAdapter) GetCircuitBreakerStates() map[string]int    { return map[string]int{} }
-func (a *OrchestratedAdapter) PersistCircuitBreakerState(context.Context) {}
+func (a *OrchestratedAdapter) GetCircuitBreakerStates() map[string]int {
+	return a.orchestrator.GetCircuitBreakerStates()
+}
+
+func (a *OrchestratedAdapter) PersistCircuitBreakerState(ctx context.Context) {
+	a.orchestrator.PersistCircuitBreakerState(ctx)
+}
 
 var _ ports.InferenceUseCase = (*OrchestratedAdapter)(nil)
 

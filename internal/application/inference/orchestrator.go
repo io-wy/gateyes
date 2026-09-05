@@ -13,11 +13,19 @@ import (
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/cache"
 	"github.com/gateyes/gateway/internal/service/provider"
+	responseSvc "github.com/gateyes/gateway/internal/service/responses"
 )
 
-var ErrNoProvider = errors.New("no provider available")
+var (
+	ErrNoProvider                 = errors.New("no provider available")
+	ErrProductionExecutorRequired = errors.New("production inference executor is required")
+)
 
 type Dependencies struct {
+	// Executor is the production inference engine used while its mature
+	// circuit-breaker, caching, billing, plugin, and stream semantics are
+	// incrementally moved behind the application ports below.
+	Executor     ProductionExecutor
 	Admission    AdmissionPolicy
 	Router       ProviderRouter
 	Invoker      ProviderInvoker
@@ -30,6 +38,36 @@ type Dependencies struct {
 }
 
 type Orchestrator struct{ deps Dependencies }
+
+// Execute is the migration-safe application entry point. A configured
+// production executor retains the complete legacy behavior while the smaller
+// workflow ports are adopted incrementally.
+func (o *Orchestrator) Execute(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*responseSvc.CreateResult, error) {
+	if o.deps.Executor != nil {
+		return o.deps.Executor.Create(ctx, identity, req, sessionID)
+	}
+	return nil, ErrProductionExecutorRequired
+}
+
+func (o *Orchestrator) ExecuteStream(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*responseSvc.Stream, error) {
+	if o.deps.Executor != nil {
+		return o.deps.Executor.CreateStream(ctx, identity, req, sessionID)
+	}
+	return nil, ErrProductionExecutorRequired
+}
+
+func (o *Orchestrator) GetCircuitBreakerStates() map[string]int {
+	if o.deps.Executor == nil {
+		return nil
+	}
+	return o.deps.Executor.GetCircuitBreakerStates()
+}
+
+func (o *Orchestrator) PersistCircuitBreakerState(ctx context.Context) {
+	if o.deps.Executor != nil {
+		o.deps.Executor.PersistCircuitBreakerState(ctx)
+	}
+}
 
 func NewOrchestrator(deps Dependencies) *Orchestrator {
 	if deps.Retry.MaxAttempts < 1 {
