@@ -139,7 +139,7 @@ func (r *Router) OrderCandidates(candidates []provider.Provider, ctx RouteContex
 	ordered := make([]provider.Provider, len(candidates))
 	copy(ordered, candidates)
 
-	ordered = r.applyRuleEngineLocked(ordered, ctx)
+	ordered, _, _ = r.qualifyCandidatesLocked(ordered, ctx)
 	ordered = r.applyRankerLocked(ordered, ctx)
 	beforeAffinity := ordered
 	ordered = r.applyAffinityLocked(ordered, ctx)
@@ -169,7 +169,7 @@ func (r *Router) ExplainOrderCandidates(candidates []provider.Provider, ctx Rout
 	ordered := make([]provider.Provider, len(candidates))
 	copy(ordered, candidates)
 
-	ordered, trace.Rule = r.applyRuleEngineTraceLocked(ordered, ctx)
+	ordered, trace.Qualification, trace.Rule = r.qualifyCandidatesLocked(ordered, ctx)
 	trace.AfterRule = providerNameList(ordered)
 	ordered = r.applyRankerLocked(ordered, ctx)
 	trace.AfterRanker = providerNameList(ordered)
