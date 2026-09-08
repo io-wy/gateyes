@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS semantic_cache_entries (
 	prompt_text TEXT NOT NULL DEFAULT '',
 	embedding vector(1536) NOT NULL,
 	response_body TEXT NOT NULL DEFAULT '{}',
-	stream_body BLOB,
+	stream_body BYTEA,
 	provider_name TEXT NOT NULL,
 	usage_body TEXT NOT NULL DEFAULT '{}',
 	similarity_threshold DOUBLE PRECISION NOT NULL,
