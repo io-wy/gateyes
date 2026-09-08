@@ -557,6 +557,48 @@ func TestRouter_OrderCandidatesRuleEngineStructuredOutput(t *testing.T) {
 	}
 }
 
+func TestRouter_PhysicalModelBypassSkipsOptimization(t *testing.T) {
+	r := NewRouter(config.RouterConfig{Strategy: "cost_based"}, nil)
+	r.SetProviders([]provider.Provider{
+		&mockProvider{name: "physical", model: "model-physical", cost: 1},
+		&mockProvider{name: "cheap", model: "alias", cost: 0.01},
+	})
+
+	ordered, trace := r.ExplainOrderCandidates(r.List(), RouteContext{Model: "model-physical"})
+	if got := providerNames(ordered); len(got) != 1 || got[0] != "physical" {
+		t.Fatalf("bypass candidates = %v, want [physical]", got)
+	}
+	if !trace.Bypass || trace.BypassReason != "explicit_physical_model" || trace.BypassProvider != "physical" {
+		t.Fatalf("trace = %+v, want explicit physical-model bypass", trace)
+	}
+}
+
+func TestRouter_PhysicalModelBypassStillHonorsQualification(t *testing.T) {
+	r := NewRouter(config.RouterConfig{
+		Strategy: "cost_based",
+		RuleEngine: config.RuleEngineConfig{
+			Enabled: true,
+			Rules: []config.RouteRuleConfig{{
+				Name:   "authorized-only",
+				Match:  config.RouteMatchConfig{Models: []string{"model-physical"}},
+				Action: config.RouteActionConfig{Providers: []string{"authorized"}},
+			}},
+		},
+	}, nil)
+	r.SetProviders([]provider.Provider{
+		&mockProvider{name: "physical", model: "model-physical", cost: 0.01},
+		&mockProvider{name: "authorized", model: "alias", cost: 1},
+	})
+
+	ordered, trace := r.ExplainOrderCandidates(r.List(), RouteContext{Model: "model-physical"})
+	if got := providerNames(ordered); len(got) != 1 || got[0] != "authorized" {
+		t.Fatalf("qualified candidates = %v, want [authorized]", got)
+	}
+	if trace.Bypass {
+		t.Fatalf("trace = %+v, physical provider excluded by qualification must not bypass", trace)
+	}
+}
+
 func TestRouter_OrderCandidatesMLRankPlaceholderIsNoop(t *testing.T) {
 	cfg := config.RouterConfig{
 		Strategy: "round_robin",
