@@ -69,6 +69,7 @@ type Service struct {
 	eventBus       *eventbus.Bus
 	guardrails     *guardrail.Manager
 	pricingFeed    *pricing.Feed
+	toolExecutor   ToolExecutor
 	embedding      semanticEmbeddingProvider
 	sfg            singleflight.Group
 	drainSem       chan struct{}
@@ -103,6 +104,7 @@ type execution struct {
 	routeTrace            *routeTrace
 	startedAt             time.Time
 	estimatedPromptTokens int
+	continuationRetries   int
 }
 
 func New(deps *Dependencies) *Service {

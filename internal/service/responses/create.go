@@ -67,6 +67,7 @@ func cloneStringAnyMap(value map[string]any) map[string]any {
 }
 
 type ctxKeyRawBody struct{}
+type ctxKeySkipToolStreamPreprocess struct{}
 
 // WithRawRequestBody attaches the original HTTP request body to the context
 // so that Create / CreateStream can store it instead of the normalized form.
@@ -86,12 +87,25 @@ func RawBodyFromContext(ctx context.Context) []byte {
 	return rawBodyFromContext(ctx)
 }
 
+func withSkipToolStreamPreprocess(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeySkipToolStreamPreprocess{}, true)
+}
+
+func skipToolStreamPreprocess(ctx context.Context) bool {
+	v, _ := ctx.Value(ctxKeySkipToolStreamPreprocess{}).(bool)
+	return v
+}
+
 func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*CreateResult, error) {
 	req.Normalize()
+	toolDecisions, err := s.validateToolOwnership(req)
+	if err != nil {
+		return nil, err
+	}
 	createStart := time.Now()
 
 	// Run pre-call guardrails before any cache lookup or provider call.
-	if s.guardrails != nil {
+	if s.guardrails != nil && !skipToolStreamPreprocess(ctx) {
 		pre := s.guardrails.PreCall(ctx, req)
 		if pre.Verdict == guardrail.Block {
 			return nil, fmt.Errorf("%w: %s", ErrGuardrailBlocked, pre.Reason)
@@ -101,6 +115,10 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 		}
 	}
 	req = s.applyCachePromptRewrite(ctx, identity, req)
+	toolDecisions, err = s.validateToolOwnership(req)
+	if err != nil {
+		return nil, err
+	}
 	if err := s.admitRequest(ctx, identity, req); err != nil {
 		return nil, err
 	}
@@ -235,6 +253,24 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 		}
 
 		resp = s.normalizeResponse(exec, resp)
+		owners := toolOwnerByName(toolDecisions)
+		if hasGatewayOwnedTool(toolDecisions) {
+			resp, err = s.runGatewayToolLoop(ctx, exec, req, resp, owners, trace)
+			totalRetries += exec.continuationRetries
+			if err != nil {
+				appendRouteAttempt(exec.routeTrace, providerName, retries, "tool_error", err)
+				if s.circuitBreaker != nil {
+					s.circuitBreaker.RecordFailure(tenantID, providerName)
+				}
+				latencyMs = time.Since(exec.startedAt).Milliseconds()
+				s.providerMgr.Stats.RecordRequest(providerName, false, 0, latencyMs)
+				_ = s.markErrorWithProvider(ctx, identity, exec, latencyMs, providerName)
+				return nil, err
+			}
+		} else if len(toolDecisions) > 0 {
+			recordExternalToolCalls(trace, resp.OutputToolCalls(), owners)
+		}
+		latencyMs = time.Since(exec.startedAt).Milliseconds()
 
 		if budgetErr := validateVisibleOutputBudget(exec, resp); budgetErr != nil {
 			appendRouteAttempt(exec.routeTrace, providerName, retries, "budget_rejected", budgetErr)

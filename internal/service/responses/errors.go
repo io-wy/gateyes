@@ -29,7 +29,7 @@ func WrapError(err error) ginError {
 		return ginError{Status: 429, Message: err.Error(), Type: "rate_limit_error"}
 	case errors.Is(err, ErrRateLimited):
 		return ginError{Status: 429, Message: err.Error(), Type: "rate_limit_error"}
-	case errors.Is(err, ErrOutputBudgetTooLow):
+	case errors.Is(err, ErrOutputBudgetTooLow), errors.Is(err, ErrInvalidToolOwnership), errors.Is(err, ErrToolExecutorUnavailable), errors.Is(err, ErrToolLoopLimit):
 		return ginError{Status: 400, Message: err.Error(), Type: "invalid_request_error"}
 	case errors.Is(err, ErrNoProvider):
 		return ginError{Status: 503, Message: err.Error(), Type: "internal_error"}
