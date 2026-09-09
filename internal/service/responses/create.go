@@ -88,6 +88,10 @@ func RawBodyFromContext(ctx context.Context) []byte {
 
 func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*CreateResult, error) {
 	req.Normalize()
+	originalRequestBody := requestBodyBeforeHydration(ctx, req)
+	if err := s.hydratePreviousResponse(ctx, identity, req); err != nil {
+		return nil, err
+	}
 	createStart := time.Now()
 
 	// Run pre-call guardrails before any cache lookup or provider call.
@@ -152,7 +156,9 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 		trace.touch()
 	}
 	requestBody, _ := json.Marshal(req)
-	if raw := rawBodyFromContext(ctx); len(raw) > 0 {
+	if len(originalRequestBody) > 0 {
+		requestBody = originalRequestBody
+	} else if raw := rawBodyFromContext(ctx); len(raw) > 0 {
 		requestBody = raw
 	}
 	if err := s.store.CreateResponse(ctx, repository.ResponseRecord{
