@@ -140,6 +140,9 @@ func (r *Router) OrderCandidates(candidates []provider.Provider, ctx RouteContex
 	copy(ordered, candidates)
 
 	ordered, _, _ = r.qualifyCandidatesLocked(ordered, ctx)
+	if bypass := physicalModelBypassCandidate(ordered, ctx.Model); bypass != nil {
+		return []provider.Provider{bypass}
+	}
 	ordered = r.applyRankerLocked(ordered, ctx)
 	beforeAffinity := ordered
 	ordered = r.applyAffinityLocked(ordered, ctx)
@@ -171,6 +174,15 @@ func (r *Router) ExplainOrderCandidates(candidates []provider.Provider, ctx Rout
 
 	ordered, trace.Qualification, trace.Rule = r.qualifyCandidatesLocked(ordered, ctx)
 	trace.AfterRule = providerNameList(ordered)
+	if bypass := physicalModelBypassCandidate(ordered, ctx.Model); bypass != nil {
+		trace.Bypass = true
+		trace.BypassReason = "explicit_physical_model"
+		trace.BypassProvider = bypass.Name()
+		trace.AfterRanker = providerNameList(ordered)
+		trace.AfterAffinity = providerNameList(ordered)
+		trace.Ordered = []string{bypass.Name()}
+		return []provider.Provider{bypass}, trace
+	}
 	ordered = r.applyRankerLocked(ordered, ctx)
 	trace.AfterRanker = providerNameList(ordered)
 	beforeAffinity := ordered
@@ -184,6 +196,18 @@ func (r *Router) ExplainOrderCandidates(candidates []provider.Provider, ctx Rout
 		return nil, trace
 	}
 	return ordered, trace
+}
+
+func physicalModelBypassCandidate(candidates []provider.Provider, requestedModel string) provider.Provider {
+	if requestedModel == "" {
+		return nil
+	}
+	for _, candidate := range candidates {
+		if candidate.Model() == requestedModel {
+			return candidate
+		}
+	}
+	return nil
 }
 
 func (r *Router) orderByStrategyLocked(candidates []provider.Provider, strategy string) []provider.Provider {

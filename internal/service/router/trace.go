@@ -15,6 +15,9 @@ type OrderTrace struct {
 	Strategy       string             `json:"strategy"`
 	Ordered        []string           `json:"ordered"`
 	Scores         []ScoreTrace       `json:"scores,omitempty"`
+	Bypass         bool               `json:"bypass,omitempty"`
+	BypassReason   string             `json:"bypass_reason,omitempty"`
+	BypassProvider string             `json:"bypass_provider,omitempty"`
 }
 
 type QualificationTrace struct {
