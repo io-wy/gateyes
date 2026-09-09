@@ -1,0 +1,10 @@
+{
+  "code": 40001,
+  "data": null,
+  "error": {
+    "message": "invalid API key",
+    "type": "authentication_error"
+  },
+  "message": "invalid API key",
+  "success": false
+}

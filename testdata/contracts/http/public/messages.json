@@ -1,0 +1,17 @@
+{
+  "content": [
+    {
+      "text": "contract hello",
+      "type": "text"
+    }
+  ],
+  "id": "<id>",
+  "model": "public-model",
+  "role": "assistant",
+  "stop_reason": "end_turn",
+  "type": "message",
+  "usage": {
+    "input_tokens": 3,
+    "output_tokens": 2
+  }
+}

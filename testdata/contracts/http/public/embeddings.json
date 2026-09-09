@@ -1,0 +1,21 @@
+{
+  "data": [
+    {
+      "embedding": [
+        0.1,
+        0.2,
+        0.3
+      ],
+      "index": 0,
+      "object": "embedding"
+    }
+  ],
+  "model": "provider-model",
+  "object": "list",
+  "usage": {
+    "cached_tokens": 0,
+    "completion_tokens": 0,
+    "prompt_tokens": 3,
+    "total_tokens": 3
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "code": 20000,
+  "data": {
+    "allowed_models": [],
+    "allowed_services": [],
+    "api_key": "contract-admin",
+    "api_key_id": "<id>",
+    "permissions": [
+      "api_key:read",
+      "api_key:write",
+      "audit:read",
+      "budget:read",
+      "config:write",
+      "project:read",
+      "project:write",
+      "provider:read",
+      "provider:write",
+      "response:read",
+      "service:read",
+      "service:write",
+      "tenant:read",
+      "tenant:write",
+      "usage:read",
+      "user:read",
+      "user:write",
+      "virtual_key:read",
+      "virtual_key:write"
+    ],
+    "project_id": "",
+    "project_slug": "",
+    "role": "super_admin",
+    "tenant_id": "tenant-a",
+    "tenant_slug": "tenant-a",
+    "user_email": "contract-admin@example.com",
+    "user_id": "<id>",
+    "user_name": "contract-admin",
+    "virtual_key_id": ""
+  },
+  "message": "ok",
+  "success": true
+}
