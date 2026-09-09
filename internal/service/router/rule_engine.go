@@ -22,9 +22,19 @@ func cachedRegexp(pattern string) *regexp.Regexp {
 	return re
 }
 
-func (r *Router) applyRuleEngineLocked(candidates []provider.Provider, ctx RouteContext) []provider.Provider {
-	filtered, _ := r.applyRuleEngineTraceLocked(candidates, ctx)
-	return filtered
+func (r *Router) qualifyCandidatesLocked(candidates []provider.Provider, ctx RouteContext) ([]provider.Provider, QualificationTrace, RuleTrace) {
+	eligible, ruleTrace := r.applyRuleEngineTraceLocked(candidates, ctx)
+	qualificationTrace := QualificationTrace{Eligible: providerNameList(eligible)}
+	if ruleTrace.Matched {
+		for _, name := range excludedProviderNames(candidates, eligible) {
+			qualificationTrace.Excluded = append(qualificationTrace.Excluded, QualificationExclusion{
+				Provider: name,
+				Reason:   "route_rule",
+				Detail:   ruleTrace.RuleName,
+			})
+		}
+	}
+	return eligible, qualificationTrace, ruleTrace
 }
 
 func (r *Router) applyRuleEngineTraceLocked(candidates []provider.Provider, ctx RouteContext) ([]provider.Provider, RuleTrace) {
@@ -37,21 +47,28 @@ func (r *Router) applyRuleEngineTraceLocked(candidates []provider.Provider, ctx 
 			continue
 		}
 		filtered := filterProviders(candidates, rule.Action)
-		if len(filtered) > 0 {
-			return filtered, RuleTrace{
-				Matched:   true,
-				RuleName:  rule.Name,
-				Providers: providerNameList(filtered),
-			}
-		}
-		return candidates, RuleTrace{
+		return filtered, RuleTrace{
 			Matched:   true,
 			RuleName:  rule.Name,
-			Providers: providerNameList(candidates),
+			Providers: providerNameList(filtered),
 		}
 	}
 
 	return candidates, RuleTrace{}
+}
+
+func excludedProviderNames(candidates, eligible []provider.Provider) []string {
+	eligibleNames := make(map[string]struct{}, len(eligible))
+	for _, item := range eligible {
+		eligibleNames[item.Name()] = struct{}{}
+	}
+	excluded := make([]string, 0, len(candidates)-len(eligible))
+	for _, item := range candidates {
+		if _, ok := eligibleNames[item.Name()]; !ok {
+			excluded = append(excluded, item.Name())
+		}
+	}
+	return excluded
 }
 
 func matchRouteRule(match config.RouteMatchConfig, ctx RouteContext) bool {

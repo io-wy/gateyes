@@ -1,0 +1,91 @@
+syntax = "proto3";
+
+package gateyes.workflow.v1;
+
+import "proto/runtime/v1/inference_runtime.proto";
+
+option go_package = "github.com/gateyes/gateway/pkg/workflow/v1;workflowv1";
+
+// WorkflowService executes idempotent batch items and reports workflow state.
+service WorkflowService {
+  // ExecuteBatchItem executes one idempotent item in a workflow.
+  rpc ExecuteBatchItem(ExecuteBatchItemRequest) returns (ExecuteBatchItemResponse);
+  // GetWorkflowStatus returns aggregate workflow business state.
+  rpc GetWorkflowStatus(GetWorkflowStatusRequest) returns (GetWorkflowStatusResponse);
+}
+
+message SchemaVersion {
+  uint32 major = 1;
+  uint32 minor = 2;
+}
+
+message WorkflowMetadata {
+  string request_id = 1;
+  string trace_id = 2;
+  string tenant_id = 3;
+}
+
+message ExecuteBatchItemRequest {
+  SchemaVersion schema_version = 1;
+  string idempotency_key = 2;
+  WorkflowMetadata metadata = 3;
+  string workflow_id = 4;
+  string item_id = 5;
+  string content_type = 6;
+  bytes payload = 7;
+}
+
+message ExecuteBatchItemResponse {
+  SchemaVersion schema_version = 1;
+  WorkflowMetadata metadata = 2;
+  string workflow_id = 3;
+  string item_id = 4;
+  WorkflowStatus status = 5;
+  string content_type = 6;
+  bytes payload = 7;
+  WorkflowErrorDetail error = 8;
+}
+
+message GetWorkflowStatusRequest {
+  SchemaVersion schema_version = 1;
+  WorkflowMetadata metadata = 2;
+  string workflow_id = 3;
+}
+
+message GetWorkflowStatusResponse {
+  SchemaVersion schema_version = 1;
+  WorkflowMetadata metadata = 2;
+  string workflow_id = 3;
+  WorkflowStatus status = 4;
+  uint64 total_items = 5;
+  uint64 completed_items = 6;
+  uint64 failed_items = 7;
+  WorkflowErrorDetail error = 8;
+}
+
+message WorkflowErrorDetail {
+  WorkflowErrorCode code = 1;
+  string message = 2;
+  bool retryable = 3;
+  gateyes.runtime.v1.RuntimeErrorDetail runtime_error = 4;
+}
+
+enum WorkflowStatus {
+  WORKFLOW_STATUS_UNSPECIFIED = 0;
+  WORKFLOW_STATUS_PENDING = 1;
+  WORKFLOW_STATUS_RUNNING = 2;
+  WORKFLOW_STATUS_SUCCEEDED = 3;
+  WORKFLOW_STATUS_PARTIALLY_SUCCEEDED = 4;
+  WORKFLOW_STATUS_FAILED = 5;
+  WORKFLOW_STATUS_CANCELLED = 6;
+}
+
+enum WorkflowErrorCode {
+  WORKFLOW_ERROR_CODE_UNSPECIFIED = 0;
+  WORKFLOW_ERROR_CODE_INVALID_REQUEST = 1;
+  WORKFLOW_ERROR_CODE_CONFLICT = 2;
+  WORKFLOW_ERROR_CODE_NOT_FOUND = 3;
+  WORKFLOW_ERROR_CODE_RUNTIME_FAILED = 4;
+  WORKFLOW_ERROR_CODE_CANCELLED = 5;
+  WORKFLOW_ERROR_CODE_INTERNAL = 6;
+}

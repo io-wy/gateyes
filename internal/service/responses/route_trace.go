@@ -163,8 +163,9 @@ func (s *Service) planCandidates(ctx context.Context, identity *repository.AuthI
 		trace.Router = routerTrace
 	}
 
-	// Try gRPC router plugin (outside lock — it's IO).
-	if s.pluginMgr != nil {
+	// Try gRPC router plugin (outside lock — it's IO). Explicit physical model
+	// selection is an escape hatch and must remain immutable.
+	if s.pluginMgr != nil && !trace.Router.Bypass {
 		if pr := s.pluginMgr.Router(); pr != nil {
 			pluginOrdered := s.tryPluginRouter(ctx, pr, ordered, buildRouteContext(ctx, req, sessionID))
 			if pluginOrdered != nil {
