@@ -38,6 +38,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -52,6 +54,18 @@ jobs:
           if [ -n "$unformatted" ]; then
             echo "::warning::Unformatted files: $unformatted"
           fi
+
+      - name: Architecture boundaries
+        run: make lint-arch
+
+      - name: Protobuf generation drift
+        run: make proto-check
+
+      - name: Protobuf lint
+        run: make proto-lint
+
+      - name: Protobuf breaking changes
+        run: make proto-breaking
 
       - name: Unit tests
         run: go test ./...
