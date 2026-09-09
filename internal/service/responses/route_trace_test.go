@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/gateyes/gateway/internal/app/config"
+	pluginSvc "github.com/gateyes/gateway/internal/domain/plugin"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/provider"
 )
@@ -110,6 +111,50 @@ func TestProviderNamesFromSlice(t *testing.T) {
 	names := providerNamesFromSlice(items)
 	if len(names) != 2 || names[0] != "a" || names[1] != "b" {
 		t.Fatalf("providerNamesFromSlice() = %v, want [a b]", names)
+	}
+}
+
+type countingRouterPlugin struct {
+	calls int
+}
+
+func (p *countingRouterPlugin) Name() string                   { return "counting-router" }
+func (p *countingRouterPlugin) Type() string                   { return "router" }
+func (p *countingRouterPlugin) Health() pluginSvc.HealthStatus { return pluginSvc.HealthHealthy }
+func (p *countingRouterPlugin) Close() error                   { return nil }
+func (p *countingRouterPlugin) OrderCandidates(context.Context, []pluginSvc.CandidateInfo, pluginSvc.RouteContext) ([]string, bool) {
+	p.calls++
+	return []string{"other"}, true
+}
+
+type testRouterPluginManager struct {
+	router pluginSvc.Router
+}
+
+func (m testRouterPluginManager) Router() pluginSvc.Router                       { return m.router }
+func (m testRouterPluginManager) GetByPhase(pluginSvc.Phase) []pluginSvc.Gateway { return nil }
+func (m testRouterPluginManager) Close() error                                   { return nil }
+
+func TestPlanCandidatesPhysicalModelBypassSkipsRouterPlugin(t *testing.T) {
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		providers: []string{"physical", "other"},
+		providerConfigs: []config.ProviderConfig{
+			{Name: "physical", Type: "openai", BaseURL: "http://127.0.0.1:1", Endpoint: "chat", APIKey: "k", Model: "model-physical", Timeout: 5, Enabled: true, MaxTokens: 256},
+			{Name: "other", Type: "openai", BaseURL: "http://127.0.0.1:1", Endpoint: "chat", APIKey: "k", Model: "other-model", Timeout: 5, Enabled: true, MaxTokens: 256},
+		},
+	})
+	plugin := &countingRouterPlugin{}
+	env.service.SetPluginManager(testRouterPluginManager{router: plugin})
+
+	candidates, trace := env.service.planCandidates(context.Background(), env.identity, "s1", &provider.ResponseRequest{Model: "model-physical", Surface: "chat"})
+	if got := providerNames(candidates); len(got) != 1 || got[0] != "physical" {
+		t.Fatalf("planCandidates() = %v, want [physical]", got)
+	}
+	if plugin.calls != 0 {
+		t.Fatalf("router plugin calls = %d, want 0", plugin.calls)
+	}
+	if !trace.Router.Bypass || trace.Router.BypassProvider != "physical" {
+		t.Fatalf("router trace = %+v, want physical bypass", trace.Router)
 	}
 }
 

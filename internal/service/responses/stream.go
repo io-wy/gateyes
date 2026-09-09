@@ -86,6 +86,10 @@ func (s *Service) isStreamRetryable(err error) bool {
 
 func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*Stream, error) {
 	req.Normalize()
+	originalRequestBody := requestBodyBeforeHydration(ctx, req)
+	if err := s.hydratePreviousResponse(ctx, identity, req); err != nil {
+		return nil, err
+	}
 	toolDecisions, err := s.validateToolOwnership(req)
 	if err != nil {
 		return nil, err
@@ -190,7 +194,9 @@ func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIde
 
 	if cacheHit {
 		requestBody, _ := json.Marshal(req)
-		if raw := rawBodyFromContext(ctx); len(raw) > 0 {
+		if len(originalRequestBody) > 0 {
+			requestBody = originalRequestBody
+		} else if raw := rawBodyFromContext(ctx); len(raw) > 0 {
 			requestBody = raw
 		}
 		if trace != nil {
@@ -230,7 +236,9 @@ func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIde
 		trace.touch()
 	}
 	requestBody, _ := json.Marshal(req)
-	if raw := rawBodyFromContext(ctx); len(raw) > 0 {
+	if len(originalRequestBody) > 0 {
+		requestBody = originalRequestBody
+	} else if raw := rawBodyFromContext(ctx); len(raw) > 0 {
 		requestBody = raw
 	}
 	if err := s.store.CreateResponse(ctx, repository.ResponseRecord{

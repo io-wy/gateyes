@@ -3,17 +3,32 @@ package router
 import "github.com/gateyes/gateway/internal/service/provider"
 
 type OrderTrace struct {
-	Initial        []string     `json:"initial"`
-	Rule           RuleTrace    `json:"rule"`
-	AfterRule      []string     `json:"after_rule"`
-	Ranker         string       `json:"ranker"`
-	AfterRanker    []string     `json:"after_ranker"`
-	Affinity       string       `json:"affinity"`
-	AfterAffinity  []string     `json:"after_affinity"`
-	RoutingProfile string       `json:"routing_profile,omitempty"`
-	Strategy       string       `json:"strategy"`
-	Ordered        []string     `json:"ordered"`
-	Scores         []ScoreTrace `json:"scores,omitempty"`
+	Initial        []string           `json:"initial"`
+	Qualification  QualificationTrace `json:"qualification"`
+	Rule           RuleTrace          `json:"rule"`
+	AfterRule      []string           `json:"after_rule"`
+	Ranker         string             `json:"ranker"`
+	AfterRanker    []string           `json:"after_ranker"`
+	Affinity       string             `json:"affinity"`
+	AfterAffinity  []string           `json:"after_affinity"`
+	RoutingProfile string             `json:"routing_profile,omitempty"`
+	Strategy       string             `json:"strategy"`
+	Ordered        []string           `json:"ordered"`
+	Scores         []ScoreTrace       `json:"scores,omitempty"`
+	Bypass         bool               `json:"bypass,omitempty"`
+	BypassReason   string             `json:"bypass_reason,omitempty"`
+	BypassProvider string             `json:"bypass_provider,omitempty"`
+}
+
+type QualificationTrace struct {
+	Eligible []string                 `json:"eligible,omitempty"`
+	Excluded []QualificationExclusion `json:"excluded,omitempty"`
+}
+
+type QualificationExclusion struct {
+	Provider string `json:"provider"`
+	Reason   string `json:"reason"`
+	Detail   string `json:"detail,omitempty"`
 }
 
 type RuleTrace struct {

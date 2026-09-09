@@ -111,7 +111,7 @@ func TestE2EFeatures(t *testing.T) {
 		Config: cfgObj, Store: store, Metrics: metrics,
 		ProviderMgr: providerMgr, ResponseSvc: responseService, CatalogSvc: catalogSvc,
 	})
-	adminHandler := NewAdminHandler(store, providerMgr, catalogSvc, nil)
+	adminHandler := newTestAdminHandler(store, providerMgr, catalogSvc)
 	srv := NewServer(cfgObj.Server, h, adminHandler, mw)
 	ts := httptest.NewServer(srv.engine)
 	t.Cleanup(ts.Close)

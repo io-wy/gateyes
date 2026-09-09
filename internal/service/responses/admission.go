@@ -26,7 +26,16 @@ func admissionChecked(ctx context.Context) bool {
 }
 
 func (s *Service) admitRequest(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest) error {
-	if admissionChecked(ctx) || identity == nil || req == nil {
+	if identity == nil || req == nil {
+		return nil
+	}
+	if admissionChecked(ctx) {
+		// Middleware sees the wire request before previous_response_id is
+		// hydrated. Quota is side-effect free, so it is safe to recheck using
+		// the expanded transcript without consuming rate-limit buckets twice.
+		if req.PreviousResponseID != "" && s.auth != nil && !s.auth.HasQuota(identity, req.EstimateAdmissionTokens()) {
+			return auth.ErrQuotaExceeded
+		}
 		return nil
 	}
 
