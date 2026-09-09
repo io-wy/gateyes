@@ -36,6 +36,20 @@ type Config struct {
 	WASMPlugins    []WASMPluginConfig   `yaml:"wasmPlugins"`
 	RBAC           RBACConfig           `yaml:"rbac"`
 	OIDC           OIDCConfig           `yaml:"oidc"`
+	ToolOwnership  ToolOwnershipConfig  `yaml:"toolOwnership"`
+}
+
+type ToolOwnershipConfig struct {
+	Enabled       bool                `yaml:"enabled" json:"enabled"`
+	DefaultOwner  string              `yaml:"defaultOwner" json:"defaultOwner"`
+	MaxLoopRounds int                 `yaml:"maxLoopRounds" json:"maxLoopRounds"`
+	Rules         []ToolOwnershipRule `yaml:"rules" json:"rules"`
+}
+
+type ToolOwnershipRule struct {
+	Name  string `yaml:"name" json:"name"`
+	Type  string `yaml:"type" json:"type"`
+	Owner string `yaml:"owner" json:"owner"`
 }
 
 // PluginsConfig configures the WASM plugin system.
@@ -647,10 +661,41 @@ func (c *Config) Validate() error {
 	if c.Router.Affinity.SessionTTL < 0 || c.Router.Affinity.PrefixTTL < 0 || c.Router.Affinity.PrefixDepth < 0 {
 		return fmt.Errorf("router.affinity values must be >= 0")
 	}
+	if c.ToolOwnership.MaxLoopRounds < 0 {
+		return fmt.Errorf("toolOwnership.maxLoopRounds must be >= 0")
+	}
+	if owner := strings.ToLower(strings.TrimSpace(c.ToolOwnership.DefaultOwner)); owner != "" && !validToolOwner(owner) {
+		return fmt.Errorf("unsupported toolOwnership.defaultOwner: %s", c.ToolOwnership.DefaultOwner)
+	}
+	for index, rule := range c.ToolOwnership.Rules {
+		owner := strings.ToLower(strings.TrimSpace(rule.Owner))
+		if !validToolOwner(owner) {
+			return fmt.Errorf("unsupported toolOwnership owner: %s", rule.Owner)
+		}
+		if strings.TrimSpace(rule.Name) == "" && strings.TrimSpace(rule.Type) == "" {
+			return fmt.Errorf("toolOwnership rule requires name or type")
+		}
+		for previous := 0; previous < index; previous++ {
+			if toolOwnershipRulesOverlap(c.ToolOwnership.Rules[previous], rule) {
+				return fmt.Errorf("overlapping toolOwnership rules at indexes %d and %d", previous, index)
+			}
+		}
+	}
 	if c.Plugins.ReloadIntervalSeconds < 0 {
 		return fmt.Errorf("plugins.reloadIntervalSeconds must be >= 0")
 	}
 	return nil
+}
+
+func validToolOwner(owner string) bool {
+	return containsString([]string{"gateway-owned", "client-owned", "provider-owned"}, owner)
+}
+
+func toolOwnershipRulesOverlap(left, right ToolOwnershipRule) bool {
+	leftName, rightName := strings.ToLower(strings.TrimSpace(left.Name)), strings.ToLower(strings.TrimSpace(right.Name))
+	leftType, rightType := strings.ToLower(strings.TrimSpace(left.Type)), strings.ToLower(strings.TrimSpace(right.Type))
+	return (leftName == "" || rightName == "" || leftName == rightName) &&
+		(leftType == "" || rightType == "" || leftType == rightType)
 }
 
 func containsString(values []string, target string) bool {
@@ -693,6 +738,7 @@ func DefaultConfig() *Config {
 				Enabled: false,
 			},
 		},
+		ToolOwnership: ToolOwnershipConfig{MaxLoopRounds: 4},
 		Limiter: LimiterConfig{
 			GlobalQPS:           1000,
 			GlobalTPM:           1000000,
