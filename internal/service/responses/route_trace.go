@@ -25,10 +25,20 @@ type routeTrace struct {
 	Cache             *CacheTrace          `json:"cache,omitempty"`
 	OrderedCandidates []string             `json:"ordered_candidates,omitempty"`
 	Attempts          []routeTraceAttempt  `json:"attempts,omitempty"`
+	ToolDefinitions   []ToolDecision       `json:"tool_definitions,omitempty"`
+	ToolCalls         []routeTraceToolCall `json:"tool_calls,omitempty"`
 	FinalProvider     string               `json:"final_provider,omitempty"`
 	Status            string               `json:"status,omitempty"`
 	Error             string               `json:"error,omitempty"`
 	UpdatedAt         string               `json:"updated_at,omitempty"`
+}
+
+type routeTraceToolCall struct {
+	CallID  string    `json:"call_id,omitempty"`
+	Name    string    `json:"name"`
+	Owner   ToolOwner `json:"owner"`
+	Outcome string    `json:"outcome"`
+	Error   string    `json:"error,omitempty"`
 }
 
 type routeTraceFiltered struct {
@@ -61,6 +71,7 @@ func (s *Service) planCandidates(ctx context.Context, identity *repository.AuthI
 		SessionID:      sessionID,
 		Status:         "planned",
 	}
+	trace.ToolDefinitions, _ = s.classifyTools(req)
 	if cacheTrace := CacheTraceFrom(ctx); cacheTrace != nil && cacheTrace.Result != "" {
 		cacheCopy := *cacheTrace
 		trace.Cache = &cacheCopy

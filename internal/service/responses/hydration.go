@@ -12,6 +12,17 @@ import (
 
 const maxPreviousResponseDepth = 32
 
+type previousResponseHydratedKey struct{}
+
+func withPreviousResponseHydrated(ctx context.Context) context.Context {
+	return context.WithValue(ctx, previousResponseHydratedKey{}, true)
+}
+
+func previousResponseHydrated(ctx context.Context) bool {
+	hydrated, _ := ctx.Value(previousResponseHydratedKey{}).(bool)
+	return hydrated
+}
+
 func requestBodyBeforeHydration(ctx context.Context, req *provider.ResponseRequest) []byte {
 	if req == nil || req.PreviousResponseID == "" {
 		return nil

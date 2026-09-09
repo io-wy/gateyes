@@ -93,3 +93,36 @@ func TestValidate_NegativeHealthCheckValues(t *testing.T) {
 		t.Error("negative health check value should be rejected")
 	}
 }
+
+func TestValidate_InvalidToolOwnership(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*Config)
+	}{
+		{name: "invalid owner", setup: func(cfg *Config) {
+			cfg.ToolOwnership.Rules = []ToolOwnershipRule{{Name: "lookup", Owner: "invalid"}}
+		}},
+		{name: "selector missing", setup: func(cfg *Config) {
+			cfg.ToolOwnership.Rules = []ToolOwnershipRule{{Owner: "client-owned"}}
+		}},
+		{name: "overlapping rules", setup: func(cfg *Config) {
+			cfg.ToolOwnership.Rules = []ToolOwnershipRule{
+				{Name: "lookup", Owner: "client-owned"},
+				{Type: "function", Owner: "gateway-owned"},
+			}
+		}},
+		{name: "negative loop limit", setup: func(cfg *Config) {
+			cfg.ToolOwnership.MaxLoopRounds = -1
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.ToolOwnership.Enabled = true
+			tt.setup(cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("Validate() error = nil, want invalid tool ownership error")
+			}
+		})
+	}
+}

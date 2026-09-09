@@ -155,7 +155,7 @@ func (r *Response) OutputToolCalls() []ToolCall {
 			continue
 		}
 		calls = append(calls, ToolCall{
-			ID:   item.ID,
+			ID:   firstNonEmpty(item.ID, item.CallID),
 			Type: "function",
 			Function: FunctionCall{
 				Name:      item.Name,

@@ -76,6 +76,9 @@ func TestWrapErrorAndGinError(t *testing.T) {
 		{err: ErrRateLimited, wantStatus: 429, wantType: "rate_limit_error"},
 		{err: ErrOutputBudgetTooLow, wantStatus: 400, wantType: "invalid_request_error"},
 		{err: ErrInvalidPreviousResponse, wantStatus: 400, wantType: "invalid_request_error"},
+		{err: ErrInvalidToolOwnership, wantStatus: 400, wantType: "invalid_request_error"},
+		{err: ErrToolExecutorUnavailable, wantStatus: 400, wantType: "invalid_request_error"},
+		{err: ErrToolLoopLimit, wantStatus: 400, wantType: "invalid_request_error"},
 		{err: ErrNoProvider, wantStatus: 503, wantType: "internal_error"},
 		{err: errors.New("boom"), wantStatus: 500, wantType: "internal_error"},
 	}
