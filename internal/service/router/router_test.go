@@ -557,6 +557,68 @@ func TestRouter_OrderCandidatesRuleEngineStructuredOutput(t *testing.T) {
 	}
 }
 
+func TestRouter_QualificationExclusionCannotBeRecoveredByOptimization(t *testing.T) {
+	cfg := config.RouterConfig{
+		Strategy: "cost_based",
+		RuleEngine: config.RuleEngineConfig{
+			Enabled: true,
+			Rules: []config.RouteRuleConfig{{
+				Name:   "gpu-only",
+				Match:  config.RouteMatchConfig{Models: []string{"m1"}},
+				Action: config.RouteActionConfig{Providers: []string{"qualified"}},
+			}},
+		},
+	}
+	r := NewRouter(cfg, nil)
+	r.SetProviders([]provider.Provider{
+		&mockProvider{name: "excluded-cheap", model: "m1", cost: 0.01},
+		&mockProvider{name: "qualified", model: "m1", cost: 1},
+	})
+
+	ordered, trace := r.ExplainOrderCandidates(r.List(), RouteContext{Model: "m1"})
+	if got := providerNames(ordered); len(got) != 1 || got[0] != "qualified" {
+		t.Fatalf("qualified candidates = %v, want [qualified]", got)
+	}
+	if got := trace.Qualification.Eligible; len(got) != 1 || got[0] != "qualified" {
+		t.Fatalf("qualification eligible = %v, want [qualified]", got)
+	}
+	if got := trace.Qualification.Excluded; len(got) != 1 || got[0].Provider != "excluded-cheap" || got[0].Reason != "route_rule" || got[0].Detail != "gpu-only" {
+		t.Fatalf("qualification excluded = %+v, want excluded-cheap with gpu-only route rule", got)
+	}
+	if got := trace.Ordered; len(got) != 1 || got[0] != "qualified" {
+		t.Fatalf("optimization result = %v, want [qualified]", got)
+	}
+}
+
+func TestRouter_QualificationRejectsAllCandidatesWhenRuleTargetIsUnavailable(t *testing.T) {
+	cfg := config.RouterConfig{
+		Strategy: "cost_based",
+		RuleEngine: config.RuleEngineConfig{
+			Enabled: true,
+			Rules: []config.RouteRuleConfig{{
+				Name:   "required-provider",
+				Match:  config.RouteMatchConfig{Models: []string{"m1"}},
+				Action: config.RouteActionConfig{Providers: []string{"missing"}},
+			}},
+		},
+	}
+	r := NewRouter(cfg, nil)
+	r.SetProviders([]provider.Provider{
+		&mockProvider{name: "fallback", model: "m1", cost: 0.01},
+	})
+
+	ordered, trace := r.ExplainOrderCandidates(r.List(), RouteContext{Model: "m1"})
+	if len(ordered) != 0 {
+		t.Fatalf("qualified candidates = %v, want none", providerNames(ordered))
+	}
+	if len(trace.Qualification.Eligible) != 0 {
+		t.Fatalf("qualification eligible = %v, want none", trace.Qualification.Eligible)
+	}
+	if got := trace.Qualification.Excluded; len(got) != 1 || got[0].Provider != "fallback" {
+		t.Fatalf("qualification excluded = %+v, want fallback", got)
+	}
+}
+
 func TestRouter_OrderCandidatesMLRankPlaceholderIsNoop(t *testing.T) {
 	cfg := config.RouterConfig{
 		Strategy: "round_robin",
