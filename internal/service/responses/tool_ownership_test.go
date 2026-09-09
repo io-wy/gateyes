@@ -323,6 +323,54 @@ func TestCreateStreamExecutesGatewayOwnedToolBeforeEvents(t *testing.T) {
 	}
 }
 
+func TestCreateStreamGatewayOwnedToolHydratesPreviousResponseOnce(t *testing.T) {
+	var calls atomic.Int32
+	var firstMessageCount int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []provider.Message `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+		}
+		if calls.Add(1) == 1 {
+			firstMessageCount = len(body.Messages)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `{"id":"first","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call-1","type":"function","function":{"name":"weather","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"id":"second","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"24C"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`)
+	}))
+	defer upstream.Close()
+
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{upstreamURL: upstream.URL, endpoint: "chat", providers: []string{"test-openai"}})
+	persistResponseTurn(t, env, "resp-a", "", "earlier question", "earlier answer")
+	env.service.cfg.ToolOwnership = config.ToolOwnershipConfig{Enabled: true, MaxLoopRounds: 2, Rules: []config.ToolOwnershipRule{{Name: "weather", Owner: "gateway-owned"}}}
+	env.service.SetToolExecutor(&fakeToolExecutor{result: `{}`})
+
+	stream, err := env.service.CreateStream(context.Background(), env.identity, &provider.ResponseRequest{
+		Model:              "public-model",
+		PreviousResponseID: "resp-a",
+		Input:              "weather?",
+		Stream:             true,
+		Tools:              []any{map[string]any{"type": "function", "name": "weather"}},
+	}, "")
+	if err != nil {
+		t.Fatalf("CreateStream() error: %v", err)
+	}
+	for range stream.Events {
+	}
+	for err := range stream.Errors {
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
+	}
+	if firstMessageCount != 3 {
+		t.Fatalf("first upstream message count = %d, want 3", firstMessageCount)
+	}
+}
+
 type transformingToolGuardrail struct {
 	request *provider.ResponseRequest
 }

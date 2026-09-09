@@ -87,8 +87,13 @@ func (s *Service) isStreamRetryable(err error) bool {
 func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*Stream, error) {
 	req.Normalize()
 	originalRequestBody := requestBodyBeforeHydration(ctx, req)
-	if err := s.hydratePreviousResponse(ctx, identity, req); err != nil {
-		return nil, err
+	if !previousResponseHydrated(ctx) {
+		if err := s.hydratePreviousResponse(ctx, identity, req); err != nil {
+			return nil, err
+		}
+		if req.PreviousResponseID != "" {
+			ctx = withPreviousResponseHydrated(ctx)
+		}
 	}
 	toolDecisions, err := s.validateToolOwnership(req)
 	if err != nil {

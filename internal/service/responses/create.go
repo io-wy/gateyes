@@ -99,8 +99,13 @@ func skipToolStreamPreprocess(ctx context.Context) bool {
 func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*CreateResult, error) {
 	req.Normalize()
 	originalRequestBody := requestBodyBeforeHydration(ctx, req)
-	if err := s.hydratePreviousResponse(ctx, identity, req); err != nil {
-		return nil, err
+	if !previousResponseHydrated(ctx) {
+		if err := s.hydratePreviousResponse(ctx, identity, req); err != nil {
+			return nil, err
+		}
+		if req.PreviousResponseID != "" {
+			ctx = withPreviousResponseHydrated(ctx)
+		}
 	}
 	toolDecisions, err := s.validateToolOwnership(req)
 	if err != nil {
