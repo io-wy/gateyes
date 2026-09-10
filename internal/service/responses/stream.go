@@ -267,9 +267,14 @@ providerLoop:
 	for _, p := range candidates {
 		providerName := p.Name()
 
-		if s.limiter != nil && !s.limiter.CheckProvider(providerName, req.EstimateAdmissionTokens()) {
-			appendRouteAttempt(trace, providerName, 0, "rate_limited", fmt.Errorf("provider rate limited"))
-			continue
+		if decision := s.checkRateLimit(ctx, identity, req, providerName); !decision.Allowed {
+			appendRouteAttempt(trace, providerName, 0, "rate_limited", fmt.Errorf("%s rate limited", decision.Reason))
+			if decision.ProviderScoped() {
+				continue
+			}
+			s.markRateLimitResponse(ctx, identity, responseID, providerName, req.Model, trace)
+			errCh <- ErrRateLimited
+			return
 		}
 
 		if s.circuitBreaker != nil && !s.circuitBreaker.IsAvailable(tenantID, providerName) {
@@ -348,6 +353,18 @@ providerLoop:
 			continue providerLoop
 		}
 
+		attemptStartedAt := time.Now()
+		ttftRecorded := false
+		recordTTFT := func(event provider.ResponseEvent) {
+			if ttftRecorded || !isRenderableStreamEvent(event) {
+				return
+			}
+			if s.providerMgr != nil && s.providerMgr.Stats != nil {
+				s.providerMgr.Stats.RecordTTFT(providerName, time.Since(attemptStartedAt).Milliseconds())
+			}
+			ttftRecorded = true
+		}
+
 		streamCtx, streamCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
 		stream, upstreamErrCh := p.StreamResponse(streamCtx, upstreamReq)
 		var finalResponse *provider.Response
@@ -424,6 +441,7 @@ providerLoop:
 					return
 				}
 
+				recordTTFT(event)
 				switch event.Type {
 				case provider.EventContentDelta:
 					if event.Usage != nil {
@@ -469,6 +487,8 @@ providerLoop:
 						case <-time.After(time.Duration(delay) * time.Millisecond):
 						}
 
+						attemptStartedAt = time.Now()
+						ttftRecorded = false
 						streamCtx, streamCancel = context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
 						stream, upstreamErrCh = p.StreamResponse(streamCtx, upstreamReq)
 						assistantText = ""
@@ -567,6 +587,7 @@ providerLoop:
 						return
 					}
 
+					recordTTFT(event)
 					switch event.Type {
 					case provider.EventContentDelta:
 						if event.Usage != nil {

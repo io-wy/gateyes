@@ -9,7 +9,7 @@ allowed-tools: Bash(cp:*), Bash(mkdir:*)
 
 # Init — Expand Project Skeleton
 
-Expand templates from `docs/docs-ref/docs/docs-ref/templates/init/` into the project root.
+Expand templates from `templates/init/` into the project root.
 
 ## Usage
 

@@ -196,10 +196,24 @@ func (s *Service) tryPluginRouter(ctx context.Context, pr pluginSvc.Router, cand
 			if stats := s.providerMgr.Stats; stats != nil {
 				candInfos[i].Load = stats.CurrentLoad(p.Name())
 				candInfos[i].TPM = stats.TPM(p.Name())
+				if snapshot, ok := stats.Get(p.Name()); ok {
+					candInfos[i].AvgLatencyMs = snapshot.AvgLatencyMs
+					candInfos[i].AvgTTFTMs = snapshot.AvgTTFTMs
+				}
 			}
 		}
 		if record, ok := s.providerMgr.Registry(p.Name()); ok {
 			candInfos[i].Healthy = record.HealthStatus == provider.ProviderHealthHealthy
+		}
+		if s.router != nil {
+			if state, ok := s.router.InferenceState(p.Name()); ok {
+				candInfos[i].QueueRunning = state.NumRequestsRunning
+				candInfos[i].QueueWaiting = state.NumRequestsWaiting
+				candInfos[i].GPUKVCacheUsagePerc = state.GPUCacheUsagePerc
+				candInfos[i].CPUKVCacheUsagePerc = state.CPUCacheUsagePerc
+				candInfos[i].PrefixCacheHitRate = state.CacheHitRate()
+				candInfos[i].SignalsUpdatedAtUnixMs = state.UpdatedAt.UnixMilli()
+			}
 		}
 	}
 
@@ -212,6 +226,7 @@ func (s *Service) tryPluginRouter(ctx context.Context, pr pluginSvc.Router, cand
 		HasTools:            routeCtx.HasTools,
 		HasImages:           routeCtx.HasImages,
 		HasStructuredOutput: routeCtx.HasStructuredOutput,
+		PrefixText:          routeCtx.PrefixText,
 		RoutingProfile:      routeCtx.RoutingProfile,
 		StrategyOverride:    routeCtx.StrategyOverride,
 	}

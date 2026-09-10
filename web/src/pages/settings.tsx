@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/card'
 import { useAuthStore } from '@/stores/auth-store'
 import { settingsApi } from '@/api/settings'
+import { hasPermission } from '@/lib/authz'
 import { toast } from 'sonner'
 
 function maskToken(token: string | null): string {
@@ -21,6 +22,8 @@ function maskToken(token: string | null): string {
 export function SettingsPage() {
   const token = useAuthStore((state) => state.token)
   const authMethod = useAuthStore((state) => state.authMethod)
+  const identity = useAuthStore((state) => state.identity)
+  const canReloadConfig = hasPermission(identity, 'config:write')
 
   const reloadMutation = useMutation({
     mutationFn: settingsApi.reloadConfig,
@@ -53,24 +56,26 @@ export function SettingsPage() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>配置重载</CardTitle>
-          <CardDescription>
-            重新加载运行时配置（需要 config_write 权限）
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Button
-            variant="outline"
-            onClick={() => reloadMutation.mutate()}
-            disabled={reloadMutation.isPending}
-          >
-            <RotateCcw className="mr-2 h-4 w-4" />
-            {reloadMutation.isPending ? '重载中...' : 'Reload Config'}
-          </Button>
-        </CardContent>
-      </Card>
+      {canReloadConfig && (
+        <Card>
+          <CardHeader>
+            <CardTitle>配置重载</CardTitle>
+            <CardDescription>
+              重新加载运行时配置（需要 config_write 权限）
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button
+              variant="outline"
+              onClick={() => reloadMutation.mutate()}
+              disabled={reloadMutation.isPending}
+            >
+              <RotateCcw className="mr-2 h-4 w-4" />
+              {reloadMutation.isPending ? '重载中...' : 'Reload Config'}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
     </div>
   )
 }

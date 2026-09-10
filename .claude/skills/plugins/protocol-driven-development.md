@@ -31,8 +31,8 @@ description: 协议驱动开发。写任何协议相关代码（API 契约、数
 |----------|------------|----------|
 | 公开 API（OpenAI/Anthropic/GitHub 等） | 官方 API 文档 | Context7 / WebFetch 官方文档页 |
 | gRPC/Protobuf | `.proto` 文件 | Read 项目内的 proto 文件 |
-| HTTP API | OpenAPI spec / Swagger | Read `docs/openapi.json` |
-| 内部协议 | 项目 docs | Read `docs/provider-protocol.md` 等对应文件 |
+| HTTP API | OpenAPI spec / Swagger | Read `deploy/openapi/openapi.json` |
+| 内部协议 | 项目源码 | Read `proto/`、接口定义和对应实现 |
 | 数据格式 | JSON Schema / Go struct tag + 文档 | Read 定义文件 |
 | 标准协议（HTTP/RFC） | RFC 原文 | Context7 / WebFetch |
 

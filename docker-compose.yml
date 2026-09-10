@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   gateway:
     build:
@@ -33,7 +31,7 @@ services:
     restart: unless-stopped
 
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: gateyes
       POSTGRES_PASSWORD: gateyes_pw
@@ -95,7 +93,7 @@ services:
       - "9090:9090"
     volumes:
       - ./deploy/docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./docs/docs-project/assets/prometheus-alerts.yml:/etc/prometheus/prometheus-alerts.yml:ro
+      - ./deploy/docker/prometheus-alerts.yml:/etc/prometheus/prometheus-alerts.yml:ro
       - prometheus-data:/prometheus
     restart: unless-stopped
 
@@ -105,7 +103,7 @@ services:
       - "3000:3000"
     volumes:
       - ./deploy/docker/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./docs/grafana-dashboard.json:/var/lib/grafana/dashboards/gateyes.json:ro
+      - ./deploy/docker/grafana/dashboards/gateyes.json:/var/lib/grafana/dashboards/gateyes.json:ro
       - grafana-data:/var/lib/grafana
     environment:
       GF_SECURITY_ADMIN_USER: admin

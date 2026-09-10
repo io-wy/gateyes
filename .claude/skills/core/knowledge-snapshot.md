@@ -1,19 +1,19 @@
 ---
 name: knowledge-snapshot
 version: 1.1.0
-description: 项目知识查阅优先级链。遇到不确定的 API 签名、框架用法、依赖版本、Go 兼容性时，按 docs/→源码→go.mod→Context7→WebSearch→告知不知道的顺序查证。禁止凭训练记忆编造。Triggered when uncertain about implementation details, API signatures, framework behavior, or when user says "查一下/look up/check docs/verify/不确定/查文档".
+description: 项目知识查阅优先级链。遇到不确定的 API 签名、框架用法、依赖版本、Go 兼容性时，按源码→配置→go.mod→Context7→WebSearch→告知不知道的顺序查证。禁止凭训练记忆编造。Triggered when uncertain about implementation details, API signatures, framework behavior, or when user says "查一下/look up/check docs/verify/不确定/查文档".
 ---
 
 # Knowledge Snapshot
 
-> 核心：AI 不靠记忆靠查阅。训练数据可能过时，项目文档是最准确的。
+> 核心：AI 不靠记忆靠查阅。训练数据可能过时，项目源码和配置是最准确的。
 
 ## 查阅顺序
 
 遇到不确定的细节时：
 
-1. 项目 `docs/` 目录
-2. 项目源码（Grep / Read）
+1. 项目源码（Grep / Read）
+2. 项目配置和协议定义
 3. go.mod 中的依赖版本 → 确认对应版本的 API
 4. Context7 查最新文档
 5. WebSearch 查官方文档
@@ -30,6 +30,6 @@ description: 项目知识查阅优先级链。遇到不确定的 API 签名、�
 
 ## 禁止行为
 
-- 禁止未读项目 docs/ 就回答项目问题
+- 禁止未读相关源码和配置就回答项目问题
 - 禁止凭训练记忆断言框架行为（必须查证）
 - 禁止在未确认 Go 版本兼容性的情况下使用新版 API

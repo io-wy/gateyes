@@ -21,6 +21,8 @@ import {
 } from '@/components/ui/dialog'
 import { responsesApi } from '@/api/responses'
 import { JsonBlock } from '@/components/json-block'
+import { useAuthStore } from '@/stores/auth-store'
+import { isAdminIdentity } from '@/lib/authz'
 
 const DETAIL_TABS = [
   { id: 'request', label: 'Request' },
@@ -29,6 +31,8 @@ const DETAIL_TABS = [
 ] as const
 
 export function ResponsesPage() {
+  const identity = useAuthStore((state) => state.identity)
+  const isAdmin = isAdminIdentity(identity)
   const [filters, setFilters] = useState({
     provider_name: '',
     model: '',
@@ -66,9 +70,13 @@ export function ResponsesPage() {
           { key: 'provider_name', label: 'Provider' },
           { key: 'model', label: '模型' },
           { key: 'status', label: '状态' },
-          { key: 'project_id', label: 'Project ID' },
-          { key: 'api_key_id', label: 'API Key ID' },
-          { key: 'user_id', label: 'User ID' },
+          ...(isAdmin
+            ? [
+                { key: 'project_id', label: 'Project ID' },
+                { key: 'api_key_id', label: 'API Key ID' },
+                { key: 'user_id', label: 'User ID' },
+              ]
+            : []),
           { key: 'q', label: '关键词' },
         ].map((field) => (
           <div key={field.key} className="space-y-1">

@@ -6,10 +6,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gateyes/gateway/internal/app/config"
+	pluginSvc "github.com/gateyes/gateway/internal/domain/plugin"
 	"github.com/gateyes/gateway/internal/repository"
 	"github.com/gateyes/gateway/internal/service/provider"
+	routeSvc "github.com/gateyes/gateway/internal/service/router"
 )
 
 func TestRegistryFilterReasonDisabled(t *testing.T) {
@@ -110,6 +113,92 @@ func TestProviderNamesFromSlice(t *testing.T) {
 	names := providerNamesFromSlice(items)
 	if len(names) != 2 || names[0] != "a" || names[1] != "b" {
 		t.Fatalf("providerNamesFromSlice() = %v, want [a b]", names)
+	}
+}
+
+type captureRouterPlugin struct {
+	candidates []pluginSvc.CandidateInfo
+	routeCtx   pluginSvc.RouteContext
+}
+
+func (p *captureRouterPlugin) Name() string { return "capture-router" }
+func (p *captureRouterPlugin) Type() string { return "router" }
+func (p *captureRouterPlugin) Health() pluginSvc.HealthStatus {
+	return pluginSvc.HealthHealthy
+}
+func (p *captureRouterPlugin) Close() error { return nil }
+func (p *captureRouterPlugin) OrderCandidates(_ context.Context, candidates []pluginSvc.CandidateInfo, routeCtx pluginSvc.RouteContext) ([]string, bool) {
+	p.candidates = append([]pluginSvc.CandidateInfo(nil), candidates...)
+	p.routeCtx = routeCtx
+	return []string{"p-a"}, true
+}
+
+func TestTryPluginRouterPassesRuntimeSignals(t *testing.T) {
+	metricsSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`vllm:num_requests_running 4
+vllm:num_requests_waiting 7
+vllm:gpu_cache_usage_perc 0.62
+vllm:cpu_cache_usage_perc 0.10
+cache_query_total 100
+cache_query_hit 73
+`))
+	}))
+	defer metricsSrv.Close()
+
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		providers: []string{"p-a"},
+		providerConfigs: []config.ProviderConfig{{
+			Name:       "p-a",
+			Type:       "openai",
+			BaseURL:    "http://127.0.0.1:1",
+			Endpoint:   "chat",
+			APIKey:     "k",
+			Model:      "m1",
+			Timeout:    5,
+			Enabled:    true,
+			MaxTokens:  256,
+			MetricsURL: metricsSrv.URL,
+		}},
+	})
+	env.providerMgr.Stats.RecordRequest("p-a", true, 300, 250)
+	env.providerMgr.Stats.RecordTTFT("p-a", 75)
+
+	scraper := routeSvc.NewInferenceScraper(map[string]string{"p-a": metricsSrv.URL}, 10*time.Millisecond)
+	scraper.Start(context.Background())
+	defer scraper.Stop()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if state, ok := scraper.Get("p-a"); ok && state.NumRequestsRunning == 4 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	env.service.router.SetInferenceScraper(scraper)
+
+	plugin := &captureRouterPlugin{}
+	candidates := env.providerMgr.ListByNames([]string{"p-a"})
+	ordered := env.service.tryPluginRouter(context.Background(), plugin, candidates, routeSvc.RouteContext{
+		Model:     "m1",
+		SessionID: "s1",
+	})
+	if len(ordered) != 1 || ordered[0].Name() != "p-a" {
+		t.Fatalf("tryPluginRouter() = %v, want [p-a]", providerNames(ordered))
+	}
+	if len(plugin.candidates) != 1 {
+		t.Fatalf("captured candidates len = %d, want 1", len(plugin.candidates))
+	}
+	got := plugin.candidates[0]
+	if got.AvgLatencyMs != 250 || got.AvgTTFTMs != 75 {
+		t.Fatalf("latency signals = %+v, want avg latency 250 and avg TTFT 75", got)
+	}
+	if got.QueueRunning != 4 || got.QueueWaiting != 7 {
+		t.Fatalf("queue signals = %+v, want running 4 waiting 7", got)
+	}
+	if got.GPUKVCacheUsagePerc != 0.62 || got.CPUKVCacheUsagePerc != 0.10 || got.PrefixCacheHitRate != 0.73 {
+		t.Fatalf("cache signals = %+v, want gpu 0.62 cpu 0.10 hit 0.73", got)
+	}
+	if got.SignalsUpdatedAtUnixMs == 0 {
+		t.Fatalf("SignalsUpdatedAtUnixMs = 0, want scrape timestamp")
 	}
 }
 

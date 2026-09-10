@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -9,6 +11,41 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 )
+
+func TestKubernetesRESTConfigUsesDefaultKubeconfigEnv(t *testing.T) {
+	dir := t.TempDir()
+	kubeconfig := filepath.Join(dir, "config")
+	if err := os.WriteFile(kubeconfig, []byte(`
+apiVersion: v1
+kind: Config
+clusters:
+- name: local
+  cluster:
+    server: https://127.0.0.1:6443
+    insecure-skip-tls-verify: true
+users:
+- name: local
+  user:
+    token: test-token
+contexts:
+- name: local
+  context:
+    cluster: local
+    user: local
+current-context: local
+`), 0o600); err != nil {
+		t.Fatalf("write kubeconfig: %v", err)
+	}
+	t.Setenv("KUBECONFIG", kubeconfig)
+
+	cfg, err := kubernetesRESTConfig("")
+	if err != nil {
+		t.Fatalf("kubernetesRESTConfig: %v", err)
+	}
+	if cfg.Host != "https://127.0.0.1:6443" {
+		t.Fatalf("Host = %q, want kubeconfig host", cfg.Host)
+	}
+}
 
 func TestKubernetesSnapshotLoaderParsesGateyesCRDs(t *testing.T) {
 	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(

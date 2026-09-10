@@ -109,6 +109,75 @@ func TestLimiter_RedisGlobalAllow(t *testing.T) {
 	}
 }
 
+func TestLimiter_RedisCheckIsAtomicAcrossDimensions(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+
+	l := NewLimiter(config.LimiterConfig{
+		GlobalQPS:        1000,
+		GlobalTPM:        600,
+		GlobalTokenBurst: 10,
+		TenantTPM:        60,
+		TenantTPMBurst:   1,
+		QueueSize:        100,
+	})
+	l.SetRedis(rdb)
+	defer l.Stop()
+
+	denied := l.Check(context.Background(), LimitRequest{
+		TenantID: "tenant-small",
+		Model:    "m1",
+		Tokens:   2,
+	})
+	if denied.Allowed || denied.Reason != "tenant_tokens" {
+		t.Fatalf("Check() = %+v, want tenant_tokens deny", denied)
+	}
+
+	allowed := l.Check(context.Background(), LimitRequest{
+		TenantID: "tenant-other",
+		Model:    "m1",
+		Tokens:   1,
+	})
+	if !allowed.Allowed {
+		t.Fatalf("second Check() = %+v, want global bucket not debited by failed first check", allowed)
+	}
+}
+
+func TestLimiter_RedisCheckLowPerMinuteRequestLimit(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+
+	l := NewLimiter(config.LimiterConfig{
+		GlobalQPS:      1000,
+		GlobalTPM:      1000000,
+		TenantRPM:      30,
+		TenantRPMBurst: 1,
+		QueueSize:      100,
+	})
+	l.SetRedis(rdb)
+	defer l.Stop()
+
+	req := LimitRequest{TenantID: "tenant-slow", Tokens: 1}
+	if got := l.Check(context.Background(), req); !got.Allowed {
+		t.Fatalf("first Check() = %+v, want allow", got)
+	}
+	if got := l.Check(context.Background(), req); got.Allowed || got.Reason != "tenant_qps" {
+		t.Fatalf("second Check() = %+v, want tenant_qps deny", got)
+	}
+}
+
 func TestLimiter_SetRedis(t *testing.T) {
 	cfg := config.LimiterConfig{
 		GlobalQPS:           100,

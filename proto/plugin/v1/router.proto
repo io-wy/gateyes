@@ -35,6 +35,22 @@ message Candidate {
   int64 tpm = 6;
   // Whether the provider is considered healthy.
   bool healthy = 7;
+  // Average end-to-end latency observed by the gateway, in milliseconds.
+  double avg_latency_ms = 8;
+  // Average streaming time-to-first-token observed by the gateway, in milliseconds.
+  double avg_ttft_ms = 9;
+  // Current backend running request count from inference-server metrics.
+  double queue_running = 10;
+  // Current backend waiting request count from inference-server metrics.
+  double queue_waiting = 11;
+  // Current GPU KV-cache usage ratio from inference-server metrics, 0-1.
+  double gpu_kv_cache_usage_perc = 12;
+  // Current CPU KV-cache usage ratio from inference-server metrics, 0-1.
+  double cpu_kv_cache_usage_perc = 13;
+  // Prefix-cache hit rate from inference-server metrics, 0-1.
+  double prefix_cache_hit_rate = 14;
+  // Unix timestamp in milliseconds for the runtime signal snapshot.
+  int64 signals_updated_at_unix_ms = 15;
 }
 
 message RouteContext {
@@ -54,6 +70,9 @@ message RouteContext {
   bool has_images = 7;
   // Whether the request asks for structured output.
   bool has_structured_output = 8;
+  // Prompt text normalized exactly as vLLM Production Stack's prefix-aware
+  // router does. Prefix-aware plugins should prefer this over input_text.
+  optional string prefix_text = 9;
 }
 
 message OrderCandidatesResponse {

@@ -39,15 +39,6 @@ project-root/
 │       ├── configmap.yaml
 │       ├── secret.yaml
 │       └── hpa.yaml
-├── docs/
-│   ├── deployment.md         # 部署文档
-│   ├── ci-cd.md              # CI/CD 流水线说明
-│   ├── secrets-and-config.md # 配置与密钥管理
-│   ├── monitoring.md         # 监控与告警
-│   ├── runbook.md            # 运维手册
-│   ├── rollback.md           # 回滚方案
-│   ├── backup-and-restore.md # 备份与恢复
-│   └── upgrade.md            # 升级指南
 └── .github/
     └── workflows/
         ├── ci.yml            # 持续集成
@@ -700,9 +691,9 @@ make migrate-down  # 危险操作，必须人工确认
 
 ---
 
-## 十三、运维手册（Runbook）
+## 十三、运维检查清单
 
-每个项目必须有 `docs/runbook.md`，内容包含：
+发布系统或值班平台中必须维护以下检查项：
 
 ```markdown
 # Runbook

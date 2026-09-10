@@ -240,7 +240,8 @@ type RouteActionConfig struct {
 }
 
 type LimiterConfig struct {
-	GlobalQPS           int `yaml:"globalQPS"`           // 全局默认 QPS
+	GlobalQPS           int `yaml:"globalQPS"`           // 全局 QPS 上限；legacy Allow 中也作为默认 per-key QPS
+	GlobalQPSBurst      int `yaml:"globalQPSBurst"`      // 全局 QPS 桶突发容量
 	GlobalTPM           int `yaml:"globalTPM"`           // 全局每分钟 token 上限
 	GlobalTokenBurst    int `yaml:"globalTokenBurst"`    // 全局 token 桶突发容量
 	GlobalRPM           int `yaml:"globalRPM"`           // 全局每分钟请求上限
@@ -248,14 +249,20 @@ type LimiterConfig struct {
 	PerUserRequestBurst int `yaml:"perUserRequestBurst"` // 每用户请求突发容量
 	TenantTPM           int `yaml:"tenantTPM"`           // 每租户每分钟 token 上限，0=禁用
 	TenantTPMBurst      int `yaml:"tenantTPMBurst"`      // 租户 token 桶突发容量
+	TenantQPS           int `yaml:"tenantQPS"`           // 每租户 QPS 上限，0=禁用
+	TenantQPSBurst      int `yaml:"tenantQPSBurst"`      // 租户 QPS 桶突发容量
 	TenantRPM           int `yaml:"tenantRPM"`           // 每租户每分钟请求上限，0=禁用
 	TenantRPMBurst      int `yaml:"tenantRPMBurst"`      // 租户 RPM 桶突发容量
 	ProviderTPM         int `yaml:"providerTPM"`         // 每 provider 每分钟 token 上限，0=禁用
 	ProviderTPMBurst    int `yaml:"providerTPMBurst"`    // provider token 桶突发容量
+	ProviderQPS         int `yaml:"providerQPS"`         // 每 provider QPS 上限，0=禁用
+	ProviderQPSBurst    int `yaml:"providerQPSBurst"`    // provider QPS 桶突发容量
 	ProviderRPM         int `yaml:"providerRPM"`         // 每 provider 每分钟请求上限，0=禁用
 	ProviderRPMBurst    int `yaml:"providerRPMBurst"`    // provider RPM 桶突发容量
 	ModelTPM            int `yaml:"modelTPM"`            // 每 model 每分钟 token 上限，0=禁用
 	ModelTPMBurst       int `yaml:"modelTPMBurst"`       // model token 桶突发容量
+	ModelQPS            int `yaml:"modelQPS"`            // 每 model QPS 上限，0=禁用
+	ModelQPSBurst       int `yaml:"modelQPSBurst"`       // model QPS 桶突发容量
 	ModelRPM            int `yaml:"modelRPM"`            // 每 model 每分钟请求上限，0=禁用
 	ModelRPMBurst       int `yaml:"modelRPMBurst"`       // model RPM 桶突发容量
 	QueueSize           int `yaml:"queueSize"`           // 队列大小

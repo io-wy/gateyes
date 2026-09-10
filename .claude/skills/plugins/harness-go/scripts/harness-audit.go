@@ -50,22 +50,14 @@ func runAudit(module string) AuditResult {
 		Suggestions: []string{},
 	}
 
-	// 1. Documentation (20 pts)
+	// 1. Project constraints (20 pts)
 	docScore := 0
 	if fileExists("CLAUDE.md") || fileExists("AGENTS.md") {
-		docScore += 10
+		docScore = 20
 	} else {
 		result.Suggestions = append(result.Suggestions, "Create CLAUDE.md or AGENTS.md with project constraints")
 	}
-	if dirExists("docs") {
-		docScore += 5
-	} else {
-		result.Suggestions = append(result.Suggestions, "Create docs/ directory for architecture and development guides")
-	}
-	if fileExists("README.md") {
-		docScore += 5
-	}
-	result.Breakdown["Documentation"] = docScore
+	result.Breakdown["Project Constraints"] = docScore
 
 	// 2. Layer Config (20 pts)
 	layerScore := 0

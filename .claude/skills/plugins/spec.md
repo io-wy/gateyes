@@ -75,7 +75,7 @@ To improve assessment accuracy, you must briefly explore the codebase (Glob/Grep
 
 ## L1 Patch — `brief.md`
 
-Generate using `docs/docs-ref/templates/brief.template.md`. Populate frontmatter per SCHEMA.md §4, Evidence per SCHEMA.md §6.
+Generate `brief.md` directly from the section contract below. Populate frontmatter per SCHEMA.md §4, Evidence per SCHEMA.md §6.
 
 Sections: Problem (one paragraph), Fix (name files and approach), Done when (2-4 observable outcomes).
 
@@ -83,13 +83,13 @@ No IDs, no traceability, no ceremony.
 
 ## L2 Feature — `spec.md`
 
-Generate using `docs/docs-ref/templates/spec.template.md`. Populate frontmatter per SCHEMA.md §4, Evidence per SCHEMA.md §6.
+Generate `spec.md` directly from the section contract below. Populate frontmatter per SCHEMA.md §4, Evidence per SCHEMA.md §6.
 
 Single file with all three concerns: Context/Goals/Non-goals → Requirements (FR-*/AC-*) → Design (DD-*) → Tasks (T-* with inline "done when"). No separate T-V-* — validation is inline.
 
 ## L3 Epic — three files
 
-Generate `requirements.md`, `design.md`, `tasks.md` using the templates in `docs/docs-ref/templates/`. Populate frontmatter per SCHEMA.md §4, Evidence per SCHEMA.md §6.
+Generate `requirements.md`, `design.md`, `tasks.md` directly from the workflow contract below. Populate frontmatter per SCHEMA.md §4, Evidence per SCHEMA.md §6.
 
 Workflow — each artifact is a separate invocation or explicit user "go":
 1. Write `requirements.md`. Output it and ask: "Requirements look good? Say 'go' to proceed to design, or tell me what to revise."

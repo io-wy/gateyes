@@ -12,6 +12,8 @@ export interface Plugin {
   memory_pages?: number
   enabled: boolean
   source: string
+  managed?: boolean
+  runtime_status?: string
   config?: Record<string, unknown>
   created_at?: string
   updated_at?: string

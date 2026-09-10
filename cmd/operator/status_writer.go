@@ -40,6 +40,21 @@ func newKubernetesStatusWriter(kubeconfig string) (*kubernetesStatusWriter, erro
 
 func (w *kubernetesStatusWriter) Update(ctx context.Context, snapshot platform.ResourceSnapshot, plan platform.SyncPlan, reconcileErr error) error {
 	var errs []error
+	for _, endpoint := range snapshot.ModelEndpoints {
+		if err := w.patchModelEndpointStatus(ctx, endpoint, reconcileErr); err != nil {
+			errs = append(errs, fmt.Errorf("patch ModelEndpoint %s/%s status: %w", endpoint.Metadata.Namespace, endpoint.Metadata.Name, err))
+		}
+	}
+	for _, policy := range snapshot.RoutePolicies {
+		if err := w.patchRoutePolicyStatus(ctx, policy, reconcileErr); err != nil {
+			errs = append(errs, fmt.Errorf("patch RoutePolicy %s/%s status: %w", policy.Metadata.Namespace, policy.Metadata.Name, err))
+		}
+	}
+	for _, policy := range snapshot.BudgetPolicies {
+		if err := w.patchBudgetPolicyStatus(ctx, policy, reconcileErr); err != nil {
+			errs = append(errs, fmt.Errorf("patch BudgetPolicy %s/%s status: %w", policy.Metadata.Namespace, policy.Metadata.Name, err))
+		}
+	}
 	for _, service := range snapshot.InferenceServices {
 		if err := w.patchInferenceServiceStatus(ctx, service, reconcileErr); err != nil {
 			errs = append(errs, fmt.Errorf("patch InferenceService %s/%s status: %w", service.Metadata.Namespace, service.Metadata.Name, err))
@@ -59,6 +74,44 @@ func (w *kubernetesStatusWriter) Update(ctx context.Context, snapshot platform.R
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func (w *kubernetesStatusWriter) patchModelEndpointStatus(ctx context.Context, endpoint platform.ModelEndpoint, reconcileErr error) error {
+	namespace := defaultNamespace(endpoint.Metadata.Namespace)
+	resolvedURL := endpoint.Spec.BaseURL
+	if strings.TrimSpace(resolvedURL) == "" && endpoint.Spec.ServiceRef != nil {
+		resolvedURL = serviceURL(*endpoint.Spec.ServiceRef, namespace)
+	}
+	health := "unknown"
+	if reconcileErr != nil {
+		health = "unhealthy"
+	}
+	status := map[string]any{
+		"health":             health,
+		"resolvedURL":        resolvedURL,
+		"observedGeneration": endpoint.Metadata.Generation,
+		"conditions":         []any{condition("Ready", reconcileErr == nil, conditionReason(reconcileErr), conditionMessage(reconcileErr), w.timestamp())},
+	}
+	return w.patchStatus(ctx, modelEndpointGVR, namespace, endpoint.Metadata.Name, status)
+}
+
+func (w *kubernetesStatusWriter) patchRoutePolicyStatus(ctx context.Context, policy platform.RoutePolicy, reconcileErr error) error {
+	namespace := defaultNamespace(policy.Metadata.Namespace)
+	status := map[string]any{
+		"active":             reconcileErr == nil,
+		"observedGeneration": policy.Metadata.Generation,
+		"conditions":         []any{condition("Active", reconcileErr == nil, conditionReason(reconcileErr), conditionMessage(reconcileErr), w.timestamp())},
+	}
+	return w.patchStatus(ctx, routePolicyGVR, namespace, policy.Metadata.Name, status)
+}
+
+func (w *kubernetesStatusWriter) patchBudgetPolicyStatus(ctx context.Context, policy platform.BudgetPolicy, reconcileErr error) error {
+	namespace := defaultNamespace(policy.Metadata.Namespace)
+	status := map[string]any{
+		"observedGeneration": policy.Metadata.Generation,
+		"conditions":         []any{condition("Ready", reconcileErr == nil, conditionReason(reconcileErr), conditionMessage(reconcileErr), w.timestamp())},
+	}
+	return w.patchStatus(ctx, budgetPolicyGVR, namespace, policy.Metadata.Name, status)
 }
 
 func (w *kubernetesStatusWriter) patchInferenceServiceStatus(ctx context.Context, service platform.InferenceService, reconcileErr error) error {
@@ -91,6 +144,22 @@ func (w *kubernetesStatusWriter) patchAutoscalePolicyStatus(ctx context.Context,
 		"conditions":         []any{condition("Reconciled", reconcileErr == nil, conditionReason(reconcileErr), conditionMessage(reconcileErr), w.timestamp())},
 	}
 	return w.patchStatus(ctx, autoscaleGVR, namespace, policy.Metadata.Name, status)
+}
+
+func serviceURL(ref platform.ServiceRef, defaultNamespace string) string {
+	namespace := defaultNamespaceName(ref.Namespace, defaultNamespace)
+	port := ref.Port
+	if port <= 0 {
+		port = 8000
+	}
+	path := strings.TrimSpace(ref.Path)
+	if path == "" {
+		path = "/v1"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return fmt.Sprintf("http://%s.%s.svc:%d%s", ref.Name, namespace, port, path)
 }
 
 func (w *kubernetesStatusWriter) readyReplicas(ctx context.Context, namespace string, name string) int64 {

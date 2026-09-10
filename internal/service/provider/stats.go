@@ -37,6 +37,10 @@ type providerStatsAtomic struct {
 	latencyCount    atomic.Int64
 	minLatencyMs    atomic.Int64
 	maxLatencyMs    atomic.Int64
+	ttftSum         atomic.Int64
+	ttftCount       atomic.Int64
+	minTTFTMs       atomic.Int64
+	maxTTFTMs       atomic.Int64
 	lastRequestUnix atomic.Int64
 	updatedAtUnix   atomic.Int64
 
@@ -69,6 +73,9 @@ type ProviderStats struct {
 	AvgLatencyMs    float64   `json:"avg_latency_ms"`
 	MinLatencyMs    int64     `json:"min_latency_ms"`
 	MaxLatencyMs    int64     `json:"max_latency_ms"`
+	AvgTTFTMs       float64   `json:"avg_ttft_ms"`
+	MinTTFTMs       int64     `json:"min_ttft_ms"`
+	MaxTTFTMs       int64     `json:"max_ttft_ms"`
 	LastRequestAt   time.Time `json:"last_request_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }
@@ -154,6 +161,42 @@ func (s *Stats) RecordRequest(name string, success bool, tokens int, latencyMs i
 	a.inner.Unlock()
 }
 
+// RecordTTFT records the observed time-to-first-token for a streaming
+// provider attempt. Non-positive values are ignored.
+func (s *Stats) RecordTTFT(name string, ttftMs int64) {
+	if ttftMs <= 0 {
+		return
+	}
+	s.mu.RLock()
+	a, ok := s.providerStats[name]
+	s.mu.RUnlock()
+	if !ok {
+		return
+	}
+
+	a.ttftSum.Add(ttftMs)
+	a.ttftCount.Add(1)
+	for {
+		cur := a.minTTFTMs.Load()
+		if cur != 0 && cur <= ttftMs {
+			break
+		}
+		if a.minTTFTMs.CompareAndSwap(cur, ttftMs) {
+			break
+		}
+	}
+	for {
+		cur := a.maxTTFTMs.Load()
+		if ttftMs <= cur {
+			break
+		}
+		if a.maxTTFTMs.CompareAndSwap(cur, ttftMs) {
+			break
+		}
+	}
+	a.updatedAtUnix.Store(time.Now().UnixNano())
+}
+
 func (s *Stats) IncrementLoad(name string) {
 	s.mu.RLock()
 	a, ok := s.providerStats[name]
@@ -205,6 +248,11 @@ func (a *providerStatsAtomic) snapshot() *ProviderStats {
 	if count > 0 {
 		avg = float64(a.latencySum.Load()) / float64(count)
 	}
+	ttftCount := a.ttftCount.Load()
+	avgTTFT := 0.0
+	if ttftCount > 0 {
+		avgTTFT = float64(a.ttftSum.Load()) / float64(ttftCount)
+	}
 	a.inner.Lock()
 	status := a.status
 	a.inner.Unlock()
@@ -222,6 +270,9 @@ func (a *providerStatsAtomic) snapshot() *ProviderStats {
 		AvgLatencyMs:    avg,
 		MinLatencyMs:    a.minLatencyMs.Load(),
 		MaxLatencyMs:    a.maxLatencyMs.Load(),
+		AvgTTFTMs:       avgTTFT,
+		MinTTFTMs:       a.minTTFTMs.Load(),
+		MaxTTFTMs:       a.maxTTFTMs.Load(),
 		LastRequestAt:   unixNanoToTime(a.lastRequestUnix.Load()),
 		UpdatedAt:       unixNanoToTime(a.updatedAtUnix.Load()),
 	}

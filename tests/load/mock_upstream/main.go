@@ -86,6 +86,31 @@ type embeddingRequest struct {
 	Input []string `json:"input"`
 }
 
+func (r *embeddingRequest) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Model string          `json:"model"`
+		Input json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	r.Model = raw.Model
+	if len(raw.Input) == 0 || string(raw.Input) == "null" {
+		return nil
+	}
+	var single string
+	if err := json.Unmarshal(raw.Input, &single); err == nil {
+		r.Input = []string{single}
+		return nil
+	}
+	var many []string
+	if err := json.Unmarshal(raw.Input, &many); err == nil {
+		r.Input = many
+		return nil
+	}
+	return fmt.Errorf("input must be a string or string array")
+}
+
 type embeddingResponse struct {
 	Object string      `json:"object"`
 	Data   []embedding `json:"data"`
@@ -107,7 +132,7 @@ type imageRequest struct {
 }
 
 type imageResponse struct {
-	Created int64  `json:"created"`
+	Created int64   `json:"created"`
 	Data    []image `json:"data"`
 }
 

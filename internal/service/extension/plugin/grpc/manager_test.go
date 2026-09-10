@@ -60,13 +60,21 @@ func TestPluginClientsRespectHealthGate(t *testing.T) {
 
 func TestBuildOrderCandidatesRequestMapsFields(t *testing.T) {
 	req := buildOrderCandidatesRequest([]plugin.CandidateInfo{{
-		Name:     "p1",
-		Model:    "m1",
-		Weight:   3,
-		UnitCost: 0.2,
-		Load:     7,
-		TPM:      11,
-		Healthy:  true,
+		Name:                   "p1",
+		Model:                  "m1",
+		Weight:                 3,
+		UnitCost:               0.2,
+		Load:                   7,
+		TPM:                    11,
+		Healthy:                true,
+		AvgLatencyMs:           250,
+		AvgTTFTMs:              75,
+		QueueRunning:           4,
+		QueueWaiting:           7,
+		GPUKVCacheUsagePerc:    0.62,
+		CPUKVCacheUsagePerc:    0.10,
+		PrefixCacheHitRate:     0.73,
+		SignalsUpdatedAtUnixMs: 123456789000,
 	}}, plugin.RouteContext{
 		Model:               "m1",
 		SessionID:           "s1",
@@ -76,13 +84,24 @@ func TestBuildOrderCandidatesRequestMapsFields(t *testing.T) {
 		HasTools:            true,
 		HasImages:           true,
 		HasStructuredOutput: true,
+		PrefixText:          "vllm compatible prompt",
 	})
 
 	if len(req.Candidates) != 1 || req.Candidates[0].Name != "p1" || req.Candidates[0].Tpm != 11 {
 		t.Fatalf("buildOrderCandidatesRequest candidates = %+v", req.Candidates)
 	}
+	candidate := req.Candidates[0]
+	if candidate.AvgTtftMs != 75 || candidate.QueueRunning != 4 || candidate.QueueWaiting != 7 {
+		t.Fatalf("buildOrderCandidatesRequest realtime signals = %+v", candidate)
+	}
+	if candidate.GpuKvCacheUsagePerc != 0.62 || candidate.CpuKvCacheUsagePerc != 0.10 || candidate.PrefixCacheHitRate != 0.73 {
+		t.Fatalf("buildOrderCandidatesRequest cache signals = %+v", candidate)
+	}
 	if req.Context.SessionId != "s1" || !req.Context.HasTools || !req.Context.HasImages || !req.Context.HasStructuredOutput {
 		t.Fatalf("buildOrderCandidatesRequest context = %+v", req.Context)
+	}
+	if req.Context.PrefixText == nil || req.Context.GetPrefixText() != "vllm compatible prompt" {
+		t.Fatalf("buildOrderCandidatesRequest prefix_text = %q, want present vllm compatible prompt", req.Context.GetPrefixText())
 	}
 }
 

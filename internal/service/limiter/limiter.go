@@ -2,6 +2,7 @@ package limiter
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,7 +27,7 @@ func newBucketMap() *bucketMap {
 	return &bucketMap{buckets: make(map[string]*bucketEntry), ttl: 10 * time.Minute}
 }
 
-func (bm *bucketMap) getOrCreate(key string, rate, burst int) *bucketEntry {
+func (bm *bucketMap) getOrCreate(key string, rate float64, burst int) *bucketEntry {
 	now := time.Now().UnixNano()
 	bm.mu.RLock()
 	if e, ok := bm.buckets[key]; ok {
@@ -47,7 +48,7 @@ func (bm *bucketMap) getOrCreate(key string, rate, burst int) *bucketEntry {
 	return e
 }
 
-func (bm *bucketMap) tryConsume(key string, n, rate, burst int) bool {
+func (bm *bucketMap) tryConsume(key string, n int, rate float64, burst int) bool {
 	if rate <= 0 || burst <= 0 {
 		return true
 	}
@@ -79,6 +80,7 @@ type Limiter struct {
 	rdb            *redis.Client
 	globalToken    *TokenBucket
 	globalRPM      *TokenBucket
+	globalRequests *TokenBucket
 	userTokens     map[string]*userBucket
 	tenantTokens   *bucketMap
 	tenantRPM      *bucketMap
@@ -93,9 +95,9 @@ type Limiter struct {
 }
 
 type TokenBucket struct {
-	rate     int
+	rate     float64
 	burst    int
-	tokens   int
+	tokens   float64
 	lastFill time.Time
 	mu       sync.Mutex
 }
@@ -109,24 +111,10 @@ type Request struct {
 }
 
 func NewLimiter(cfg config.LimiterConfig) *Limiter {
-	globalBurst := cfg.GlobalTokenBurst
-	if globalBurst <= 0 {
-		globalBurst = cfg.GlobalTPM / 60
-		if globalBurst <= 0 {
-			globalBurst = 100
-		}
-	}
-	globalRPMRate := cfg.GlobalRPM / 60
-	if cfg.GlobalRPM > 0 && globalRPMRate <= 0 {
-		globalRPMRate = 1
-	}
-	globalRPMBurst := cfg.GlobalRPMBurst
-	if cfg.GlobalRPM > 0 && globalRPMBurst <= 0 {
-		globalRPMBurst = cfg.GlobalRPM / 60
-		if globalRPMBurst <= 0 {
-			globalRPMBurst = 10
-		}
-	}
+	globalBurst := tokenBurst(cfg.GlobalTPM, cfg.GlobalTokenBurst, 100)
+	globalRPMRate := perMinuteRate(cfg.GlobalRPM)
+	globalRPMBurst := perMinuteBurst(cfg.GlobalRPM, cfg.GlobalRPMBurst, 10)
+	globalRequestRate, globalRequestBurst := requestLimit(cfg.GlobalQPS, cfg.GlobalQPSBurst, cfg.GlobalRPM, cfg.GlobalRPMBurst)
 	perUserBurst := cfg.PerUserRequestBurst
 	if perUserBurst <= 0 {
 		perUserBurst = 100
@@ -135,8 +123,9 @@ func NewLimiter(cfg config.LimiterConfig) *Limiter {
 
 	l := &Limiter{
 		cfg:            cfg,
-		globalToken:    NewTokenBucket(cfg.GlobalTPM/60, globalBurst),
+		globalToken:    NewTokenBucket(perMinuteRate(cfg.GlobalTPM), globalBurst),
 		globalRPM:      NewTokenBucket(globalRPMRate, globalRPMBurst),
+		globalRequests: NewTokenBucket(globalRequestRate, globalRequestBurst),
 		userTokens:     make(map[string]*userBucket),
 		tenantTokens:   newBucketMap(),
 		tenantRPM:      newBucketMap(),
@@ -155,35 +144,64 @@ func NewLimiter(cfg config.LimiterConfig) *Limiter {
 	return l
 }
 
-func NewTokenBucket(rate, burst int) *TB {
-	return &TB{
+type LimitRequest struct {
+	TenantID string
+	Provider string
+	Model    string
+	Tokens   int
+}
+
+type Decision struct {
+	Allowed bool
+	Reason  string
+	Scope   string
+}
+
+func (d Decision) ProviderScoped() bool {
+	return d.Scope == "provider"
+}
+
+type limitSpec struct {
+	key     string
+	bucket  *TokenBucket
+	rate    float64
+	burst   int
+	consume int
+	reason  string
+	scope   string
+}
+
+func NewTokenBucket(rate float64, burst int) *TokenBucket {
+	return &TokenBucket{
 		rate:     rate,
 		burst:    burst,
-		tokens:   burst,
+		tokens:   float64(burst),
 		lastFill: time.Now(),
 	}
 }
-
-type TB = TokenBucket
 
 func (t *TokenBucket) TryConsume(n int) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	now := time.Now()
-	elapsed := now.Sub(t.lastFill)
-	// 使用 float64 避免整数精度丢失
-	t.tokens += int(float64(elapsed.Nanoseconds()) / 1e9 * float64(t.rate))
-	if t.tokens > t.burst {
-		t.tokens = t.burst
-	}
-	t.lastFill = now
+	t.refillLocked(now)
 
-	if t.tokens >= n {
-		t.tokens -= n
+	consume := float64(n)
+	if t.tokens >= consume {
+		t.tokens -= consume
 		return true
 	}
 	return false
+}
+
+func (t *TokenBucket) refillLocked(now time.Time) {
+	elapsed := now.Sub(t.lastFill)
+	t.tokens += elapsed.Seconds() * t.rate
+	if t.tokens > float64(t.burst) {
+		t.tokens = float64(t.burst)
+	}
+	t.lastFill = now
 }
 
 func (l *Limiter) refillLoop() {
@@ -195,6 +213,7 @@ func (l *Limiter) refillLoop() {
 		case <-ticker.C:
 			l.globalToken.TryConsume(0)
 			l.globalRPM.TryConsume(0)
+			l.globalRequests.TryConsume(0)
 			l.mu.Lock()
 			now := time.Now()
 			for k, ub := range l.userTokens {
@@ -254,10 +273,10 @@ func (r *Request) sendResult(result bool) {
 func (l *Limiter) check(key string, userQPS, tokens int) bool {
 	// global check: 按 token 数限流
 	if l.rdb != nil {
-		if !redisTryConsume(l.rdb, limiterKey("g", "t"), tokens, l.cfg.GlobalTPM/60, l.cfg.GlobalTokenBurst) {
+		if !redisTryConsume(l.rdb, limiterKey("g", "t"), tokens, perMinuteRate(l.cfg.GlobalTPM), tokenBurst(l.cfg.GlobalTPM, l.cfg.GlobalTokenBurst, 100)) {
 			return false
 		}
-		if l.cfg.GlobalRPM > 0 && !redisTryConsume(l.rdb, limiterKey("g", "r"), 1, l.cfg.GlobalRPM/60, l.cfg.GlobalRPMBurst) {
+		if l.cfg.GlobalRPM > 0 && !redisTryConsume(l.rdb, limiterKey("g", "r"), 1, perMinuteRate(l.cfg.GlobalRPM), perMinuteBurst(l.cfg.GlobalRPM, l.cfg.GlobalRPMBurst, 10)) {
 			return false
 		}
 	} else {
@@ -275,6 +294,7 @@ func (l *Limiter) check(key string, userQPS, tokens int) bool {
 	if userQPS > 0 {
 		rate = userQPS
 	}
+	ratePerSecond := float64(rate)
 	burst := l.cfg.PerUserRequestBurst
 	if userQPS > 0 && rate > 0 && burst > rate {
 		burst = rate
@@ -282,16 +302,16 @@ func (l *Limiter) check(key string, userQPS, tokens int) bool {
 
 	l.mu.RLock()
 	ub, exists := l.userTokens[key]
-	needsRebuild := exists && (ub.bucket.rate != rate || ub.bucket.burst != burst)
+	needsRebuild := exists && (ub.bucket.rate != ratePerSecond || ub.bucket.burst != burst)
 	l.mu.RUnlock()
 
 	if !exists || needsRebuild {
 		l.mu.Lock()
 		ub, exists = l.userTokens[key]
-		needsRebuild = exists && (ub.bucket.rate != rate || ub.bucket.burst != burst)
+		needsRebuild = exists && (ub.bucket.rate != ratePerSecond || ub.bucket.burst != burst)
 		if !exists || needsRebuild {
 			l.userTokens[key] = &userBucket{
-				bucket:     NewTokenBucket(rate, burst),
+				bucket:     NewTokenBucket(ratePerSecond, burst),
 				lastAccess: atomic.Int64{},
 			}
 			l.userTokens[key].lastAccess.Store(time.Now().UnixNano())
@@ -305,6 +325,110 @@ func (l *Limiter) check(key string, userQPS, tokens int) bool {
 		ub.lastAccess.Store(time.Now().UnixNano())
 	}
 	return ok
+}
+
+func (l *Limiter) Check(ctx context.Context, req LimitRequest) Decision {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return Decision{Allowed: false, Reason: "context_cancelled"}
+	}
+	specs := l.buildLimitSpecs(req, l.rdb != nil)
+	if len(specs) == 0 {
+		return Decision{Allowed: true}
+	}
+	if l.rdb != nil {
+		return redisCheck(ctx, l.rdb, specs)
+	}
+	return l.localCheck(ctx, specs)
+}
+
+func (l *Limiter) buildLimitSpecs(req LimitRequest, redisKeys bool) []limitSpec {
+	tokens := req.Tokens
+	if tokens < 0 {
+		tokens = 0
+	}
+	specs := make([]limitSpec, 0, 8)
+	add := func(scope, id, metric string, bucket *TokenBucket, bm *bucketMap, rate float64, burst, consume int, reason string) {
+		if rate <= 0 || burst <= 0 || consume < 0 {
+			return
+		}
+		spec := limitSpec{
+			rate:    rate,
+			burst:   burst,
+			consume: consume,
+			reason:  reason,
+			scope:   scope,
+		}
+		if redisKeys {
+			spec.key = atomicLimiterKey(scope, id, metric)
+		} else if bucket != nil {
+			spec.bucket = bucket
+		} else if bm != nil {
+			spec.bucket = bm.getOrCreate(id, rate, burst).bucket
+		}
+		specs = append(specs, spec)
+	}
+
+	add("global", "global", "tokens", l.globalToken, nil, perMinuteRate(l.cfg.GlobalTPM), tokenBurst(l.cfg.GlobalTPM, l.cfg.GlobalTokenBurst, 100), tokens, "global_tokens")
+	rate, burst := requestLimit(l.cfg.GlobalQPS, l.cfg.GlobalQPSBurst, l.cfg.GlobalRPM, l.cfg.GlobalRPMBurst)
+	add("global", "global", "qps", l.globalRequests, nil, rate, burst, 1, "global_qps")
+
+	if req.TenantID != "" {
+		add("tenant", req.TenantID, "tokens", nil, l.tenantTokens, perMinuteRate(l.cfg.TenantTPM), tokenBurst(l.cfg.TenantTPM, l.cfg.TenantTPMBurst, 0), tokens, "tenant_tokens")
+		rate, burst = requestLimit(l.cfg.TenantQPS, l.cfg.TenantQPSBurst, l.cfg.TenantRPM, l.cfg.TenantRPMBurst)
+		add("tenant", req.TenantID, "qps", nil, l.tenantRPM, rate, burst, 1, "tenant_qps")
+	}
+	if req.Provider != "" {
+		add("provider", req.Provider, "tokens", nil, l.providerTokens, perMinuteRate(l.cfg.ProviderTPM), tokenBurst(l.cfg.ProviderTPM, l.cfg.ProviderTPMBurst, 0), tokens, "provider_tokens")
+		rate, burst = requestLimit(l.cfg.ProviderQPS, l.cfg.ProviderQPSBurst, l.cfg.ProviderRPM, l.cfg.ProviderRPMBurst)
+		add("provider", req.Provider, "qps", nil, l.providerRPM, rate, burst, 1, "provider_qps")
+	}
+	if req.Model != "" {
+		add("model", req.Model, "tokens", nil, l.modelTokens, perMinuteRate(l.cfg.ModelTPM), tokenBurst(l.cfg.ModelTPM, l.cfg.ModelTPMBurst, 0), tokens, "model_tokens")
+		rate, burst = requestLimit(l.cfg.ModelQPS, l.cfg.ModelQPSBurst, l.cfg.ModelRPM, l.cfg.ModelRPMBurst)
+		add("model", req.Model, "qps", nil, l.modelRPM, rate, burst, 1, "model_qps")
+	}
+	return specs
+}
+
+func (l *Limiter) localCheck(ctx context.Context, specs []limitSpec) Decision {
+	locked := make([]*TokenBucket, 0, len(specs))
+	for _, spec := range specs {
+		if spec.bucket == nil {
+			continue
+		}
+		spec.bucket.mu.Lock()
+		locked = append(locked, spec.bucket)
+	}
+	defer func() {
+		for i := len(locked) - 1; i >= 0; i-- {
+			locked[i].mu.Unlock()
+		}
+	}()
+
+	if err := ctx.Err(); err != nil {
+		return Decision{Allowed: false, Reason: "context_cancelled"}
+	}
+
+	now := time.Now()
+	for _, spec := range specs {
+		if spec.bucket == nil {
+			continue
+		}
+		spec.bucket.refillLocked(now)
+		if spec.bucket.tokens < float64(spec.consume) {
+			return Decision{Allowed: false, Reason: spec.reason, Scope: spec.scope}
+		}
+	}
+	for _, spec := range specs {
+		if spec.bucket == nil {
+			continue
+		}
+		spec.bucket.tokens -= float64(spec.consume)
+	}
+	return Decision{Allowed: true}
 }
 
 func (l *Limiter) Allow(ctx context.Context, key string, userQPS, admissionTokens int) bool {
@@ -344,24 +468,10 @@ func (l *Limiter) Reload(cfg *config.Config) error {
 	defer l.mu.Unlock()
 
 	newCfg := cfg.Limiter
-	globalBurst := newCfg.GlobalTokenBurst
-	if globalBurst <= 0 {
-		globalBurst = newCfg.GlobalTPM / 60
-		if globalBurst <= 0 {
-			globalBurst = 100
-		}
-	}
-	globalRPMRate := newCfg.GlobalRPM / 60
-	if newCfg.GlobalRPM > 0 && globalRPMRate <= 0 {
-		globalRPMRate = 1
-	}
-	globalRPMBurst := newCfg.GlobalRPMBurst
-	if newCfg.GlobalRPM > 0 && globalRPMBurst <= 0 {
-		globalRPMBurst = newCfg.GlobalRPM / 60
-		if globalRPMBurst <= 0 {
-			globalRPMBurst = 10
-		}
-	}
+	globalBurst := tokenBurst(newCfg.GlobalTPM, newCfg.GlobalTokenBurst, 100)
+	globalRPMRate := perMinuteRate(newCfg.GlobalRPM)
+	globalRPMBurst := perMinuteBurst(newCfg.GlobalRPM, newCfg.GlobalRPMBurst, 10)
+	globalRequestRate, globalRequestBurst := requestLimit(newCfg.GlobalQPS, newCfg.GlobalQPSBurst, newCfg.GlobalRPM, newCfg.GlobalRPMBurst)
 	perUserBurst := newCfg.PerUserRequestBurst
 	if perUserBurst <= 0 {
 		perUserBurst = 100
@@ -369,8 +479,9 @@ func (l *Limiter) Reload(cfg *config.Config) error {
 	newCfg.PerUserRequestBurst = perUserBurst
 
 	l.cfg = newCfg
-	l.globalToken = NewTokenBucket(newCfg.GlobalTPM/60, globalBurst)
+	l.globalToken = NewTokenBucket(perMinuteRate(newCfg.GlobalTPM), globalBurst)
 	l.globalRPM = NewTokenBucket(globalRPMRate, globalRPMBurst)
+	l.globalRequests = NewTokenBucket(globalRequestRate, globalRequestBurst)
 	l.userTokens = make(map[string]*userBucket)
 	return nil
 }
@@ -388,15 +499,17 @@ func (l *Limiter) CheckTenant(tenantID string, tokens int) bool {
 		return true
 	}
 	if l.rdb != nil {
-		if !redisTryConsume(l.rdb, limiterKey("ten", tenantID, "t"), tokens, l.cfg.TenantTPM/60, l.cfg.TenantTPMBurst) {
+		if !redisTryConsume(l.rdb, limiterKey("ten", tenantID, "t"), tokens, perMinuteRate(l.cfg.TenantTPM), tokenBurst(l.cfg.TenantTPM, l.cfg.TenantTPMBurst, 0)) {
 			return false
 		}
-		return redisTryConsume(l.rdb, limiterKey("ten", tenantID, "r"), 1, l.cfg.TenantRPM/60, l.cfg.TenantRPMBurst)
+		rate, burst := requestLimit(l.cfg.TenantQPS, l.cfg.TenantQPSBurst, l.cfg.TenantRPM, l.cfg.TenantRPMBurst)
+		return redisTryConsume(l.rdb, limiterKey("ten", tenantID, "r"), 1, rate, burst)
 	}
-	if !l.tenantTokens.tryConsume(tenantID, tokens, l.cfg.TenantTPM/60, l.cfg.TenantTPMBurst) {
+	if !l.tenantTokens.tryConsume(tenantID, tokens, perMinuteRate(l.cfg.TenantTPM), tokenBurst(l.cfg.TenantTPM, l.cfg.TenantTPMBurst, 0)) {
 		return false
 	}
-	return l.tenantRPM.tryConsume(tenantID, 1, l.cfg.TenantRPM/60, l.cfg.TenantRPMBurst)
+	rate, burst := requestLimit(l.cfg.TenantQPS, l.cfg.TenantQPSBurst, l.cfg.TenantRPM, l.cfg.TenantRPMBurst)
+	return l.tenantRPM.tryConsume(tenantID, 1, rate, burst)
 }
 
 // CheckProvider 检查 provider 维度限流（token + RPM）
@@ -405,15 +518,17 @@ func (l *Limiter) CheckProvider(provider string, tokens int) bool {
 		return true
 	}
 	if l.rdb != nil {
-		if !redisTryConsume(l.rdb, limiterKey("prov", provider, "t"), tokens, l.cfg.ProviderTPM/60, l.cfg.ProviderTPMBurst) {
+		if !redisTryConsume(l.rdb, limiterKey("prov", provider, "t"), tokens, perMinuteRate(l.cfg.ProviderTPM), tokenBurst(l.cfg.ProviderTPM, l.cfg.ProviderTPMBurst, 0)) {
 			return false
 		}
-		return redisTryConsume(l.rdb, limiterKey("prov", provider, "r"), 1, l.cfg.ProviderRPM/60, l.cfg.ProviderRPMBurst)
+		rate, burst := requestLimit(l.cfg.ProviderQPS, l.cfg.ProviderQPSBurst, l.cfg.ProviderRPM, l.cfg.ProviderRPMBurst)
+		return redisTryConsume(l.rdb, limiterKey("prov", provider, "r"), 1, rate, burst)
 	}
-	if !l.providerTokens.tryConsume(provider, tokens, l.cfg.ProviderTPM/60, l.cfg.ProviderTPMBurst) {
+	if !l.providerTokens.tryConsume(provider, tokens, perMinuteRate(l.cfg.ProviderTPM), tokenBurst(l.cfg.ProviderTPM, l.cfg.ProviderTPMBurst, 0)) {
 		return false
 	}
-	return l.providerRPM.tryConsume(provider, 1, l.cfg.ProviderRPM/60, l.cfg.ProviderRPMBurst)
+	rate, burst := requestLimit(l.cfg.ProviderQPS, l.cfg.ProviderQPSBurst, l.cfg.ProviderRPM, l.cfg.ProviderRPMBurst)
+	return l.providerRPM.tryConsume(provider, 1, rate, burst)
 }
 
 // CheckModel 检查 model 维度限流（token + RPM）
@@ -422,13 +537,70 @@ func (l *Limiter) CheckModel(model string, tokens int) bool {
 		return true
 	}
 	if l.rdb != nil {
-		if !redisTryConsume(l.rdb, limiterKey("mod", model, "t"), tokens, l.cfg.ModelTPM/60, l.cfg.ModelTPMBurst) {
+		if !redisTryConsume(l.rdb, limiterKey("mod", model, "t"), tokens, perMinuteRate(l.cfg.ModelTPM), tokenBurst(l.cfg.ModelTPM, l.cfg.ModelTPMBurst, 0)) {
 			return false
 		}
-		return redisTryConsume(l.rdb, limiterKey("mod", model, "r"), 1, l.cfg.ModelRPM/60, l.cfg.ModelRPMBurst)
+		rate, burst := requestLimit(l.cfg.ModelQPS, l.cfg.ModelQPSBurst, l.cfg.ModelRPM, l.cfg.ModelRPMBurst)
+		return redisTryConsume(l.rdb, limiterKey("mod", model, "r"), 1, rate, burst)
 	}
-	if !l.modelTokens.tryConsume(model, tokens, l.cfg.ModelTPM/60, l.cfg.ModelTPMBurst) {
+	if !l.modelTokens.tryConsume(model, tokens, perMinuteRate(l.cfg.ModelTPM), tokenBurst(l.cfg.ModelTPM, l.cfg.ModelTPMBurst, 0)) {
 		return false
 	}
-	return l.modelRPM.tryConsume(model, 1, l.cfg.ModelRPM/60, l.cfg.ModelRPMBurst)
+	rate, burst := requestLimit(l.cfg.ModelQPS, l.cfg.ModelQPSBurst, l.cfg.ModelRPM, l.cfg.ModelRPMBurst)
+	return l.modelRPM.tryConsume(model, 1, rate, burst)
+}
+
+func perMinuteRate(value int) float64 {
+	if value <= 0 {
+		return 0
+	}
+	return float64(value) / 60.0
+}
+
+func perMinuteBurst(limit, configured, disabledDefault int) int {
+	if limit <= 0 {
+		return 0
+	}
+	if configured > 0 {
+		return configured
+	}
+	burst := limit / 60
+	if burst <= 0 {
+		burst = 1
+	}
+	if burst <= 0 && disabledDefault > 0 {
+		burst = disabledDefault
+	}
+	return burst
+}
+
+func tokenBurst(limit, configured, disabledDefault int) int {
+	if limit <= 0 {
+		return disabledDefault
+	}
+	return perMinuteBurst(limit, configured, disabledDefault)
+}
+
+func requestLimit(qps, qpsBurst, rpm, rpmBurst int) (float64, int) {
+	if qps > 0 {
+		burst := qpsBurst
+		if burst <= 0 {
+			burst = qps
+		}
+		return float64(qps), burst
+	}
+	if rpm > 0 {
+		return perMinuteRate(rpm), perMinuteBurst(rpm, rpmBurst, 0)
+	}
+	return 0, 0
+}
+
+func deniedFromErr(err error) Decision {
+	if err == nil {
+		return Decision{Allowed: true}
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return Decision{Allowed: false, Reason: "context_cancelled"}
+	}
+	return Decision{Allowed: false, Reason: "redis_error"}
 }

@@ -36,31 +36,69 @@ export interface CacheSummary {
   totals: CacheLayerSummary
 }
 
-export interface UsageSummary {
-  totalTokens: number
-  totalRequests: number
-  totalCost?: number
-  period: string
-}
-
-export interface UsageBreakdown {
+export interface UsageFilterResponse {
+  tenant_id: string
+  project_id: string
+  user_id: string
+  api_key_id: string
   provider: string
   model: string
-  requests: number
-  tokens: number
+  start_time?: string
+  end_time?: string
 }
 
-export interface UsageTrend {
-  timestamp: string
-  requests: number
-  tokens: number
+export interface UsageStats {
+  total_requests: number
+  success_requests: number
+  failed_requests: number
+  total_tokens: number
+  total_cost_usd: number
+  avg_latency_ms: number
 }
 
-export interface Budget {
+export interface UsageSummaryResponse {
+  filter: UsageFilterResponse
+  summary: UsageStats
+}
+
+export interface UsageBreakdownRow {
+  dimension: string
+  total_requests: number
+  success_requests: number
+  failed_requests: number
+  total_tokens: number
+  total_cost_usd: number
+  avg_latency_ms: number
+}
+
+export interface UsageBreakdownResponse {
+  filter: UsageFilterResponse
+  dimension: string
+  rows: UsageBreakdownRow[]
+}
+
+export interface UsageTimeBucket {
+  bucket: string
+  total_requests: number
+  success_requests: number
+  failed_requests: number
+  total_tokens: number
+  total_cost_usd: number
+  avg_latency_ms: number
+}
+
+export interface UsageTrendResponse {
+  filter: UsageFilterResponse
+  period: string
+  rows: UsageTimeBucket[]
+}
+
+export interface BudgetStatus {
+  scope: string
   id: string
-  name: string
-  limit: number
-  used: number
-  currency: string
-  status: string
+  budget_usd: number
+  spent_usd: number
+  policy: string
+  utilization: number
+  is_exhausted: boolean
 }

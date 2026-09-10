@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -41,12 +44,21 @@ func newKubernetesSnapshotLoader(kubeconfig string, namespace string) (*kubernet
 }
 
 func kubernetesRESTConfig(kubeconfig string) (*rest.Config, error) {
-	if kubeconfig != "" {
-		return clientcmd.BuildConfigFromFlags("", kubeconfig)
+	if strings.TrimSpace(kubeconfig) != "" {
+		return clientcmd.BuildConfigFromFlags("", strings.TrimSpace(kubeconfig))
 	}
 	cfg, err := rest.InClusterConfig()
 	if err == nil {
 		return cfg, nil
+	}
+	if envKubeconfig := strings.TrimSpace(os.Getenv("KUBECONFIG")); envKubeconfig != "" {
+		return clientcmd.BuildConfigFromFlags("", envKubeconfig)
+	}
+	if home, homeErr := os.UserHomeDir(); homeErr == nil && strings.TrimSpace(home) != "" {
+		defaultKubeconfig := filepath.Join(home, ".kube", "config")
+		if _, statErr := os.Stat(defaultKubeconfig); statErr == nil {
+			return clientcmd.BuildConfigFromFlags("", defaultKubeconfig)
+		}
 	}
 	return clientcmd.BuildConfigFromFlags("", "")
 }

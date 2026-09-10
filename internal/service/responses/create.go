@@ -178,9 +178,13 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 		tenantID := identity.TenantID
 		providerName := p.Name()
 
-		if s.limiter != nil && !s.limiter.CheckProvider(providerName, req.EstimateAdmissionTokens()) {
-			appendRouteAttempt(trace, providerName, 0, "rate_limited", fmt.Errorf("provider rate limited"))
-			continue
+		if decision := s.checkRateLimit(ctx, identity, req, providerName); !decision.Allowed {
+			appendRouteAttempt(trace, providerName, 0, "rate_limited", fmt.Errorf("%s rate limited", decision.Reason))
+			if decision.ProviderScoped() {
+				continue
+			}
+			s.markRateLimitResponse(ctx, identity, responseID, providerName, req.Model, trace)
+			return nil, ErrRateLimited
 		}
 
 		if s.circuitBreaker != nil && !s.circuitBreaker.IsAvailable(tenantID, providerName) {
@@ -300,6 +304,7 @@ func (s *Service) Create(ctx context.Context, identity *repository.AuthIdentity,
 	}
 
 	if lastErr == nil {
+		s.markRateLimitResponse(ctx, identity, responseID, "", req.Model, trace)
 		return nil, ErrNoProvider
 	}
 	return nil, lastErr

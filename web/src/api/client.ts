@@ -137,7 +137,15 @@ async function request<T>(
     if ('items' in body) {
       return { Items: body.items, Total: body.total } as T
     }
-    return body.data as T
+    if ('data' in body) {
+      return body.data as T
+    }
+    const { code, success, message, error, ...payload } = body
+    void code
+    void success
+    void message
+    void error
+    return payload as T
   }
   return body as T
 }
