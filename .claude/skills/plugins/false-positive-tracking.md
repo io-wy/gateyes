@@ -71,16 +71,16 @@ description: 误报追踪与 Review 质量度量。记录 Code Review 中的误�
 
 | 误报类型 | 调优动作 |
 |----------|----------|
-| 热路径误判（非热路径标记为性能问题） | 在 CLAUDE.md 或项目 docs/ 中明确热路径范围 |
+| 热路径误判（非热路径标记为性能问题） | 在 CLAUDE.md 中明确热路径范围 |
 | 风格偏好误标为缺陷 | 在 CLAUDE.md 中明确风格规则 vs 缺陷规则 |
 | 历史遗留误归为本次引入 | 强化 adversarial-review 的 diff 边界判定 |
-| 项目特定设计被误判为错误 | 在 docs/ 中补充设计决策（ADR） |
+| 项目特定设计被误判为错误 | 在 CLAUDE.md 中补充设计约束 |
 | 过于严格的并发审查 | 明确哪些路径是单线程安全的 |
 
 调优后的规则写入对应位置：
 - 编码约束 → `CLAUDE.md`
 - 审查规则 → `adversarial-review.md`
-- 设计决策 → `docs/adr/`
+- 设计决策 → `CLAUDE.md`
 
 ### Step 4：定期 Review
 

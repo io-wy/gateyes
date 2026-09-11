@@ -316,16 +316,25 @@ func (g *gatewayPluginClient) Process(ctx context.Context, phase plugin.Phase, p
 }
 
 func buildOrderCandidatesRequest(candidates []plugin.CandidateInfo, routeCtx plugin.RouteContext) *pluginv1.OrderCandidatesRequest {
+	prefixText := routeCtx.PrefixText
 	cands := make([]*pluginv1.Candidate, len(candidates))
 	for i, c := range candidates {
 		cands[i] = &pluginv1.Candidate{
-			Name:        c.Name,
-			Model:       c.Model,
-			Weight:      int32(c.Weight),
-			UnitCost:    c.UnitCost,
-			CurrentLoad: c.Load,
-			Tpm:         c.TPM,
-			Healthy:     c.Healthy,
+			Name:                   c.Name,
+			Model:                  c.Model,
+			Weight:                 int32(c.Weight),
+			UnitCost:               c.UnitCost,
+			CurrentLoad:            c.Load,
+			Tpm:                    c.TPM,
+			Healthy:                c.Healthy,
+			AvgLatencyMs:           c.AvgLatencyMs,
+			AvgTtftMs:              c.AvgTTFTMs,
+			QueueRunning:           c.QueueRunning,
+			QueueWaiting:           c.QueueWaiting,
+			GpuKvCacheUsagePerc:    c.GPUKVCacheUsagePerc,
+			CpuKvCacheUsagePerc:    c.CPUKVCacheUsagePerc,
+			PrefixCacheHitRate:     c.PrefixCacheHitRate,
+			SignalsUpdatedAtUnixMs: c.SignalsUpdatedAtUnixMs,
 		}
 	}
 	return &pluginv1.OrderCandidatesRequest{
@@ -339,6 +348,7 @@ func buildOrderCandidatesRequest(candidates []plugin.CandidateInfo, routeCtx plu
 			HasTools:            routeCtx.HasTools,
 			HasImages:           routeCtx.HasImages,
 			HasStructuredOutput: routeCtx.HasStructuredOutput,
+			PrefixText:          &prefixText,
 		},
 	}
 }

@@ -2,26 +2,48 @@ import client from './client'
 import type {
   DashboardSummary,
   CacheSummary,
-  UsageSummary,
-  UsageBreakdown,
-  UsageTrend,
-  Budget,
+  UsageSummaryResponse,
+  UsageBreakdownResponse,
+  UsageTrendResponse,
+  BudgetStatus,
 } from '@/types/dashboard'
 
 export const dashboardApi = {
   getSummary: () => client.get<DashboardSummary>('/dashboard'),
   getCacheSummary: () => client.get<CacheSummary>('/cache/summary'),
-  getUsageSummary: (params?: { period?: string }) =>
-    client.get<UsageSummary>('/usage/summary', { params }),
+  getUsageSummary: (params?: {
+    days?: number
+    provider?: string
+    model?: string
+    project_id?: string
+    user_id?: string
+    api_key_id?: string
+    start_time?: string
+    end_time?: string
+  }) => client.get<UsageSummaryResponse>('/usage/summary', { params }),
   getUsageBreakdown: (params?: {
+    days?: number
+    provider?: string
+    model?: string
+    project_id?: string
+    user_id?: string
+    api_key_id?: string
     start_time?: string
     end_time?: string
-    group_by?: string
-  }) => client.get<UsageBreakdown[]>('/usage/breakdown', { params }),
+    dimension?: string
+  }) => client.get<UsageBreakdownResponse>('/usage/breakdown', { params }),
   getUsageTrend: (params?: {
+    days?: number
+    provider?: string
+    model?: string
+    project_id?: string
+    user_id?: string
+    api_key_id?: string
     start_time?: string
     end_time?: string
-    interval?: string
-  }) => client.get<UsageTrend[]>('/usage/trend', { params }),
-  getBudgets: () => client.get<Budget[]>('/budgets'),
+    period?: string
+    limit?: number
+  }) => client.get<UsageTrendResponse>('/usage/trend', { params }),
+  getBudgets: (params?: { project_id?: string; api_key_id?: string }) =>
+    client.get<BudgetStatus[]>('/budgets', { params }),
 }

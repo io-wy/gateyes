@@ -145,6 +145,88 @@ func TestCreateAdmissionRejectsRateLimitedRequest(t *testing.T) {
 	}
 }
 
+func TestCreateProviderRateLimitFallsBackToNextProvider(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-upstream","object":"chat.completion","created":1700000000,"model":"provider-model","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer upstream.Close()
+
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		upstreamURL: upstream.URL,
+		endpoint:    "chat",
+		providers:   []string{"limited-openai", "backup-openai"},
+		providerConfigs: []config.ProviderConfig{
+			{Name: "limited-openai", Type: "openai", BaseURL: upstream.URL, Endpoint: "chat", APIKey: "k", Model: "provider-model", Timeout: 5, Enabled: true, MaxTokens: 256},
+			{Name: "backup-openai", Type: "openai", BaseURL: upstream.URL, Endpoint: "chat", APIKey: "k", Model: "provider-model", Timeout: 5, Enabled: true, MaxTokens: 256},
+		},
+	})
+	env.service.limiter = limiter.NewLimiter(config.LimiterConfig{
+		GlobalQPS:        100,
+		GlobalQPSBurst:   100,
+		ProviderQPS:      1,
+		ProviderQPSBurst: 1,
+		QueueSize:        4,
+	})
+	t.Cleanup(env.service.limiter.Stop)
+
+	if !env.service.limiter.CheckProvider("limited-openai", 0) {
+		t.Fatal("preconsume provider limit should allow first request")
+	}
+
+	result, err := env.service.Create(context.Background(), env.identity, &provider.ResponseRequest{
+		Model: "public-model",
+		Input: "hello",
+	}, "")
+	if err != nil {
+		t.Fatalf("Service.Create(provider fallback) error = %v", err)
+	}
+	if result.ProviderName != "backup-openai" {
+		t.Fatalf("Service.Create(provider fallback) provider = %q, want backup-openai", result.ProviderName)
+	}
+}
+
+func TestCreateGlobalRateLimitDoesNotFallback(t *testing.T) {
+	var calls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-upstream","object":"chat.completion","created":1700000000,"model":"provider-model","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer upstream.Close()
+
+	env := newResponsesTestEnv(t, responsesTestEnvConfig{
+		upstreamURL: upstream.URL,
+		endpoint:    "chat",
+		providers:   []string{"openai-a", "openai-b"},
+		providerConfigs: []config.ProviderConfig{
+			{Name: "openai-a", Type: "openai", BaseURL: upstream.URL, Endpoint: "chat", APIKey: "k", Model: "provider-model", Timeout: 5, Enabled: true, MaxTokens: 256},
+			{Name: "openai-b", Type: "openai", BaseURL: upstream.URL, Endpoint: "chat", APIKey: "k", Model: "provider-model", Timeout: 5, Enabled: true, MaxTokens: 256},
+		},
+	})
+	env.service.limiter = limiter.NewLimiter(config.LimiterConfig{
+		GlobalQPS:      1,
+		GlobalQPSBurst: 1,
+		QueueSize:      4,
+	})
+	t.Cleanup(env.service.limiter.Stop)
+
+	if decision := env.service.limiter.Check(context.Background(), limiter.LimitRequest{Tokens: 0}); !decision.Allowed {
+		t.Fatalf("preconsume global limit = %+v, want allow", decision)
+	}
+
+	_, err := env.service.Create(context.Background(), env.identity, &provider.ResponseRequest{
+		Model: "public-model",
+		Input: "hello",
+	}, "")
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("Service.Create(global rate limited) error = %v, want %v", err, ErrRateLimited)
+	}
+	if calls != 0 {
+		t.Fatalf("upstream calls = %d, want 0", calls)
+	}
+}
+
 func TestCreateAdmissionMarkerSkipsDuplicateLimiterCheck(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -159,7 +241,7 @@ func TestCreateAdmissionMarkerSkipsDuplicateLimiterCheck(t *testing.T) {
 	})
 	env.service.limiter = limiter.NewLimiter(config.LimiterConfig{
 		GlobalTPM:        60,
-		GlobalTokenBurst: 1,
+		GlobalTokenBurst: 100,
 		QueueSize:        4,
 	})
 	t.Cleanup(env.service.limiter.Stop)

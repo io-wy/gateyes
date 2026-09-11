@@ -1,4 +1,6 @@
 export { client } from './client'
+export * from './auth'
+export * from './catalog'
 export * from './dashboard'
 export * from './playground'
 export * from './providers'

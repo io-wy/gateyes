@@ -59,7 +59,7 @@ func parseFlags(args []string) operatorConfig {
 	fs.StringVar(&cfg.AdminURL, "admin-url", "http://gateyes:8028", "Gateyes Admin API base URL")
 	fs.StringVar(&cfg.Token, "token", "", "Gateyes admin bearer token or <key>:<secret>")
 	fs.StringVar(&cfg.Namespace, "namespace", "", "namespace to watch; empty means all namespaces when Kubernetes watch is enabled")
-	fs.StringVar(&cfg.Kubeconfig, "kubeconfig", "", "optional kubeconfig path; empty uses in-cluster config")
+	fs.StringVar(&cfg.Kubeconfig, "kubeconfig", "", "optional kubeconfig path; empty uses in-cluster config, KUBECONFIG, then ~/.kube/config")
 	fs.BoolVar(&cfg.Kubernetes, "kubernetes", true, "load Gateyes CRDs from Kubernetes")
 	fs.BoolVar(&cfg.DryRun, "dry-run", true, "calculate sync plans without mutating Gateyes runtime state")
 	fs.BoolVar(&cfg.Once, "once", false, "run one reconciliation tick and exit")

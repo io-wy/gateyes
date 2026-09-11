@@ -65,6 +65,30 @@ func (r *ResponseRequest) InputText() string {
 	return strings.Join(parts, "\n")
 }
 
+// PrefixRoutingText matches vLLM Production Stack PrefixAwareRouter's chat
+// prompt extraction: text blocks in a message are space-separated and messages
+// are newline-separated. Non-text multimodal blocks are ignored.
+func (r *ResponseRequest) PrefixRoutingText() string {
+	if r == nil {
+		return ""
+	}
+	messages := r.InputMessages()
+	parts := make([]string, 0, len(messages))
+	for _, message := range messages {
+		if message.Content == nil {
+			continue
+		}
+		textParts := make([]string, 0, len(message.Content))
+		for _, block := range message.Content {
+			if block.Type == "text" {
+				textParts = append(textParts, block.Text)
+			}
+		}
+		parts = append(parts, strings.Join(textParts, " "))
+	}
+	return strings.Join(parts, "\n")
+}
+
 func (r *ResponseRequest) HasToolsRequested() bool {
 	return r != nil && len(r.Tools) > 0
 }

@@ -17,10 +17,50 @@ func TestKubernetesStatusWriterPatchesInferenceStatus(t *testing.T) {
 	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(
 		scheme,
 		map[schema.GroupVersionResource]string{
-			inferenceSvcGVR: "InferenceServiceList",
-			autoscaleGVR:    "InferenceAutoscalePolicyList",
-			deploymentGVR:   "DeploymentList",
+			modelEndpointGVR: "ModelEndpointList",
+			routePolicyGVR:   "RoutePolicyList",
+			budgetPolicyGVR:  "BudgetPolicyList",
+			inferenceSvcGVR:  "InferenceServiceList",
+			autoscaleGVR:     "InferenceAutoscalePolicyList",
+			deploymentGVR:    "DeploymentList",
 		},
+		&unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "gateyes.io/v1alpha1",
+			"kind":       "ModelEndpoint",
+			"metadata": map[string]any{
+				"name":       "qwen-provider",
+				"namespace":  "llm",
+				"generation": int64(3),
+			},
+			"spec": map[string]any{
+				"serviceRef": map[string]any{"name": "qwen", "port": int64(8000), "path": "/v1"},
+				"model":      "Qwen/Qwen3",
+			},
+		}},
+		&unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "gateyes.io/v1alpha1",
+			"kind":       "RoutePolicy",
+			"metadata": map[string]any{
+				"name":       "qwen-route",
+				"namespace":  "llm",
+				"generation": int64(4),
+			},
+			"spec": map[string]any{
+				"targetRefs": []any{map[string]any{"kind": "ModelEndpoint", "name": "qwen-provider"}},
+			},
+		}},
+		&unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "gateyes.io/v1alpha1",
+			"kind":       "BudgetPolicy",
+			"metadata": map[string]any{
+				"name":       "tenant-budget",
+				"namespace":  "llm",
+				"generation": int64(5),
+			},
+			"spec": map[string]any{
+				"subject": map[string]any{"kind": "tenant", "name": "tenant-a"},
+			},
+		}},
 		&unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "gateyes.io/v1alpha1",
 			"kind":       "InferenceService",
@@ -56,6 +96,25 @@ func TestKubernetesStatusWriterPatchesInferenceStatus(t *testing.T) {
 	)
 	writer := &kubernetesStatusWriter{client: client}
 	snapshot := platform.ResourceSnapshot{
+		ModelEndpoints: []platform.ModelEndpoint{{
+			Metadata: platform.ObjectMeta{Name: "qwen-provider", Namespace: "llm", Generation: 3},
+			Spec: platform.ModelEndpointSpec{
+				ServiceRef: &platform.ServiceRef{Name: "qwen", Port: 8000, Path: "/v1"},
+				Model:      "Qwen/Qwen3",
+			},
+		}},
+		RoutePolicies: []platform.RoutePolicy{{
+			Metadata: platform.ObjectMeta{Name: "qwen-route", Namespace: "llm", Generation: 4},
+			Spec: platform.RoutePolicySpec{
+				TargetRefs: []platform.TargetRef{{Kind: "ModelEndpoint", Name: "qwen-provider"}},
+			},
+		}},
+		BudgetPolicies: []platform.BudgetPolicy{{
+			Metadata: platform.ObjectMeta{Name: "tenant-budget", Namespace: "llm", Generation: 5},
+			Spec: platform.BudgetPolicySpec{
+				Subject: platform.BudgetSubject{Kind: "tenant", Name: "tenant-a"},
+			},
+		}},
 		InferenceServices: []platform.InferenceService{{
 			Metadata: platform.ObjectMeta{Name: "qwen", Namespace: "llm", Generation: 7},
 			Spec: platform.InferenceServiceSpec{
@@ -101,6 +160,37 @@ func TestKubernetesStatusWriterPatchesInferenceStatus(t *testing.T) {
 	ready, _, _ := unstructured.NestedInt64(service.Object, "status", "readyReplicas")
 	if ready != 2 {
 		t.Fatalf("readyReplicas = %d, want 2", ready)
+	}
+
+	endpoint, err := client.Resource(modelEndpointGVR).Namespace("llm").Get(context.Background(), "qwen-provider", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get ModelEndpoint: %v", err)
+	}
+	health, _, _ := unstructured.NestedString(endpoint.Object, "status", "health")
+	if health != "unknown" {
+		t.Fatalf("health = %q, want unknown", health)
+	}
+	resolvedURL, _, _ := unstructured.NestedString(endpoint.Object, "status", "resolvedURL")
+	if resolvedURL != "http://qwen.llm.svc:8000/v1" {
+		t.Fatalf("resolvedURL = %q, want service URL", resolvedURL)
+	}
+
+	route, err := client.Resource(routePolicyGVR).Namespace("llm").Get(context.Background(), "qwen-route", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get RoutePolicy: %v", err)
+	}
+	active, _, _ := unstructured.NestedBool(route.Object, "status", "active")
+	if !active {
+		t.Fatalf("active = false, want true")
+	}
+
+	budget, err := client.Resource(budgetPolicyGVR).Namespace("llm").Get(context.Background(), "tenant-budget", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get BudgetPolicy: %v", err)
+	}
+	budgetObserved, _, _ := unstructured.NestedInt64(budget.Object, "status", "observedGeneration")
+	if budgetObserved != 5 {
+		t.Fatalf("budget observedGeneration = %d, want 5", budgetObserved)
 	}
 
 	policy, err := client.Resource(autoscaleGVR).Namespace("llm").Get(context.Background(), "scale-qwen", metav1.GetOptions{})

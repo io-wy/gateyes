@@ -170,16 +170,19 @@ WHERE type = 'table' AND name = 'semantic_cache_entries'`).Scan(&semanticTables)
 
 func TestCompatSQLRewritesPgvectorDDL(t *testing.T) {
 	in := `CREATE EXTENSION IF NOT EXISTS vector;
+
 CREATE TABLE semantic_cache_entries (embedding vector(1536) NOT NULL, stream_body BYTEA);
-CREATE INDEX semantic_cache_lookup_idx ON semantic_cache_entries USING hnsw (embedding vector_cosine_ops);`
+CREATE TABLE semantic_cache_entries_ollama (embedding vector NOT NULL, stream_body BYTEA);
+CREATE INDEX semantic_cache_lookup_idx ON semantic_cache_entries USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX semantic_cache_scope_idx ON semantic_cache_entries(embedding_model);`
 
 	sqlite := sqliteCompatSQL(in)
-	if strings.Contains(sqlite, "CREATE EXTENSION") || strings.Contains(sqlite, "vector(") || strings.Contains(sqlite, "USING hnsw") || strings.Contains(sqlite, "BYTEA") {
+	if strings.Contains(sqlite, "CREATE EXTENSION") || strings.Contains(sqlite, "vector") || strings.Contains(sqlite, "USING hnsw") || strings.Contains(sqlite, "BYTEA") {
 		t.Fatalf("sqliteCompatSQL() = %q, still contains pgvector syntax", sqlite)
 	}
 
 	mysql := mysqlCompatSQL(in)
-	if strings.Contains(mysql, "CREATE EXTENSION") || strings.Contains(mysql, "vector(") || strings.Contains(mysql, "USING hnsw") || strings.Contains(mysql, "BYTEA") {
+	if strings.Contains(mysql, "CREATE EXTENSION") || strings.Contains(mysql, "vector") || strings.Contains(mysql, "USING hnsw") || strings.Contains(mysql, "BYTEA") {
 		t.Fatalf("mysqlCompatSQL() = %q, still contains pgvector syntax", mysql)
 	}
 }

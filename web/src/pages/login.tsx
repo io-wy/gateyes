@@ -13,7 +13,8 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useAuthStore } from '@/stores/auth-store'
-import { dashboardApi } from '@/api/dashboard'
+import { authApi } from '@/api/auth'
+import { isTenantUser } from '@/lib/authz'
 import { toast } from 'sonner'
 
 type AuthMode = 'apikey' | 'oidc'
@@ -38,6 +39,7 @@ export function LoginPage() {
   const [oidcEnabled, setOidcEnabled] = useState(false)
   const [oidcLoading, setOidcLoading] = useState(false)
   const setAPIKeyToken = useAuthStore((state) => state.setAPIKeyToken)
+  const setIdentity = useAuthStore((state) => state.setIdentity)
 
   useEffect(() => {
     axios
@@ -61,10 +63,12 @@ export function LoginPage() {
         throw new Error('格式错误，请使用 key:secret 格式')
       }
       setAPIKeyToken(trimmed)
-      await dashboardApi.getSummary()
-      navigate({ to: '/' })
+      const identity = await authApi.me()
+      setIdentity(identity)
+      navigate({ to: isTenantUser(identity) ? '/playground' : '/' })
     } catch (err) {
       setAPIKeyToken('')
+      setIdentity(null)
       toast.error(err instanceof Error ? err.message : '登录失败')
     } finally {
       setLoading(false)

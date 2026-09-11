@@ -70,11 +70,25 @@ jobs:
       - name: Unit tests
         run: go test ./...
 
+      - name: Router plugin tests
+        working-directory: plugins/routers
+        run: go test ./...
+
       - name: Race tests
+        run: go test -race ./...
+
+      - name: Router plugin race tests
+        working-directory: plugins/routers
         run: go test -race ./...
 
       - name: Vet
         run: go vet ./...
+
+      - name: Router plugin vet and build
+        working-directory: plugins/routers
+        run: |
+          go vet ./...
+          go build ./cmd/vllm-prefix-cache-router ./cmd/least-load-router ./cmd/session-affinity-router
 
       - name: Migration smoke test
         run: go run ./cmd/migrate -config configs/config.example.yaml -action up

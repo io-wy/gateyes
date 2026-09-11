@@ -4,16 +4,15 @@
 
 ## 上下文体系
 
-本项目的上下文分四层递进，按需加载：
+本项目的上下文分三层递进，按需加载：
 
-| 层级            | 位置                     | 内容                                      | 加载时机       |
-| --------------- | ------------------------ | ----------------------------------------- | -------------- |
-| L1 项目宪法     | `CLAUDE.md`（本文件）  | 操作原则、编码约束、流程约束              | 每次会话       |
-| L2 全局规则     | `~/.claude/rules/*.md` | 不可变性、测试要求、性能策略              | 每次会话       |
-| L3 项目领域知识 | `docs/`                | 架构决策、API 契约、运行时机制            | 涉及对应模块时 |
-| L4 专业 Skill   | `.claude/skills/`      | Go 审查、变更影响扫描、协议开发、踩坑进化 | 任务级匹配     |
+| 层级          | 位置                     | 内容                                      | 加载时机   |
+| ------------- | ------------------------ | ----------------------------------------- | ---------- |
+| L1 项目宪法   | `CLAUDE.md`（本文件）    | 操作原则、编码约束、流程约束              | 每次会话   |
+| L2 全局规则   | `~/.claude/rules/*.md`   | 不可变性、测试要求、性能策略              | 每次会话   |
+| L3 专业 Skill | `.claude/skills/`        | Go 审查、变更影响扫描、协议开发、踩坑进化 | 任务级匹配 |
 
-**加载规则**：遇到不确定的实现细节时，按 L3→L4 顺序查找，禁止凭训练记忆编造。
+**加载规则**：遇到不确定的实现细节时，先查源码和配置，再按需加载 L3，禁止凭训练记忆编造。
 
 ## 编码约束（反例免疫格式）
 
@@ -191,10 +190,9 @@ Why: 协议漂移是最危险的 bug——上游/下游都按文档实现，你�
 
 1. **调用点扫描**：修改了函数签名/接口 → Grep 所有调用点，列影响范围后再改
 2. **正反操作配对**：新增了 Open/Create/Insert/Start → 确认有对应的 Close/Destroy/Delete/Stop
-3. **配置同步**：修改了代码中的配置项 → 检查 config struct、配置文件 example、docs 是否同步
+3. **配置同步**：修改了代码中的配置项 → 检查 config struct 和配置文件 example 是否同步
 4. **测试同步**：修改了实现逻辑 → 检查对应测试是否需要更新
-5. **文档同步**：修改了公共接口 → 检查 API 文档、README 是否需要更新
-6. **Migration 同步**：修改了数据模型 → 检查是否需要新增数据库 migration
+5. **Migration 同步**：修改了数据模型 → 检查是否需要新增数据库 migration
 
 执行方式：
 
@@ -286,31 +284,16 @@ Why: 协议漂移是最危险的 bug——上游/下游都按文档实现，你�
 
 架构层级规则由 `harness.json` 定义。高层可 import 低层，反方向禁止。
 
-### 目录与输出路径约定
+### 配置与模板路径约定
 
-| 目录                                       | 用途                       | 进 git?                  |
-| ------------------------------------------ | -------------------------- | ------------------------ |
-| `docs/docs-project/`                     | 项目自有产出文档           | 是                       |
-| `docs/docs-ref/`                         | 跨项目规范参考             | 是                       |
-| `docs/docs-tmp/`                         | 临时缓存（Skill 自动写入） | 仅保留 README/.gitignore |
-| `docs/docs-project/specs/`               | 规格工件（spec 体系）      | 是                       |
-| `.claude/skills/core/`                   | 核心 Skill                 | 是                       |
-| `.claude/skills/plugins/`                | 插件 Skill                 | 是                       |
-| `docs/docs-ref/templates/init/`          | Starter 骨架模板参考       | 是                       |
-| `docs/docs-ref/templates/global-skills/` | 全局 Skill 参考            | 是                       |
+| 目录                        | 用途                          | 进 git? |
+| --------------------------- | ----------------------------- | ------- |
+| `configs/`                  | 应用配置和环境示例            | 是      |
+| `deploy/docker/`            | Docker、Prometheus、Grafana   | 是      |
+| `deploy/openapi/`           | 镜像内使用的 OpenAPI 资产     | 是      |
+| `deploy/helm/`              | Helm chart 和环境 values      | 是      |
+| `templates/init/`           | Starter 初始化配置模板        | 是      |
+| `.claude/skills/core/`      | 核心 Skill                    | 是      |
+| `.claude/skills/plugins/`   | 插件 Skill                    | 是      |
 
-### Skill 输出物默认路径
-
-| 输出类型              | 默认路径                                             |
-| --------------------- | ---------------------------------------------------- |
-| 协议/三方 API 文档    | `docs/docs-tmp/protocols/<api-name>.md`            |
-| 调研报告/竞品分析     | `docs/docs-tmp/research/<topic>-<YYYY-MM-DD>.md`   |
-| 代码审查/影响分析报告 | `docs/docs-tmp/analysis/<task-id>-<YYYY-MM-DD>.md` |
-| 架构决策(ADR)         | `docs/docs-project/architecture/<topic>.md`        |
-| API 契约              | `docs/docs-project/api/<service>.md`               |
-| 运维手册              | `docs/docs-project/runbook/<service>.md`           |
-| 规格工件              | `docs/docs-project/specs/<YYYYMMDD-slug>/`         |
-| 通用规范              | `docs/docs-ref/<topic>.md`                         |
-| 踩坑日志              | `.claude/skills/core/pitfall-journal.md`           |
-
-Skills 索引见 `.claude/skills/README.md`，工作流选择见 `docs/docs-ref/workflow-bridge.md`，模板协作指南见 `claude.template.md`。
+Skills 索引见 `.claude/skills/README.md`。

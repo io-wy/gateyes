@@ -39,7 +39,7 @@ description: 将设计方案拆分为可执行 Task 列表。每个 Task 包含 
 
 ## 输出格式
 
-计划写入 `docs/plans/YYYY-MM-DD-<简述>.md`：
+计划写入 `.claude/plans/YYYY-MM-DD-<简述>.md`：
 
 ```markdown
 # 实施计划: <需求标题>

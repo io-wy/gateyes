@@ -1,0 +1,33 @@
+services:
+  vllm-prefix-cache-router:
+    build:
+      context: ../..
+      dockerfile: plugins/routers/Dockerfile
+      target: vllm-prefix-cache-router
+    command:
+      - --listen=:50051
+      - --prefix-min-match-length=128
+      - --chunk-size=128
+    ports:
+      - "50051:50051"
+
+  least-load-router:
+    build:
+      context: ../..
+      dockerfile: plugins/routers/Dockerfile
+      target: least-load-router
+    command:
+      - --listen=:50052
+      - --signal-max-age=15s
+    ports:
+      - "50052:50052"
+
+  session-affinity-router:
+    build:
+      context: ../..
+      dockerfile: plugins/routers/Dockerfile
+      target: session-affinity-router
+    command:
+      - --listen=:50053
+    ports:
+      - "50053:50053"

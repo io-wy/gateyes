@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS semantic_cache_entries (
 	prompt_hash TEXT NOT NULL,
 	prompt_canonical TEXT NOT NULL DEFAULT '{}',
 	prompt_text TEXT NOT NULL DEFAULT '',
-	embedding vector(1536) NOT NULL,
+	embedding vector NOT NULL,
 	response_body TEXT NOT NULL DEFAULT '{}',
 	stream_body BYTEA,
 	provider_name TEXT NOT NULL,
@@ -33,6 +33,3 @@ ON semantic_cache_entries(tenant_id, prompt_hash);
 
 CREATE INDEX IF NOT EXISTS idx_semantic_cache_expiry
 ON semantic_cache_entries(expires_at);
-
-CREATE INDEX IF NOT EXISTS idx_semantic_cache_vector
-ON semantic_cache_entries USING hnsw (embedding vector_cosine_ops);

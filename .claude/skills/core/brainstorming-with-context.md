@@ -52,7 +52,7 @@ description: 结构化需求澄清与方案设计。You MUST use this before any
 4. **变更类型标注**：新增/修改/删除
 5. **影响范围标注**：哪些 API/模块受影响
 
-保存到 `docs/plans/`，告知 io-wy 路径。
+需要持久化时保存到 `.claude/plans/`，告知 io-wy 路径。
 
 ## 常见错误
 

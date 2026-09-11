@@ -11,7 +11,11 @@ import type {
 } from '@/types/service'
 
 export const servicesApi = {
-  list: (params?: { project_id?: string; enabled?: boolean }) =>
+  list: (params?: {
+    project_id?: string
+    enabled?: boolean
+    publish_status?: string
+  }) =>
     client.get<Service[]>('/services', { params }),
   get: (id: string) => client.get<ServiceDetail>(`/services/${id}`),
   create: (data: CreateServiceRequest) =>

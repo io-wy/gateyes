@@ -277,6 +277,7 @@ func (h *Handler) Embeddings(c *gin.Context) {
 	}
 
 	var selected provider.Provider
+	var embeddingProviders []provider.Provider
 	for _, name := range providerNames {
 		p, ok := h.deps.ProviderMgr.Get(name)
 		if !ok {
@@ -292,8 +293,19 @@ func (h *Handler) Embeddings(c *gin.Context) {
 		if len(identity.APIKeyModels) > 0 && !slices.Contains(identity.APIKeyModels, p.Model()) {
 			continue
 		}
-		selected = p
-		break
+		embeddingProviders = append(embeddingProviders, p)
+	}
+	requestedModel := strings.TrimSpace(req.Model)
+	if requestedModel != "" {
+		for _, p := range embeddingProviders {
+			if p.Model() == requestedModel {
+				selected = p
+				break
+			}
+		}
+	}
+	if selected == nil && len(embeddingProviders) > 0 {
+		selected = embeddingProviders[0]
 	}
 
 	if selected == nil {

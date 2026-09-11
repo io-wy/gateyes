@@ -8,6 +8,7 @@ import {
 import { AppLayout } from '@/components/layout/app-layout'
 import {
   DashboardPage,
+  CatalogPage,
   LoginPage,
   OIDCCallbackPage,
   PlaygroundPage,
@@ -63,6 +64,12 @@ const dashboardRoute = createRoute({
   getParentRoute: () => authLayoutRoute,
   path: '/',
   component: DashboardPage,
+})
+
+const catalogRoute = createRoute({
+  getParentRoute: () => authLayoutRoute,
+  path: '/catalog',
+  component: CatalogPage,
 })
 
 const providersRoute = createRoute({
@@ -142,6 +149,7 @@ const routeTree = rootRoute.addChildren([
   oidcCallbackRoute,
   authLayoutRoute.addChildren([
     dashboardRoute,
+    catalogRoute,
     playgroundRoute,
     providersRoute,
     keysRoute,

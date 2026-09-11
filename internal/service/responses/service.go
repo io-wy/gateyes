@@ -309,6 +309,7 @@ func buildRouteContext(ctx context.Context, req *provider.ResponseRequest, sessi
 		HasTools:            req.HasToolsRequested(),
 		HasImages:           req.HasImageInput(),
 		HasStructuredOutput: req.HasStructuredOutputRequest(),
+		PrefixText:          req.PrefixRoutingText(),
 	})
 }
 

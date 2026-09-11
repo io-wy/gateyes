@@ -231,10 +231,16 @@ export function PluginsPage() {
                       </span>
                     </TableCell>
                     <TableCell>
-                      <Switch
-                        checked={plugin.enabled}
-                        onCheckedChange={() => handleToggle(plugin)}
-                      />
+                      <div className="flex items-center gap-2">
+                        <Switch
+                          checked={plugin.enabled}
+                          onCheckedChange={() => handleToggle(plugin)}
+                          disabled={plugin.managed}
+                        />
+                        <Badge variant={plugin.runtime_status === 'missing_file' ? 'destructive' : 'outline'}>
+                          {plugin.runtime_status || (plugin.enabled ? 'enabled' : 'disabled')}
+                        </Badge>
+                      </div>
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-2">
@@ -242,6 +248,7 @@ export function PluginsPage() {
                           variant="ghost"
                           size="icon"
                           onClick={() => setDeletingPlugin(plugin)}
+                          disabled={plugin.managed}
                           aria-label="删除"
                         >
                           <Trash2 className="text-destructive h-4 w-4" />

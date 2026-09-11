@@ -45,3 +45,20 @@ func TestMessageUnmarshalJSONAndRequestFeatureHelpers(t *testing.T) {
 		t.Fatalf("EstimateAdmissionTokens() = %d, want prompt + output budget", got)
 	}
 }
+
+func TestPrefixRoutingTextMatchesVLLMPrefixAwarePromptExtraction(t *testing.T) {
+	req := &ResponseRequest{Messages: []Message{
+		{Role: "system", Content: []ContentBlock{{Type: "text", Text: "system prompt"}}},
+		{Role: "assistant", Content: nil},
+		{Role: "user", Content: []ContentBlock{
+			{Type: "text", Text: "hello"},
+			{Type: "image", Image: &ContentImage{URL: "https://example.com/image.png"}},
+			{Type: "text", Text: ""},
+			{Type: "text", Text: "world"},
+		}},
+	}}
+
+	if got, want := req.PrefixRoutingText(), "system prompt\nhello  world"; got != want {
+		t.Fatalf("PrefixRoutingText() = %q, want %q", got, want)
+	}
+}

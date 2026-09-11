@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Search } from 'lucide-react'
+import { Search, Eye } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -20,6 +20,24 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { auditApi, type AuditLog } from '@/api/audit'
+import { JsonBlock } from '@/components/json-block'
+
+function formatTime(value?: string) {
+  if (!value) return '-'
+  try {
+    return new Date(value).toLocaleString('zh-CN')
+  } catch {
+    return value
+  }
+}
+
+function CodeValue({ children }: { children: React.ReactNode }) {
+  return (
+    <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono">
+      {children}
+    </code>
+  )
+}
 
 export function AuditPage() {
   const [filters, setFilters] = useState({
@@ -98,22 +116,27 @@ export function AuditPage() {
               )}
               {listData?.Items.map((log) => (
                 <TableRow key={log.id}>
-                  <TableCell>{log.created_at}</TableCell>
+                  <TableCell className="text-xs">
+                    {formatTime(log.created_at)}
+                  </TableCell>
                   <TableCell>
                     <Badge variant="outline">{log.action}</Badge>
                   </TableCell>
                   <TableCell>{log.resource_type}</TableCell>
-                  <TableCell className="font-mono text-xs">
-                    {log.resource_id}
+                  <TableCell className="font-mono text-xs max-w-[200px] truncate">
+                    {log.resource_id || '-'}
                   </TableCell>
-                  <TableCell>{log.actor_user_id || '-'}</TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {log.actor_user_id || '-'}
+                  </TableCell>
                   <TableCell className="text-right">
                     <Button
                       variant="ghost"
-                      size="sm"
+                      size="icon"
                       onClick={() => setSelectedLog(log)}
+                      title="查看详情"
                     >
-                      详情
+                      <Eye className="h-4 w-4" />
                     </Button>
                   </TableCell>
                 </TableRow>
@@ -131,35 +154,58 @@ export function AuditPage() {
         open={!!selectedLog}
         onOpenChange={(open) => !open && setSelectedLog(null)}
       >
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-w-4xl overflow-hidden lg:max-w-5xl">
           <DialogHeader>
-            <DialogTitle>审计详情</DialogTitle>
+            <DialogTitle className="flex items-center gap-2 font-mono text-sm">
+              <span className="text-muted-foreground">Audit</span>
+              {selectedLog?.id}
+            </DialogTitle>
           </DialogHeader>
-          <div className="space-y-2 text-sm">
-            <div>
-              <span className="font-medium">Action: </span>
-              {selectedLog?.action}
+          {selectedLog && (
+            <div className="min-w-0 space-y-4">
+              <div className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
+                <div>
+                  <span className="text-muted-foreground">Action: </span>
+                  <Badge variant="outline">{selectedLog.action}</Badge>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Resource: </span>
+                  <CodeValue>
+                    {selectedLog.resource_type}/{selectedLog.resource_id || '-'}
+                  </CodeValue>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Actor User: </span>
+                  <CodeValue>{selectedLog.actor_user_id || '-'}</CodeValue>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Actor API Key: </span>
+                  <CodeValue>{selectedLog.actor_api_key_id || '-'}</CodeValue>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Role: </span>
+                  <CodeValue>{selectedLog.actor_role || '-'}</CodeValue>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">IP: </span>
+                  <CodeValue>{selectedLog.ip_address || '-'}</CodeValue>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Request ID: </span>
+                  <CodeValue>{selectedLog.request_id || '-'}</CodeValue>
+                </div>
+                <div>
+                  <span className="text-muted-foreground">Tenant: </span>
+                  <CodeValue>{selectedLog.tenant_id}</CodeValue>
+                </div>
+                <div className="sm:col-span-2">
+                  <span className="text-muted-foreground">Time: </span>
+                  {formatTime(selectedLog.created_at)}
+                </div>
+              </div>
+              <JsonBlock title="Payload" value={selectedLog.payload} />
             </div>
-            <div>
-              <span className="font-medium">Resource: </span>
-              {selectedLog?.resource_type}/{selectedLog?.resource_id}
-            </div>
-            <div>
-              <span className="font-medium">Actor: </span>
-              {selectedLog?.actor_user_id || '-'} ({selectedLog?.actor_role})
-            </div>
-            <div>
-              <span className="font-medium">IP: </span>
-              {selectedLog?.ip_address}
-            </div>
-            <div>
-              <span className="font-medium">Request ID: </span>
-              {selectedLog?.request_id}
-            </div>
-            <pre className="bg-muted max-h-64 overflow-auto rounded-md p-4 text-xs">
-              {JSON.stringify(selectedLog?.payload || {}, null, 2)}
-            </pre>
-          </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>

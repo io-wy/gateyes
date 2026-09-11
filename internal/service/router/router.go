@@ -593,6 +593,14 @@ func (r *Router) inferenceStateLocked(name string) (InferenceState, bool) {
 	return state, true
 }
 
+// InferenceState returns the latest non-stale inference metrics snapshot for a
+// provider. It is safe for callers outside the router package.
+func (r *Router) InferenceState(name string) (InferenceState, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.inferenceStateLocked(name)
+}
+
 func (r *Router) PromoteAffinity(ctx RouteContext, providerName string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

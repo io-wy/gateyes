@@ -24,7 +24,7 @@ COPY --from=builder /out/gateway /app/gateway
 COPY --from=builder /out/gateway-migrate /app/gateway-migrate
 COPY --from=builder /out/gateway-operator /app/gateway-operator
 COPY configs /app/configs
-COPY docs/docs-project/assets/openapi.json /app/docs/openapi.json
+COPY deploy/openapi/openapi.json /app/docs/openapi.json
 
 EXPOSE 8028
 ENTRYPOINT ["/app/gateway"]

@@ -10,7 +10,8 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { useAuthStore } from '@/stores/auth-store'
-import { dashboardApi } from '@/api/dashboard'
+import { authApi } from '@/api/auth'
+import { isTenantUser } from '@/lib/authz'
 import { toast } from 'sonner'
 
 function parseHashParams(hash: string): Record<string, string> {
@@ -27,6 +28,7 @@ function parseHashParams(hash: string): Record<string, string> {
 export function OIDCCallbackPage() {
   const navigate = useNavigate()
   const setOIDCTokens = useAuthStore((state) => state.setOIDCTokens)
+  const setIdentity = useAuthStore((state) => state.setIdentity)
   const [processed, setProcessed] = useState(false)
 
   const params = useMemo(() => parseHashParams(window.location.hash), [])
@@ -51,16 +53,18 @@ export function OIDCCallbackPage() {
     setOIDCTokens(accessToken, refreshToken)
     setProcessed(true)
 
-    dashboardApi
-      .getSummary()
-      .then(() => {
+    authApi
+      .me()
+      .then((identity) => {
+        setIdentity(identity)
         toast.success('登录成功')
-        navigate({ to: '/' })
+        navigate({ to: isTenantUser(identity) ? '/playground' : '/' })
       })
       .catch((err) => {
+        setIdentity(null)
         toast.error(err instanceof Error ? err.message : '令牌验证失败')
       })
-  }, [processed, errorMessage, accessToken, refreshToken, setOIDCTokens, navigate])
+  }, [processed, errorMessage, accessToken, refreshToken, setOIDCTokens, setIdentity, navigate])
   /* eslint-enable react-hooks/set-state-in-effect */
 
   if (errorMessage) {

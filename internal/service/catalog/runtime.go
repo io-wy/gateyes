@@ -257,17 +257,6 @@ func (s *Service) precheck(ctx context.Context, identity *repository.AuthIdentit
 			})
 		}
 	}
-	if s.limiter != nil && s.auth != nil {
-		if !s.limiter.Allow(ctx, identity.APIKey, s.auth.EffectiveRateLimitQPS(identity), req.EstimateAdmissionTokens()) {
-			return ErrRateLimited
-		}
-		if !s.limiter.CheckTenant(identity.TenantID, req.EstimateAdmissionTokens()) {
-			return ErrRateLimited
-		}
-		if !s.limiter.CheckModel(req.Model, req.EstimateAdmissionTokens()) {
-			return ErrRateLimited
-		}
-	}
 	return nil
 }
 

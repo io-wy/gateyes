@@ -17,13 +17,19 @@ import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { JsonBlock } from '@/components/json-block'
 import { servicesApi } from '@/api/services'
+import { providersApi } from '@/api/providers'
 import {
   runPlaygroundRequest,
+  listGatewayModels,
+  type GatewayModel,
   type PlaygroundCacheTrace,
   type PlaygroundEvent,
   type PlaygroundSurface,
 } from '@/api/playground'
+import type { Provider } from '@/types/provider'
 import { useAuthStore } from '@/stores/auth-store'
+import { isAdminIdentity } from '@/lib/authz'
+import type { Service } from '@/types/service'
 
 const SURFACES: Array<{
   id: PlaygroundSurface
@@ -140,8 +146,31 @@ function cacheBadgeText(cache?: PlaygroundCacheTrace | null) {
   return `cache ${cache.result}${suffix}`
 }
 
+function supportsSurface(provider: Provider, surface: PlaygroundSurface) {
+  if (surface === 'invoke') return false
+  if (surface === 'messages') return provider.supports_messages
+  if (surface === 'chat') return provider.supports_chat
+  return provider.supports_responses
+}
+
+function serviceSupportsSurface(service: Service, surface: PlaygroundSurface) {
+  const surfaces = service.config?.surfaces
+  return !surfaces?.length || surfaces.includes(surface)
+}
+
+function gatewayModelSupportsSurface(model: GatewayModel, surface: PlaygroundSurface) {
+  if (surface === 'invoke') return false
+  const capabilities = model.capabilities
+  if (!capabilities) return true
+  if (surface === 'messages') return capabilities.messages
+  if (surface === 'chat') return capabilities.chat
+  return capabilities.responses
+}
+
 export function PlaygroundPage() {
   const token = useAuthStore((state) => state.token)
+  const identity = useAuthStore((state) => state.identity)
+  const isAdmin = isAdminIdentity(identity)
   const abortRef = useRef<AbortController | null>(null)
   const [surface, setSurface] = useState<PlaygroundSurface>('responses')
   const [serviceId, setServiceId] = useState('')
@@ -166,7 +195,19 @@ export function PlaygroundPage() {
 
   const { data: services } = useQuery({
     queryKey: ['services'],
-    queryFn: () => servicesApi.list(),
+    queryFn: () => servicesApi.list({ publish_status: 'published', enabled: true }),
+  })
+
+  const { data: providers } = useQuery({
+    queryKey: ['providers'],
+    queryFn: () => providersApi.list(),
+    enabled: isAdmin,
+  })
+
+  const { data: gatewayModels } = useQuery({
+    queryKey: ['gateway-models'],
+    queryFn: () => listGatewayModels(),
+    enabled: !isAdmin && !!token,
   })
 
   const publishedServices = useMemo(
@@ -179,7 +220,51 @@ export function PlaygroundPage() {
     [publishedServices, serviceId]
   )
   const activeServiceId = serviceId || selectedService?.id || ''
-  const activeModel = model || selectedService?.default_model || ''
+  const modelOptions = useMemo(() => {
+    const grouped = new Map<string, string[]>()
+    if (isAdmin) {
+      for (const provider of providers ?? []) {
+        if (!provider.enabled || !provider.model || !supportsSurface(provider, surface)) {
+          continue
+        }
+        const names = grouped.get(provider.model) ?? []
+        names.push(provider.name)
+        grouped.set(provider.model, names)
+      }
+    } else {
+      for (const service of publishedServices) {
+        if (!service.default_model || !serviceSupportsSurface(service, surface)) {
+          continue
+        }
+        const names = grouped.get(service.default_model) ?? []
+        names.push(service.name)
+        grouped.set(service.default_model, names)
+      }
+      for (const item of gatewayModels ?? []) {
+        if (!item.id || item.enabled === false || !gatewayModelSupportsSurface(item, surface)) {
+          continue
+        }
+        const names = grouped.get(item.id) ?? []
+        names.push(item.provider || item.owned_by || 'gateway')
+        grouped.set(item.id, names)
+      }
+    }
+    return Array.from(grouped.entries())
+      .map(([value, providerNames]) => ({ value, providerNames }))
+      .sort((a, b) => a.value.localeCompare(b.value))
+  }, [gatewayModels, isAdmin, providers, publishedServices, surface])
+  const hasSelectedModel = modelOptions.some((item) => item.value === model)
+  const hasServiceDefaultModel = modelOptions.some(
+    (item) => item.value === selectedService?.default_model
+  )
+  const activeModel =
+    surface === 'invoke'
+      ? ''
+      : hasSelectedModel
+        ? model
+        : hasServiceDefaultModel
+          ? selectedService?.default_model || ''
+          : modelOptions[0]?.value || selectedService?.default_model || ''
 
   useEffect(() => {
     return () => {
@@ -256,6 +341,10 @@ export function PlaygroundPage() {
       setStatus(result.status)
       setRawResponse(result.raw)
       setCacheTrace(result.cache ?? null)
+      if (stream) {
+        setStreamText(result.streamText)
+        setEventLog(result.events)
+      }
       if (!stream) {
         setResultData(result.data)
       }
@@ -295,7 +384,7 @@ export function PlaygroundPage() {
               </div>
             ) : (
               <Select value={activeServiceId} onValueChange={(value) => setServiceId(value ?? '')}>
-                <SelectTrigger className="h-9">
+                <SelectTrigger aria-label="选择 service" className="h-9">
                   <SelectValue placeholder="选择 service">
                     {selectedService
                       ? `${selectedService.name} / ${selectedService.request_prefix}`
@@ -315,13 +404,29 @@ export function PlaygroundPage() {
 
           <div className="min-w-[140px] space-y-1.5">
             <Label className="text-xs">模型</Label>
-            <Input
-              className="h-9"
-              value={surface === 'invoke' ? '' : activeModel}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder={selectedService?.default_model || 'model'}
-              disabled={surface === 'invoke'}
-            />
+            <Select
+              value={activeModel}
+              onValueChange={(value) => setModel(value ?? '')}
+              disabled={surface === 'invoke' || modelOptions.length === 0}
+            >
+              <SelectTrigger aria-label="选择模型" className="h-9 w-[220px]">
+                <SelectValue placeholder={surface === 'invoke' ? 'invoke 不需要模型' : '选择模型'}>
+                  {surface === 'invoke'
+                    ? 'invoke 不需要模型'
+                    : activeModel || '暂无可选模型'}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {modelOptions.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    <span className="font-medium">{item.value}</span>
+                    <span className="text-muted-foreground text-xs">
+                      {item.providerNames.join(', ')}
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <div className="space-y-1.5">

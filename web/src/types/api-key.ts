@@ -26,7 +26,7 @@ export interface APIKey {
 }
 
 export interface CreateAPIKeyRequest {
-  user_id: string
+  user_id?: string
   project_id?: string
   budget_usd?: number
   rate_limit_qps?: number

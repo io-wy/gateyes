@@ -16,6 +16,23 @@ export interface PlaygroundCacheTrace {
   promptCacheKey?: string
 }
 
+export interface GatewayModel {
+  id: string
+  provider?: string
+  owned_by?: string
+  enabled?: boolean
+  capabilities?: {
+    responses?: boolean
+    chat?: boolean
+    messages?: boolean
+    embeddings?: boolean
+    images?: boolean
+    stream?: boolean
+    tools?: boolean
+    structured_output?: boolean
+  }
+}
+
 export interface PlaygroundResult {
   ok: boolean
   status: number
@@ -48,6 +65,18 @@ function authHeaders() {
     headers.Authorization = `Bearer ${token}`
   }
   return headers
+}
+
+export async function listGatewayModels(): Promise<GatewayModel[]> {
+  const res = await fetch('/v1/models', {
+    method: 'GET',
+    headers: authHeaders(),
+  })
+  if (!res.ok) {
+    throw new Error(`models request failed: ${res.status}`)
+  }
+  const body = (await res.json()) as { data?: GatewayModel[] }
+  return body.data ?? []
 }
 
 function cacheTraceFromHeaders(headers: Headers): PlaygroundCacheTrace | undefined {
@@ -95,6 +124,28 @@ function decodeEventBlock(block: string): PlaygroundEvent | null {
 }
 
 function extractText(payload: Record<string, unknown>) {
+  const textFromContent = (content: unknown): string => {
+    if (typeof content === 'string') {
+      return content
+    }
+    if (!Array.isArray(content)) {
+      return ''
+    }
+    return content
+      .map((block) => {
+        if (!block || typeof block !== 'object') {
+          return ''
+        }
+        const item = block as Record<string, unknown>
+        return typeof item.text === 'string'
+          ? item.text
+          : typeof item.content === 'string'
+            ? item.content
+            : ''
+      })
+      .join('')
+  }
+
   const direct =
     typeof payload.delta === 'string'
       ? payload.delta
@@ -131,14 +182,29 @@ function extractText(payload: Record<string, unknown>) {
     if (delta && typeof delta.content === 'string') {
       return delta.content
     }
+    if (delta) {
+      const contentText = textFromContent(delta.content)
+      if (contentText) {
+        return contentText
+      }
+    }
     const message = choice.message as Record<string, unknown> | undefined
     if (message && typeof message.content === 'string') {
       return message.content
+    }
+    if (message) {
+      const contentText = textFromContent(message.content)
+      if (contentText) {
+        return contentText
+      }
     }
   }
 
   const response = payload.response as Record<string, unknown> | undefined
   if (response) {
+    if (typeof response.output_text === 'string') {
+      return response.output_text
+    }
     if (typeof response.status === 'string' && response.status === 'completed') {
       return ''
     }
@@ -167,11 +233,13 @@ async function readStream(
 ) {
   const reader = response.body?.getReader()
   if (!reader) {
-    return ''
+    return { raw: '', events: [], streamText: '' }
   }
   const decoder = new TextDecoder()
   let buffer = ''
   let raw = ''
+  let streamText = ''
+  const events: PlaygroundEvent[] = []
 
   while (true) {
     const { done, value } = await reader.read()
@@ -180,7 +248,7 @@ async function readStream(
     }
     const chunk = decoder.decode(value, { stream: true })
     raw += chunk
-    buffer += chunk
+    buffer = (buffer + chunk).replace(/\r\n/g, '\n').replace(/\r/g, '\n')
 
     let index = buffer.indexOf('\n\n')
     while (index >= 0) {
@@ -188,6 +256,7 @@ async function readStream(
       buffer = buffer.slice(index + 2)
       const event = decodeEventBlock(block)
       if (event) {
+        events.push(event)
         onEvent(event)
         if (
           event.json &&
@@ -198,6 +267,7 @@ async function readStream(
           const payload = event.json as Record<string, unknown>
           const text = extractText(payload)
           if (text) {
+            streamText += text
             onText(text)
           }
         }
@@ -206,14 +276,34 @@ async function readStream(
     }
   }
 
+  const tail = decoder.decode()
+  if (tail) {
+    raw += tail
+    buffer = (buffer + tail).replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  }
+
   if (buffer.trim()) {
     const event = decodeEventBlock(buffer)
     if (event) {
+      events.push(event)
       onEvent(event)
+      if (
+        event.json &&
+        typeof event.json === 'object' &&
+        !event.event.includes('completed') &&
+        !event.event.endsWith('.done')
+      ) {
+        const payload = event.json as Record<string, unknown>
+        const text = extractText(payload)
+        if (text) {
+          streamText += text
+          onText(text)
+        }
+      }
     }
   }
 
-  return raw
+  return { raw, events, streamText }
 }
 
 export async function runPlaygroundRequest({
@@ -243,7 +333,7 @@ export async function runPlaygroundRequest({
   const contentType = response.headers.get('content-type') || ''
   const cache = cacheTraceFromHeaders(response.headers)
   if (contentType.includes('text/event-stream')) {
-    const raw = await readStream(
+    const streamed = await readStream(
       response,
       (event) => onEvent?.(event),
       (text) => onText?.(text)
@@ -252,10 +342,10 @@ export async function runPlaygroundRequest({
       ok: response.ok,
       status: response.status,
       contentType,
-      raw,
+      raw: streamed.raw,
       data: null,
-      events: [],
-      streamText: '',
+      events: streamed.events,
+      streamText: streamed.streamText,
       cache,
     }
   }

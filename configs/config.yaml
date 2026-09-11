@@ -115,10 +115,10 @@ cache:
   singleflight: true
   promptRewrite: true
   semantic:
-    enabled: false
+    enabled: true
     backend: pgvector
-    embeddingProvider: mock-embeddings
-    embeddingModel: mock-embedding-model
+    embeddingProvider: ollama-embeddings
+    embeddingModel: nomic-embed-text:latest
     threshold: 0.92
     maxCandidates: 5
     ttlSeconds: 3600
@@ -127,9 +127,25 @@ cache:
     allowedSurfaces:
       - responses
       - service_responses
-    requireServiceOptIn: true
+    requireServiceOptIn: false
 
 providers:
+  - name: ollama-embeddings
+    type: openai
+    vendor: ollama
+    endpoint: chat
+    baseURL: http://host.docker.internal:11434/v1
+    apiKey: ollama-local
+    model: nomic-embed-text:latest
+    weight: 100
+    maxTokens: 2048
+    timeout: 120
+    enabled: true
+    capabilities:
+      embeddings: true
+      chat: false
+      stream: false
+
   - name: codexapis
     type: openai
     vendor: openai

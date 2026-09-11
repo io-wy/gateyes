@@ -40,19 +40,28 @@ type RouteContext struct {
 	HasTools            bool
 	HasImages           bool
 	HasStructuredOutput bool
+	PrefixText          string
 	RoutingProfile      string
 	StrategyOverride    string
 }
 
 // CandidateInfo holds the data passed to a router plugin for each provider.
 type CandidateInfo struct {
-	Name     string
-	Model    string
-	Weight   int
-	UnitCost float64
-	Load     int64
-	TPM      int64
-	Healthy  bool
+	Name                   string
+	Model                  string
+	Weight                 int
+	UnitCost               float64
+	Load                   int64
+	TPM                    int64
+	Healthy                bool
+	AvgLatencyMs           float64
+	AvgTTFTMs              float64
+	QueueRunning           float64
+	QueueWaiting           float64
+	GPUKVCacheUsagePerc    float64
+	CPUKVCacheUsagePerc    float64
+	PrefixCacheHitRate     float64
+	SignalsUpdatedAtUnixMs int64
 }
 
 // Client is the common interface for all gRPC plugin clients.

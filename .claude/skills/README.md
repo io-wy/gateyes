@@ -60,30 +60,6 @@
 
 ---
 
-## Global Skills（全局安装·6 个）
-
-跨项目通用能力，建议安装到 `~/.claude/skills/`。见 `docs/docs-ref/docs/docs-ref/templates/global-skills/`。
-
-```bash
-cp docs/docs-ref/docs/docs-ref/templates/global-skills/deep-thinking.md ~/.claude/skills/
-cp docs/docs-ref/docs/docs-ref/templates/global-skills/prompt-engineering.md ~/.claude/skills/
-cp docs/docs-ref/docs/docs-ref/templates/global-skills/technical_writing.md ~/.claude/skills/
-cp docs/docs-ref/docs/docs-ref/templates/global-skills/devex-tooling.md ~/.claude/skills/
-cp docs/docs-ref/docs/docs-ref/templates/global-skills/coordinator-delegation.md ~/.claude/skills/
-cp docs/docs-ref/docs/docs-ref/templates/global-skills/competitive-analysis.md ~/.claude/skills/
-```
-
-| Skill | 触发 | 一句话 |
-|-------|------|--------|
-| `deep-thinking` | 复杂调试/架构决策 | 5 步结构化推理 |
-| `prompt-engineering` | prompt 设计/优化 | Prompt 模板 + Few-shot + 防御注入 |
-| `technical_writing` | 写文档/API docs | Diátaxis 框架文档体系 |
-| `devex-tooling` | 工具链/lint/monorepo | 评估搭建开发工具链 |
-| `coordinator-delegation` | 委派/子代理 | 协调者不写代码，委派子代理 |
-| `competitive-analysis` | 竞品分析/调研 | 多子代理调研业界实现 |
-
----
-
 ## io-wy 实际要记的
 
 打 `/` 然后选就行。实在要记，就 3 个：
@@ -101,4 +77,4 @@ cp docs/docs-ref/docs/docs-ref/templates/global-skills/competitive-analysis.md ~
 - 新增 Skill → 先判断属于 Core/Plugins/Global，写入本表
 - Core: 日常开发必须，<10 个
 - Plugins: 按需加载，放在 `plugins/` 子目录
-- Global: 跨项目通用，放在 `docs/docs-ref/docs/docs-ref/templates/global-skills/`，建议用户全局安装
+- Global: 跨项目通用，安装到 `~/.claude/skills/`

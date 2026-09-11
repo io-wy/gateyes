@@ -145,7 +145,7 @@ LAYER VIOLATION: internal/types/user.go
 
 | 维度 | 分值 | 检查项 |
 |------|------|--------|
-| Documentation | 20 | CLAUDE.md/AGENTS.md, docs/, README.md |
+| Project Constraints | 20 | CLAUDE.md/AGENTS.md |
 | Layer Config | 20 | harness.json 存在且有效 |
 | Lint Scripts | 20 | lint-deps.go, lint-quality.go |
 | Verify Infra | 20 | scripts/verify/ 目录及脚本数量 |
