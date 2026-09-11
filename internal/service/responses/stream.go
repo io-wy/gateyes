@@ -86,6 +86,19 @@ func (s *Service) isStreamRetryable(err error) bool {
 
 func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*Stream, error) {
 	req.Normalize()
+	originalRequestBody := requestBodyBeforeHydration(ctx, req)
+	if !previousResponseHydrated(ctx) {
+		if err := s.hydratePreviousResponse(ctx, identity, req); err != nil {
+			return nil, err
+		}
+		if req.PreviousResponseID != "" {
+			ctx = withPreviousResponseHydrated(ctx)
+		}
+	}
+	toolDecisions, err := s.validateToolOwnership(req)
+	if err != nil {
+		return nil, err
+	}
 
 	responseID := uuid.NewString()
 
@@ -101,6 +114,10 @@ func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIde
 		}
 	}
 	req = s.applyCachePromptRewrite(ctx, identity, req)
+	toolDecisions, err = s.validateToolOwnership(req)
+	if err != nil {
+		return nil, err
+	}
 
 	// PreRoute plugin
 	preRoutePayload := map[string]any{"request": req}
@@ -114,6 +131,10 @@ func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIde
 				req = &transformed
 			}
 		}
+	}
+	toolDecisions, err = s.validateToolOwnership(req)
+	if err != nil {
+		return nil, err
 	}
 	if err := s.admitRequest(ctx, identity, req); err != nil {
 		return nil, err
@@ -144,6 +165,13 @@ func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIde
 			}
 		}
 	}
+	toolDecisions, err = s.validateToolOwnership(req)
+	if err != nil {
+		return nil, err
+	}
+	if hasGatewayOwnedTool(toolDecisions) {
+		return s.createGatewayOwnedStream(ctx, identity, req, sessionID)
+	}
 
 	events := make(chan provider.ResponseEvent)
 	errCh := make(chan error, 1)
@@ -171,7 +199,9 @@ func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIde
 
 	if cacheHit {
 		requestBody, _ := json.Marshal(req)
-		if raw := rawBodyFromContext(ctx); len(raw) > 0 {
+		if len(originalRequestBody) > 0 {
+			requestBody = originalRequestBody
+		} else if raw := rawBodyFromContext(ctx); len(raw) > 0 {
 			requestBody = raw
 		}
 		if trace != nil {
@@ -211,7 +241,9 @@ func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIde
 		trace.touch()
 	}
 	requestBody, _ := json.Marshal(req)
-	if raw := rawBodyFromContext(ctx); len(raw) > 0 {
+	if len(originalRequestBody) > 0 {
+		requestBody = originalRequestBody
+	} else if raw := rawBodyFromContext(ctx); len(raw) > 0 {
 		requestBody = raw
 	}
 	if err := s.store.CreateResponse(ctx, repository.ResponseRecord{
@@ -242,6 +274,40 @@ func (s *Service) CreateStream(ctx context.Context, identity *repository.AuthIde
 		Events:       events,
 		Errors:       errCh,
 	}, nil
+}
+
+// createGatewayOwnedStream runs the bounded server-side loop before exposing
+// events, so gateway-owned calls never leak to the client.
+func (s *Service) createGatewayOwnedStream(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string) (*Stream, error) {
+	if len(rawBodyFromContext(ctx)) == 0 {
+		if raw, err := json.Marshal(req); err == nil {
+			ctx = WithRawRequestBody(ctx, raw)
+		}
+	}
+	clone := *req
+	clone.Stream = false
+	result, err := s.Create(withSkipToolStreamPreprocess(ctx), identity, &clone, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	events := make(chan provider.ResponseEvent, len(result.Response.Output)+3)
+	errs := make(chan error, 1)
+	go func() {
+		defer close(events)
+		defer close(errs)
+		events <- provider.ResponseEvent{Type: provider.EventResponseStarted, Response: &provider.Response{ID: result.Response.ID, Object: "response", Created: result.Response.Created, Model: result.Response.Model, Status: "in_progress"}}
+		if text := result.Response.OutputText(); text != "" {
+			events <- provider.ResponseEvent{Type: provider.EventContentDelta, Delta: text, TextDelta: text}
+		}
+		for _, output := range result.Response.Output {
+			if output.Type == "function_call" {
+				item := output
+				events <- provider.ResponseEvent{Type: provider.EventToolCallDone, Output: &item}
+			}
+		}
+		events <- provider.ResponseEvent{Type: provider.EventResponseCompleted, Response: result.Response}
+	}()
+	return &Stream{ResponseID: result.Response.ID, ProviderName: result.ProviderName, StartedAt: time.Now(), Events: events, Errors: errs}, nil
 }
 
 func (s *Service) runStreamWithFallback(ctx context.Context, identity *repository.AuthIdentity, req *provider.ResponseRequest, sessionID string, candidates []provider.Provider, responseID string, trace *routeTrace, out chan<- provider.ResponseEvent, errCh chan<- error, cacheChecked bool, semanticMaterial *semanticCacheMaterial, transcript *streamTranscriptCollector) {

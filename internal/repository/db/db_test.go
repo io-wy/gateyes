@@ -170,6 +170,7 @@ WHERE type = 'table' AND name = 'semantic_cache_entries'`).Scan(&semanticTables)
 
 func TestCompatSQLRewritesPgvectorDDL(t *testing.T) {
 	in := `CREATE EXTENSION IF NOT EXISTS vector;
+
 CREATE TABLE semantic_cache_entries (embedding vector(1536) NOT NULL, stream_body BYTEA);
 CREATE TABLE semantic_cache_entries_ollama (embedding vector NOT NULL, stream_body BYTEA);
 CREATE INDEX semantic_cache_lookup_idx ON semantic_cache_entries USING hnsw (embedding vector_cosine_ops);

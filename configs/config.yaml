@@ -36,6 +36,12 @@ router:
   ruleEngine:
     enabled: false
 
+toolOwnership:
+  enabled: false
+  defaultOwner: ""
+  maxLoopRounds: 4
+  rules: []
+
 limiter:
   globalQPS: 100000
   globalTPM: 100000000

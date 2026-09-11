@@ -1,0 +1,9 @@
+{
+  "code": 40801,
+  "error": {
+    "message": "Key: 'CreateProviderRequest.Name' Error:Field validation for 'Name' failed on the 'required' tag\nKey: 'CreateProviderRequest.Model' Error:Field validation for 'Model' failed on the 'required' tag",
+    "type": "invalid_request_error"
+  },
+  "message": "Key: 'CreateProviderRequest.Name' Error:Field validation for 'Name' failed on the 'required' tag\nKey: 'CreateProviderRequest.Model' Error:Field validation for 'Model' failed on the 'required' tag",
+  "success": false
+}

@@ -1,0 +1,4 @@
+data: {"choices":[{"delta":{},"finish_reason":"stop","index":0}],"created":0,"id":"<generated-id>","model":"public-model","object":"chat.completion.chunk","usage":{"cached_tokens":0,"completion_tokens":1,"prompt_tokens":2,"total_tokens":3}}
+
+data: [DONE]
+

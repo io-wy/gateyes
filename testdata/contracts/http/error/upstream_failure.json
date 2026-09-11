@@ -1,0 +1,6 @@
+{
+  "error": {
+    "message": "all retries exhausted: upstream error: 502 POST \"<upstream>/chat/completions\": 502 Bad Gateway \"contract upstream failure\"",
+    "type": "internal_error"
+  }
+}
